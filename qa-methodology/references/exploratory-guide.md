@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 46 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 47 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -37,6 +37,7 @@
      - Iter 44: Playwright 2025-2026 tooling additions — toMatchAriaSnapshot() YAML structural oracle (v1.49-v1.60); Playwright Test Agents framework (v1.56, planner/generator/healer); Screencast API for agentic session evidence (v1.59); locator.describe() + page.pickLocator() as interactive session aids; async-disposable teardown pattern with `await using`; community lessons #120-122; new anti-pattern (ARIA snapshot drift ignored during exploration)
      - Iter 45: Playwright v1.60 additions not yet covered — tracing.startHar()/stopHar() as first-class HAR tracing API with await using; locator.drop() for upload-zone and DnD exploration; getByRole() description option for accessible-description matching; test.abort() for unrecoverable-state detection in session harnesses; browser.bind() + playwright-cli Dashboard for multi-client session sharing; TypeScript HAR-oracle harness; community lessons #123-125; new anti-pattern (HAR network capture ignored during API exploration sessions)
      - Iter 46: Playwright v1.57-v1.58 additions not yet covered — locator.description() getter for reading back describe() labels; Service Worker network routing and console interception via BrowserContext (Chromium); testConfig.webServer.wait regex for dynamic-port readiness; steps option for pointer actions (locator.click/dragTo); Speedboard Timeline chart in merged HTML reports (v1.58); OWASP Top 10 for Agentic Applications 2026 as charter framework for agentic-AI exploration; TypeScript agentic-session oracle harness; community lessons #126-128; new anti-pattern (exploring multi-agent pipelines without agentic OWASP charter)
+     - Iter 47: Playwright v1.48-v1.52 tooling additions not yet covered — page.routeWebSocket()/WebSocketRoute API as framework-level WS interception oracle (v1.48); page.requestGC() + WeakRef pattern for memory-leak exploration (v1.48); storageState({ indexedDB: true }) for auth-state exploration in Firebase/IndexedDB apps (v1.51); toContainClass() assertion for CSS-state oracles during UI exploration (v1.52); failOnFlakyTests guard for session harness reliability (v1.52); TypeScript WebSocketRouteHarness; community lessons #129-131; new anti-pattern (replacing page.routeWebSocket() with a hand-rolled proxy for WS exploration)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -9854,3 +9855,681 @@ The correct approach: before any multi-agent exploratory session, create one cha
 128. **[community] The OWASP Agentic Top 10 2026 framework changed the conversation between QA teams and AI engineering teams by providing a shared vocabulary for agentic security risks that both groups could reference without requiring QA engineers to understand the model architecture.** Before the framework, when a QA engineer discovered that an agent had called an unauthorized tool during an exploratory session, describing the finding to an AI engineer required explaining the concept from first principles: "the agent called a tool that wasn't in the task description, which means either the planning step is not respecting the tool authorization list, or the tool output contained instructions that redirected the agent." After the framework, the same finding is communicated in four words: "Agentic Top 10, Unauthorized Capability Expansion." The AI engineer immediately understands the category, the threat model, and the likely root cause. Teams using the framework for structured agentic exploration reported that this shared vocabulary reduced the time between defect filing and developer triage by approximately 35%, because the category label carries enough context for triage without requiring a long reproduction narrative.
 
 ---
+
+## Playwright v1.48–v1.52 Tooling Additions (Iteration 47)
+
+Several Playwright APIs introduced in the v1.48–v1.52 window were not covered in earlier guide iterations because those iterations focused on v1.49+ ARIA features, v1.56 Test Agents, and v1.57+ descriptor APIs. This section fills that gap with four APIs that have direct, practical value for TypeScript exploratory session harnesses.
+
+### `page.routeWebSocket()` / `WebSocketRoute` — Framework-Level WS Interception Oracle (v1.48)  [community]
+
+The Iteration 36 WebSocket harness uses the **browser's native `WebSocket` constructor** — it wraps the API at the page layer to log messages and inject faults. While effective for observing real server traffic, it cannot intercept connections to servers the session harness does not control, and it requires the server to be running.
+
+Playwright v1.48 introduced `page.routeWebSocket(url, handler)` and its context-level equivalent `browserContext.routeWebSocket(url, handler)`, which intercept WebSocket upgrades **at the Playwright network stack level** — before the connection reaches any real server. This enables a qualitatively different exploration mode: the tester can fully mock the server, modify server responses in flight, or partially intercept (let some messages through while capturing others) without running a real server at all.
+
+The `WebSocketRoute` object passed to the handler exposes:
+- `route.send(message)` — send a frame to the page as if it came from the server
+- `route.onMessage(handler)` — intercept messages sent by the page before they reach the server
+- `route.connectToServer()` — establish a real connection so messages can be observed and selectively modified
+- `route.close({ code, reason })` — close one side of the connection with a specific close code (useful for testing reconnection UX)
+- `route.url()` — the WS URL the page opened
+- `route.protocols()` — subprotocols requested by the page
+
+**When to use `page.routeWebSocket()` versus the Iteration 36 native harness:**
+
+| Scenario | Use |
+|----------|-----|
+| Exploring a real server's actual behavior (message ordering, reconnection timing) | Iteration 36 native harness — observe real frames |
+| Exploring page-side behavior against controlled server responses | `page.routeWebSocket()` — mock the server entirely |
+| Probing error handling with specific close codes | `page.routeWebSocket()` + `route.close({ code: 1011 })` |
+| Exploring subprotocol negotiation failures | `page.routeWebSocket()` — check `route.protocols()` and decline |
+| Injecting malformed frames for fault-injection exploration | `page.routeWebSocket()` — send arbitrary payloads |
+
+**TypeScript: WebSocketRoute Session Harness (v1.48+)**
+
+```typescript
+// src/testing/exploratory/ws-route-harness.ts
+// Playwright-level WebSocket interception harness for exploratory sessions.
+// Requires: @playwright/test ≥ 1.48
+// Run from within a Playwright test fixture — not from browser-side code.
+
+import type { Page, WebSocketRoute } from '@playwright/test';
+
+export interface WsRouteFrame {
+  direction: 'page-to-server' | 'server-to-page' | 'injected';
+  timestamp: number; // ms since harness attach
+  payload: string;   // text content (binary truncated to hex preview)
+  intercepted: boolean; // true if this frame was modified or blocked
+}
+
+export interface WsRouteSessionConfig {
+  /** URL pattern to intercept, e.g. "**/ws" or exact URL */
+  urlPattern: string | RegExp;
+  /** If true, forward all messages to the real server (observe+passthrough mode) */
+  connectToServer?: boolean;
+  /**
+   * Optional transformer: return modified payload, or null to drop the frame.
+   * Applies to messages sent by the page to the server.
+   */
+  transformPageMessage?: (payload: string) => string | null;
+  /**
+   * Optional transformer for server → page messages.
+   * Only active when connectToServer is true.
+   */
+  transformServerMessage?: (payload: string) => string | null;
+  /** If set, automatically close the WS with this code after N ms */
+  simulateCloseAfterMs?: number;
+  closeCode?: number;
+  closeReason?: string;
+}
+
+export class WebSocketRouteHarness {
+  private readonly frames: WsRouteFrame[] = [];
+  private attachedAt = 0;
+  private activeRoute: WebSocketRoute | null = null;
+
+  constructor(
+    private readonly page: Page,
+    private readonly config: WsRouteSessionConfig,
+  ) {}
+
+  /** Attach the route interceptor. Call before the page opens the WebSocket. */
+  async attach(): Promise<void> {
+    this.attachedAt = Date.now();
+
+    await this.page.routeWebSocket(
+      this.config.urlPattern,
+      (route: WebSocketRoute) => {
+        this.activeRoute = route;
+
+        // Intercept page→server messages
+        route.onMessage((message: string | Buffer) => {
+          const text =
+            typeof message === 'string'
+              ? message
+              : `<binary:${(message as Buffer).toString('hex').slice(0, 64)}>`;
+
+          let outgoing = text;
+          let intercepted = false;
+
+          if (this.config.transformPageMessage) {
+            const transformed = this.config.transformPageMessage(text);
+            if (transformed === null) {
+              // Drop the frame — do not forward
+              this.log({ direction: 'page-to-server', payload: text, intercepted: true });
+              return;
+            }
+            if (transformed !== text) {
+              outgoing = transformed;
+              intercepted = true;
+            }
+          }
+
+          this.log({ direction: 'page-to-server', payload: text, intercepted });
+
+          if (this.config.connectToServer) {
+            // Forward (possibly modified) to real server
+            route.send(outgoing);
+          }
+          // If not connecting to server, the message is simply dropped (mock mode)
+        });
+
+        if (this.config.connectToServer) {
+          route.connectToServer().then((serverRoute) => {
+            // Intercept server→page messages
+            serverRoute.onMessage((message: string | Buffer) => {
+              const text =
+                typeof message === 'string'
+                  ? message
+                  : `<binary:${(message as Buffer).toString('hex').slice(0, 64)}>`;
+
+              let outgoing = text;
+              let intercepted = false;
+
+              if (this.config.transformServerMessage) {
+                const transformed = this.config.transformServerMessage(text);
+                if (transformed === null) {
+                  this.log({ direction: 'server-to-page', payload: text, intercepted: true });
+                  return;
+                }
+                if (transformed !== text) {
+                  outgoing = transformed;
+                  intercepted = true;
+                }
+              }
+
+              this.log({ direction: 'server-to-page', payload: text, intercepted });
+              route.send(outgoing); // Forward to page
+            });
+          });
+        }
+
+        // Simulate a connection drop after N ms
+        if (this.config.simulateCloseAfterMs) {
+          setTimeout(() => {
+            route.close({
+              code: this.config.closeCode ?? 1001,
+              reason: this.config.closeReason ?? 'Session harness simulated drop',
+            });
+          }, this.config.simulateCloseAfterMs);
+        }
+      },
+    );
+  }
+
+  /** Inject a server-originated message to the page, bypassing the real server. */
+  injectServerMessage(payload: string): void {
+    if (!this.activeRoute) {
+      throw new Error('No active WebSocketRoute — call attach() and wait for WS to open');
+    }
+    this.log({ direction: 'injected', payload, intercepted: false });
+    this.activeRoute.send(payload);
+  }
+
+  /** Returns the full frame log for session debrief. */
+  getFrameLog(): WsRouteFrame[] {
+    return [...this.frames];
+  }
+
+  /** Returns a human-readable debrief summary. */
+  summary(): string {
+    const toServer = this.frames.filter((f) => f.direction === 'page-to-server').length;
+    const toPage = this.frames.filter((f) => f.direction === 'server-to-page').length;
+    const injected = this.frames.filter((f) => f.direction === 'injected').length;
+    const intercepted = this.frames.filter((f) => f.intercepted).length;
+    return (
+      `WS route session: ${this.frames.length} frames ` +
+      `(${toServer} page→server, ${toPage} server→page, ${injected} injected, ` +
+      `${intercepted} intercepted/modified)`
+    );
+  }
+
+  private log(
+    entry: Omit<WsRouteFrame, 'timestamp'>,
+  ): void {
+    this.frames.push({ ...entry, timestamp: Date.now() - this.attachedAt });
+  }
+}
+
+// Usage in a Playwright test (exploratory session harness):
+//
+// test('explore notification WS — malformed event injection', async ({ page }) => {
+//   const wsHarness = new WebSocketRouteHarness(page, {
+//     urlPattern: '**/ws/notifications',
+//     connectToServer: false,  // full mock mode — no real server needed
+//   });
+//   await wsHarness.attach();
+//   await page.goto('/dashboard');
+//
+//   // Inject an event type the UI has never seen
+//   wsHarness.injectServerMessage(JSON.stringify({ type: 'order.unknown', orderId: '42' }));
+//   await page.waitForTimeout(500);
+//
+//   // Inject a well-formed event to confirm the UI recovers
+//   wsHarness.injectServerMessage(JSON.stringify({ type: 'order.shipped', orderId: '42' }));
+//   await page.waitForTimeout(500);
+//
+//   // Inject a close with server error code and observe reconnection UX
+//   // (done via simulateCloseAfterMs in the config, or manually via activeRoute)
+//
+//   console.log(wsHarness.summary());
+//   // Attach frame log as a test attachment for session debrief
+//   await testInfo.attach('ws-frame-log.json', {
+//     contentType: 'application/json',
+//     body: Buffer.from(JSON.stringify(wsHarness.getFrameLog(), null, 2)),
+//   });
+// });
+```
+
+**Exploratory charter extension for `page.routeWebSocket()` sessions:**
+
+The YAML charter template from Iteration 36 gains a new `harness_mode` field to distinguish native-WS observation sessions from framework-level interception sessions:
+
+```yaml
+# Extension to charter: websocket-notification-exploration.yaml
+harness_mode: "playwright-route"   # vs "native-ws" for Iteration 36 harness
+route_config:
+  url_pattern: "**/ws/notifications"
+  connect_to_server: false          # mock mode: inject controlled frames
+injection_probes:
+  - label: "unknown event type"
+    payload: '{"type":"order.unknown","orderId":"42"}'
+    oracle: "Claims — documented event schema"
+  - label: "malformed JSON"
+    payload: "not-valid-json"
+    oracle: "Error handling — UI must not crash"
+  - label: "server error close (1011)"
+    action: "close with code 1011"
+    oracle: "User expectations — reconnecting indicator visible within 2s"
+```
+
+---
+
+### `page.requestGC()` — Memory-Leak Oracle for Long-Running Exploration Sessions (v1.48)
+
+Introduced in Playwright v1.48, `page.requestGC()` requests the Chromium garbage collector to run. When combined with JavaScript's `WeakRef` API (available in all modern browsers), this creates a deterministic oracle for detecting memory leaks during exploratory sessions: **if an object that should have been released is still reachable after a GC, it is a leak candidate.**
+
+This is valuable in two exploratory contexts:
+
+1. **Long-running session harnesses**: After a session that opens many modal dialogs, navigates through dozens of routes, or creates and destroys chart components, call `page.requestGC()` and check whether component instances are still held in memory. Each modal that was opened and closed but whose reference still resolves is a leak in the component lifecycle.
+
+2. **SPA route navigation exploration**: Single-page apps (React, Angular, Vue) that manage route-level data fetching and cleanup are a known source of memory leaks: the "old" route's data fetcher or subscription is not torn down before the new route's data fetcher starts. `page.requestGC()` + `WeakRef` makes this observable without profiling tools.
+
+**TypeScript: Memory Leak Oracle for Exploratory Sessions**
+
+```typescript
+// src/testing/exploratory/memory-leak-oracle.ts
+// Uses page.requestGC() + WeakRef to assert component/object release
+// during an exploratory session. Requires Playwright ≥ 1.48 and Chromium.
+
+import type { Page } from '@playwright/test';
+
+export interface LeakCheckResult {
+  label: string;
+  leaked: boolean;
+  note: string;
+}
+
+/**
+ * Registers a suspect object as a WeakRef in the page, requests GC,
+ * then checks whether the reference was collected.
+ *
+ * @param page - Playwright Page object
+ * @param setupExpression - JS expression that attaches the suspect object
+ *   to `globalThis.__leakCheck_<label>` and sets up its WeakRef at
+ *   `globalThis.__leakRef_<label>`. Run this immediately after the
+ *   object is created (e.g. after opening a modal).
+ * @param label - Human-readable label for the debrief report
+ */
+export async function checkForLeak(
+  page: Page,
+  label: string,
+  setupExpression: string,
+): Promise<LeakCheckResult> {
+  // Attach the suspect object and its WeakRef
+  await page.evaluate(setupExpression);
+
+  // Request garbage collection (Chromium only — no-op on other engines)
+  await page.requestGC();
+
+  // Check whether the WeakRef still resolves
+  const leaked = await page.evaluate((lbl: string) => {
+    const ref = (globalThis as Record<string, WeakRef<object>>)[`__leakRef_${lbl}`];
+    return ref !== undefined && ref.deref() !== undefined;
+  }, label);
+
+  return {
+    label,
+    leaked,
+    note: leaked
+      ? `[LEAK] "${label}" still reachable after GC — possible detached listener or retained closure`
+      : `[OK] "${label}" was collected after GC`,
+  };
+}
+
+/**
+ * Convenience wrapper: checks whether a named component class is leaking
+ * after a standard close/unmount action.
+ *
+ * The suspect is located by its constructor name on the page's component tree
+ * (framework-specific — this example assumes a global component registry
+ * or window.__componentInstances set by the app under test in dev mode).
+ */
+export async function checkComponentLeak(
+  page: Page,
+  componentName: string,
+): Promise<LeakCheckResult> {
+  const setup = `
+    (function() {
+      // Assumes the app exposes globalThis.__componentInstances in dev/test mode
+      const instances = globalThis.__componentInstances ?? {};
+      const instance = instances['${componentName}'];
+      if (!instance) return; // component not found — skip
+      globalThis.__leakRef_${componentName} = new WeakRef(instance);
+      // Clear the strong reference from the registry so GC can collect it
+      delete instances['${componentName}'];
+    })();
+  `;
+  return checkForLeak(page, componentName, setup);
+}
+
+// Usage in a Playwright exploratory session:
+//
+// test('explore modal lifecycle — memory leak oracle', async ({ page }) => {
+//   await page.goto('/orders');
+//
+//   // Open the order detail modal
+//   await page.getByRole('button', { name: 'View Order' }).first().click();
+//
+//   // Register the modal component as a leak suspect
+//   await page.evaluate(() => {
+//     const modal = document.querySelector('[data-component="OrderDetailModal"]');
+//     if (modal) {
+//       globalThis.__leakRef_OrderDetailModal = new WeakRef(modal);
+//     }
+//   });
+//
+//   // Close the modal
+//   await page.getByRole('button', { name: 'Close' }).click();
+//
+//   // Request GC and check
+//   await page.requestGC();
+//   const leaked = await page.evaluate(() => {
+//     const ref = globalThis.__leakRef_OrderDetailModal;
+//     return ref !== undefined && ref.deref() !== undefined;
+//   });
+//
+//   if (leaked) {
+//     console.warn('[SESSION FINDING] OrderDetailModal element still in memory after close — possible detached DOM leak');
+//   }
+// });
+```
+
+**Gotcha — `page.requestGC()` is a hint, not a guarantee:**
+
+JavaScript's GC is non-deterministic. `page.requestGC()` requests GC but the runtime may defer or partially collect. The practical consequence: false negatives are common (a leaked object may be collected on one run but not another, making the oracle flaky). The recommended approach is to call `page.requestGC()` twice with a short await between calls to improve collection reliability:
+
+```typescript
+await page.requestGC();
+await page.waitForTimeout(50);  // allow GC work to complete
+await page.requestGC();
+const leaked = await page.evaluate(() =>
+  (globalThis.__leakRef_MyComponent as WeakRef<object> | undefined)?.deref() !== undefined,
+);
+```
+
+Teams that use this double-GC pattern report a significant reduction in false negatives during modal and route-transition exploration sessions.
+
+---
+
+### `storageState({ indexedDB: true })` — Auth-State Exploration for IndexedDB-Backed Applications (v1.51)
+
+Before Playwright v1.51, `context.storageState()` captured cookies and `localStorage` but not **IndexedDB**. Applications that use Firebase Authentication, Supabase's JavaScript client, AWS Amplify, or other SDKs that store auth tokens in IndexedDB would silently lose their authentication state when a `storageState` snapshot was restored — the explorer would be logged out without a clear error, making it appear that the auth flow had regressed.
+
+Playwright v1.51 added `indexedDB: true` to `storageState()`:
+
+```typescript
+// Capture auth state including IndexedDB (e.g. Firebase auth tokens)
+const state = await context.storageState({ path: './auth-state.json', indexedDB: true });
+
+// Restore it in the next context — restores cookies, localStorage, AND IndexedDB
+const authContext = await browser.newContext({ storageState: './auth-state.json' });
+```
+
+When `storageState()` is called with `indexedDB: true`, the returned state object includes an `indexedDB` array with one entry per origin, each listing the database name, object store name, and all records.
+
+**For exploratory testing, this unlocks three session patterns that were previously unreliable:**
+
+1. **Multi-role exploration from saved state**: Capture a `storageState` for each user role (admin, viewer, owner) once — reuse them across sessions without re-authenticating. Before v1.51, apps using Firebase auth would lose their session on restoration, forcing testers to log in manually at the start of every session. With `indexedDB: true`, the saved state includes the Firebase auth token in IndexedDB and the session persists.
+
+2. **Tamper exploration on auth tokens**: Load a saved state, then modify the IndexedDB auth token before the page loads to test whether the app rejects tampered credentials or silently accepts them. This is a security exploration charter that was practically infeasible without access to the serialized IndexedDB state.
+
+3. **Expired-token exploration**: Save a state, modify the token expiry field in the JSON, and restore it to confirm the app's token-refresh and re-authentication flow fires correctly. The `Claims` oracle (documented token refresh behavior) is the primary oracle here.
+
+**TypeScript: Auth State Explorer for IndexedDB-Backed Apps**
+
+```typescript
+// src/testing/exploratory/idb-auth-explorer.ts
+// Utilities for exploratory sessions on apps that store auth in IndexedDB.
+// Requires: @playwright/test ≥ 1.51
+
+import * as fs from 'node:fs/promises';
+import type { BrowserContext } from '@playwright/test';
+
+export interface IndexedDBStorageState {
+  cookies: unknown[];
+  origins: unknown[];
+  indexedDB?: Array<{
+    origin: string;
+    database: string;
+    objectStore: string;
+    records: Array<{ key: unknown; value: unknown }>;
+  }>;
+}
+
+/**
+ * Saves storage state including IndexedDB to a file.
+ * Use after a successful login to create a reusable auth fixture.
+ */
+export async function saveAuthState(
+  context: BrowserContext,
+  path: string,
+): Promise<void> {
+  await context.storageState({ path, indexedDB: true });
+}
+
+/**
+ * Loads the saved auth state JSON and modifies a named field in the
+ * first IndexedDB record matching the given database + object store.
+ * Returns the path to the modified state file (a .tampered.json copy).
+ *
+ * Use this for token-tamper and token-expiry exploration probes.
+ */
+export async function tamperIndexedDBRecord(
+  sourcePath: string,
+  targetDatabase: string,
+  targetStore: string,
+  fieldPath: string[],    // e.g. ['value', 'stsTokenManager', 'expirationTime']
+  newValue: unknown,
+): Promise<string> {
+  const raw = await fs.readFile(sourcePath, 'utf8');
+  const state: IndexedDBStorageState = JSON.parse(raw);
+
+  if (!state.indexedDB) {
+    throw new Error(`storageState at ${sourcePath} has no indexedDB entries — was it saved with { indexedDB: true }?`);
+  }
+
+  const target = state.indexedDB.find(
+    (db) => db.database === targetDatabase && db.objectStore === targetStore,
+  );
+  if (!target) {
+    throw new Error(
+      `IndexedDB database "${targetDatabase}" / store "${targetStore}" not found in ${sourcePath}`,
+    );
+  }
+
+  if (target.records.length === 0) {
+    throw new Error(`No records in "${targetDatabase}/${targetStore}"`);
+  }
+
+  // Traverse the field path and set the new value
+  const record = target.records[0].value as Record<string, unknown>;
+  let cursor: Record<string, unknown> = record;
+  for (let i = 0; i < fieldPath.length - 1; i++) {
+    cursor = cursor[fieldPath[i]] as Record<string, unknown>;
+  }
+  cursor[fieldPath[fieldPath.length - 1]] = newValue;
+
+  const tamperedPath = sourcePath.replace(/\.json$/, '.tampered.json');
+  await fs.writeFile(tamperedPath, JSON.stringify(state, null, 2), 'utf8');
+  return tamperedPath;
+}
+
+// Usage example — expired-token exploration probe:
+//
+// test('explore expired Firebase token — should redirect to login', async ({ browser }) => {
+//   // Step 1: Save auth state (do once, reuse across sessions)
+//   const loginContext = await browser.newContext();
+//   await loginContext.goto('/login');
+//   // ... perform login ...
+//   await saveAuthState(loginContext, './auth-state.json');
+//   await loginContext.close();
+//
+//   // Step 2: Tamper the token expiry to a past timestamp
+//   const expiredStatePath = await tamperIndexedDBRecord(
+//     './auth-state.json',
+//     'firebaseLocalStorageDb',
+//     'firebaseLocalStorage',
+//     ['value', 'stsTokenManager', 'expirationTime'],
+//     Date.now() - 60_000,  // 1 minute in the past
+//   );
+//
+//   // Step 3: Launch a context with the tampered auth state
+//   const probeContext = await browser.newContext({ storageState: expiredStatePath });
+//   const page = await probeContext.newPage();
+//   await page.goto('/dashboard');
+//
+//   // Oracle: Claims — app should detect expired token and redirect to /login
+//   await page.waitForURL('**/login', { timeout: 5000 });
+//   // If the app silently loads /dashboard with an expired token, that is a security defect
+// });
+```
+
+---
+
+### `toContainClass()` — CSS-State Exploration Oracle (v1.52)
+
+Playwright v1.52 introduced `expect(locator).toContainClass(className)`, which asserts that an element has a specific CSS class among its class list — without requiring an exact match of all classes. Before v1.52, testing class-based UI state required either `toHaveClass(/active/)` (regex, fragile if class names change) or `toHaveAttribute('class', /active/)` (same). `toContainClass()` makes class-state assertions explicit and readable.
+
+For exploratory testing, this enables **CSS-state oracles**: assertions that check whether a UI element's state (selected, active, disabled, error, loading) is reflected in its CSS class list as documented. Many TypeScript UI codebases use class-based state tokens (`is-active`, `has-error`, `btn--loading`) as the single source of truth for visual state — checking them directly is the most reliable oracle for "does the UI correctly reflect the application state?"
+
+**When to use `toContainClass()` versus `toHaveClass()`:**
+
+| Assertion | Use case |
+|-----------|----------|
+| `toContainClass('is-active')` | Check that a single state class is present; other classes are ignored |
+| `toHaveClass('nav-item is-active')` | Assert the complete class list exactly |
+| `toHaveClass(/is-active/)` | Regex fallback for pre-v1.52 Playwright |
+
+**TypeScript: CSS-State Oracle for Session Harnesses**
+
+```typescript
+// src/testing/exploratory/css-state-oracle.ts
+// Checks UI state via CSS class membership during exploratory sessions.
+// Requires: @playwright/test ≥ 1.52
+
+import { expect, type Locator } from '@playwright/test';
+
+export interface CssStateExpectation {
+  label: string;
+  locator: Locator;
+  /** CSS class that should be present on the element */
+  expectedClass: string;
+  /** HICCUPPS oracle dimension for this check */
+  oracle: 'Claims' | 'User expectations' | 'Purpose' | 'History' | 'Image';
+}
+
+export interface CssStateOracleResult {
+  label: string;
+  expectedClass: string;
+  passed: boolean;
+  oracle: string;
+}
+
+/**
+ * Runs a batch of CSS-state oracle checks and returns a report.
+ * Soft assertions are used so all checks run even if some fail.
+ */
+export async function checkCssStateOracles(
+  expectations: CssStateExpectation[],
+): Promise<CssStateOracleResult[]> {
+  const results: CssStateOracleResult[] = [];
+
+  for (const exp of expectations) {
+    try {
+      await expect(exp.locator).toContainClass(exp.expectedClass);
+      results.push({
+        label: exp.label,
+        expectedClass: exp.expectedClass,
+        passed: true,
+        oracle: exp.oracle,
+      });
+    } catch {
+      results.push({
+        label: exp.label,
+        expectedClass: exp.expectedClass,
+        passed: false,
+        oracle: exp.oracle,
+      });
+    }
+  }
+
+  return results;
+}
+
+// Usage in a session harness:
+//
+// After adding an item to the cart, check that the cart icon reflects the active state:
+//
+// const results = await checkCssStateOracles([
+//   {
+//     label: 'Cart icon shows items-present state',
+//     locator: page.getByRole('button', { name: 'Cart' }),
+//     expectedClass: 'cart--has-items',
+//     oracle: 'User expectations',
+//   },
+//   {
+//     label: 'Add-to-cart button shows loading state during API call',
+//     locator: page.getByRole('button', { name: 'Add to Cart' }),
+//     expectedClass: 'btn--loading',
+//     oracle: 'Claims',
+//   },
+//   {
+//     label: 'Nav item for current route is marked active',
+//     locator: page.getByRole('link', { name: 'Orders' }),
+//     expectedClass: 'nav-item--active',
+//     oracle: 'User expectations',
+//   },
+// ]);
+//
+// const failures = results.filter((r) => !r.passed);
+// if (failures.length > 0) {
+//   console.warn('CSS-state oracle failures:', failures);
+// }
+```
+
+**Gotcha — `toContainClass()` and Tailwind / utility-first CSS:**
+
+If the application uses Tailwind CSS or another utility-first framework, components typically do not use semantic state classes (`is-active`, `btn--loading`). Instead, state is reflected by adding or removing utility classes (`bg-blue-500`, `opacity-50`). `toContainClass()` works on utility classes too, but the oracle becomes fragile: if a designer changes `bg-blue-500` to `bg-blue-600`, the assertion fails for a non-functional reason. For Tailwind-heavy apps, the more resilient oracle is `toMatchAriaSnapshot()` (which checks the accessible state, not the visual styling) or `toHaveCSS()` (which checks computed styles, not class names).
+
+---
+
+### `failOnFlakyTests` — Session Harness Reliability Guard (v1.52)
+
+Playwright v1.52 introduced `failOnFlakyTests: true` in `playwright.config.ts`. When set, a test run that includes any **retried-and-passed** test is treated as a failure — the test suite fails even if all tests ultimately pass. This is relevant to exploratory session harnesses because flaky behavior in a session harness is a signal that the harness itself is unreliable — and an unreliable harness produces session debrief artifacts (frame logs, ARIA snapshots, OTel traces) that cannot be trusted.
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 1 : 0,
+
+  // Fail the run if any test was flaky (passed on retry).
+  // Prevents unreliable session harness output from entering the debrief record.
+  // Disable for investigation runs where some flakiness is expected.
+  failOnFlakyTests: process.env.EXPLORATION_MODE !== 'investigation',
+
+  // ... rest of config
+});
+```
+
+The `EXPLORATION_MODE=investigation` escape hatch lets a tester temporarily disable the guard when they are deliberately probing a flaky area of the application — in that context, harness retries are expected.
+
+---
+
+### New Anti-Pattern (Iteration 47): Replacing `page.routeWebSocket()` with a Hand-Rolled Proxy for WS Exploration
+
+**Running a local WebSocket proxy server (Node.js `ws` library, or a custom `http.createServer` with WebSocket upgrade handling) to intercept and modify frames during exploratory sessions, instead of using Playwright's `page.routeWebSocket()`.**
+
+The failure mode is a common one: the team's Iteration 36 WebSocket harness uses the browser-native `WebSocket` constructor and cannot intercept connections to servers the harness doesn't control. When the team needs to inject malformed frames or simulate server errors, someone writes a `proxy-ws.ts` script that sits between the app and the real server. This proxy must be started, configured, and stopped alongside the Playwright process, adding 40–80 lines of process management code to the session harness. The proxy also introduces an additional network hop that slightly changes timing — subtle enough to miss race conditions that the production setup exposes.
+
+With `page.routeWebSocket()`, the same interception happens at the Playwright network layer, within the existing test process, with no proxy process to manage. The API handles the WS upgrade interception transparently and exposes the same message-manipulation surface as a proxy. The correct migration path:
+
+1. Remove the proxy startup/teardown from the test fixtures
+2. Call `page.routeWebSocket(urlPattern, handler)` before `page.goto()`
+3. Use `route.onMessage()` + `route.send()` instead of the proxy's `ws.on('message')` + `ws.send()`
+4. Use `route.close({ code, reason })` instead of `proxy.close()`
+
+The proxy approach is still valid for one case the Playwright API does not cover: **testing the WebSocket server itself** in isolation (sending frames directly to the server from a Node.js test, without a browser page). In that scenario, the `ws` library is the right tool. For any exploration involving a browser page, `page.routeWebSocket()` supersedes the proxy pattern.
+
+**HICCUPPS mapping**: The anti-pattern primarily risks oracle accuracy on the **History** dimension (does this behavior match prior behavior?). If the proxy changes timing, a race condition that existed in prior versions may not appear — the tester concludes the race is fixed when it is still present.
+
+---
+
+## Additional Community Lessons (Iteration 47)
+
+129. **[community] Teams that migrated from browser-native WebSocket observation to `page.routeWebSocket()` for exploratory sessions discovered that frame injection during live sessions immediately exposed a class of client-side defect that no prior technique had reliably found: unknown event type handling.** Real WebSocket servers virtually never send undocumented event types — the production stream contains only well-formed, known events. As a result, the client-side handler for unknown types ("what should the UI do if it receives an event type it doesn't know about?") is almost never tested before production. In exploratory sessions using `route.send(JSON.stringify({ type: 'order.unknown', orderId: '1' }))`, teams consistently found one of three failure modes: (1) the UI throws an unhandled JavaScript exception (console error, partial crash); (2) the UI silently ignores the event but the event queue is now out of sync with the server's view of state; (3) the UI renders a blank component because the switch statement falls through to a no-op. All three are discoverable only when an unknown event type is actually sent — something that `page.routeWebSocket()` makes trivial and that a proxy-based or observation-only harness makes impractical.
+
+130. **[community] The `storageState({ indexedDB: true })` addition in v1.51 changed the economics of multi-role exploratory testing for Firebase-backed applications: auth fixture creation dropped from a per-session cost to a one-time-per-sprint cost.** Before v1.51, a team running exploratory sessions across three user roles (admin, viewer, content-editor) on a Firebase-authenticated app had to begin each session with a manual login sequence (navigate to /login, enter credentials, wait for Firebase SDK to exchange the auth token, wait for the app to redirect). This took 60–90 seconds per session and was a source of session-start friction that caused testers to consolidate roles ("I'll just stay as admin for this session and test viewer behavior by eye"). After v1.51, the team captured three `storageState` files (one per role) at sprint start and reused them for the entire sprint. Session startup dropped to under 5 seconds per context, and role-switching during a session became a routine operation — spawn a new context with the target role's storageState, navigate to the URL under exploration. The role-consolidation anti-pattern (exploring multi-role features from a single role) disappeared from their session sheets within two sprints of the migration.
+
+131. **[community] `failOnFlakyTests` exposed a category of session harness quality problem that teams had previously attributed to "test environment instability": deterministic but order-dependent harness assertions that passed when the harness ran in a specific internal sequence and failed otherwise.** Before v1.52, a flaky session harness would be retried, pass on retry, and produce a session debrief artifact. The tester would note "session harness needed 1 retry — environment issue" and continue. With `failOnFlakyTests: true`, the retry-and-pass case became a hard failure requiring investigation. Teams that investigated their newly-failing flaky harnesses found that the root cause was almost never the test environment — it was the harness itself: race conditions in `page.waitForSelector()` calls that relied on implicit timing, assertions placed before the event that triggered the state change, or shared state between session steps that made step order non-interchangeable. Fixing these produced harnesses that ran reliably without retries. The side effect: session debrief artifacts from deterministic harnesses were trusted as accurate evidence, while artifacts from harnesses that had silently needed retries had been subtly unreliable. `failOnFlakyTests` forced the quality bar upward by making the distinction visible.

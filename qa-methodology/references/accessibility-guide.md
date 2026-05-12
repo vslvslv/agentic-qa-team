@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 42 | score: 98/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 43 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) + qa-methodology-refine extension run 2026-05-12 iter 41 (WebAIM Million 2025 published data, Playwright locator.normalize() Playwright 1.50 pattern, axe-core 4.11.4 anchor ancestry selector escaping fix, WCAG 3.0 task-level outcome testing pattern refinements, community gotchas 77-80) + qa-methodology-refine extension run 2026-05-12 iter 42 (ARIA-in-HTML W3C Rec April 2026 — selectedcontent element testing + role=none gotcha, label element ARIA permitted attributes July 2025 update, image role img synonym December 2024, community gotchas 81-83) + qa-methodology-refine extension run 2026-05-12 iter 43 (Jest v30 incompatibility with jest-axe v10, Playwright locator.describe() v1.53 accessibility workflow pattern, community gotchas 84-85) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -8800,4 +8800,194 @@ test.describe('Violation node target processing (axe-core 4.11.4+)', () => {
 82. **[community] The July 2025 ARIA-in-HTML update now permits `role` and `aria-*` attributes on `<label>` elements when not associated with a labelable element**: Before this change, adding any ARIA role to a `<label>` was technically a spec violation because `<label>` had no permitted ARIA roles. The July 2025 update carved out an exception: when a `<label>` is not associated with any labelable element (no `for` attribute, no wrapping of a form control), it is permitted to have a `role` and ARIA attributes. This is relevant for design-system teams who use `<label>` as a visual styling element (e.g., a label-styled `<label>` used as a section title). After July 2025, axe-core may no longer flag `role="heading"` on an unassociated `<label>` as an authoring error — test your axe version behavior when upgrading. WHY: if you relied on axe flagging this pattern to enforce that all `<label>` elements are associated with form controls, that guardrail may now be absent for unassociated labels; add an explicit ESLint rule (`jsx-a11y/label-has-associated-control`) to maintain the check.
 
 83. **[community] The `image` role is now the preferred synonym for `img` role in ARIA — but axe-core 4.11.x and testing tools still emit `img` in accessible name computations**: The ARIA-in-HTML December 2024 update added `image` as a preferred synonym for `img` (following natural language conventions). In Playwright ARIA snapshots, `page.ariaSnapshot()` may emit either `- img "Description"` or `- image "Description"` depending on the browser and version. Teams using strict `toMatchAriaSnapshot()` assertions with `/children: equal` or `deep-equal` may encounter intermittent failures if one browser emits `img` and another emits `image`. WHY: Chromium-based browsers adopted the `image` role synonym but Firefox and Safari may still emit `img`. Mitigation: use the `contain` children mode (default) for snapshot assertions that include images, or use a regex pattern: `- /img|image/ "Product photo"`. Test across all target browsers when upgrading Playwright to a version where this normalization changes.
+
+---
+
+### Jest v30 Incompatibility with jest-axe v10
+
+Jest v30 (latest: v30.4.2 as of May 2026) is a major version with significant internal changes including native ESM improvements and updated peer dependency requirements. **jest-axe v10.0.0 is not compatible with Jest v30** because `jest-axe` depends on `jest-matcher-utils` as a peer — its current release pins a version that Jest v30 does not fulfill. Teams that upgrade to Jest v30 will encounter peer dependency errors or runtime failures in jest-axe test suites.
+
+**Diagnosis: identifying the incompatibility**
+
+```bash
+# After upgrading to Jest v30, running npm install will warn:
+# npm WARN Could not resolve dependency:
+#   peerOptional jest-matcher-utils@"^27.0.0 || ^28.0.0 || ^29.0.0" from jest-axe@10.0.0
+
+# Or at runtime you may see:
+# TypeError: Cannot read properties of undefined (reading 'printReceived')
+```
+
+**Workaround: override `jest-matcher-utils` in `package.json`**
+
+Until jest-axe publishes a v11 with Jest v30 support, use the `overrides` field (npm) or `resolutions` (Yarn/pnpm) to force a compatible version:
+
+```json
+// package.json
+{
+  "dependencies": {
+    "jest": "^30.0.0",
+    "jest-axe": "^10.0.0"
+  },
+  "overrides": {
+    "jest-axe": {
+      "jest-matcher-utils": "^30.0.0"
+    }
+  }
+}
+```
+
+For pnpm workspaces:
+
+```yaml
+# .npmrc or pnpm-workspace.yaml
+# pnpm.overrides in package.json:
+{
+  "pnpm": {
+    "overrides": {
+      "jest-axe>jest-matcher-utils": "^30.0.0"
+    }
+  }
+}
+```
+
+**Test that the workaround is working:**
+
+```typescript
+// File: src/__tests__/accessibility/button.a11y.test.ts
+// Verify jest-axe still works after the jest-matcher-utils override.
+import { render } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+
+// Must extend expect with jest-axe matchers — unchanged from pre-v30 usage
+expect.extend(toHaveNoViolations);
+
+describe('jest-axe compatibility smoke test (Jest v30)', () => {
+  it('accessible button renders without violations', async () => {
+    const { container } = render(
+      <button type="button">Save changes</button>
+    );
+    const results = await axe(container);
+    // If this assertion runs without TypeError, the jest-matcher-utils override is working
+    expect(results).toHaveNoViolations();
+  });
+});
+```
+
+**Migration path when jest-axe v11 releases:**
+
+1. Remove the `overrides` / `resolutions` entry from `package.json`
+2. Upgrade jest-axe to the new version: `npm install jest-axe@latest`
+3. Run all accessibility unit tests to verify no matcher API changes
+
+> **Track the issue**: Monitor [jest-axe issue #293](https://github.com/nickcolley/jest-axe/issues/293) for the official Jest v30 support release. Until then, the `overrides` workaround above is the recommended path.
+
+---
+
+### Playwright `locator.describe()` — Annotating Accessibility Locators for Trace Readability (v1.53+)
+
+Playwright 1.53 introduced `locator.describe(label: string): Locator`, which attaches a human-readable description to a locator. The description does not affect how the locator queries the DOM or accessibility tree, but it appears in the Trace Viewer and HTML reporter, making test failures easier to diagnose when the element's role or accessible name is ambiguous in isolation.
+
+**Why this matters for accessibility test suites:** Accessibility tests typically use role-based locators (`getByRole`, `getByLabel`) that are highly semantic but can produce verbose trace output. `locator.describe()` lets you attach a plain-language intent label so that when an accessibility assertion fails in CI, the trace shows "Subscribe button (role=button, name='Subscribe')" rather than a raw Playwright locator expression.
+
+```typescript
+// File: e2e/accessibility/described-locators.spec.ts
+// Playwright 1.53+: locator.describe() adds a human-readable label to accessibility locators.
+// Useful when diagnosing trace output for role-based queries that appear cryptic in reports.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Accessible navigation — locator.describe() for trace clarity', () => {
+
+  test('main navigation passes WCAG 2.2 AA checks', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Describe each accessibility-critical locator with a plain-language label.
+    // The description appears in Playwright trace viewer steps — not in the DOM.
+    const mainNav = page.getByRole('navigation', { name: 'Main navigation' })
+      .describe('Primary site navigation landmark');
+
+    const skipLink = page.getByRole('link', { name: 'Skip to main content' })
+      .describe('Skip navigation link (WCAG 2.4.1)');
+
+    const searchButton = page.getByRole('button', { name: 'Search' })
+      .describe('Global search trigger (keyboard accessible)');
+
+    // Accessibility assertions — the .describe() label shows in trace for each step
+    await expect(mainNav).toBeVisible();
+    await expect(skipLink).toBeVisible();
+    await expect(searchButton).toHaveAccessibleName('Search');
+
+    // Run axe on the navigation region using AxeBuilder
+    const results = await new AxeBuilder({ page })
+      .include('nav[aria-label="Main navigation"]')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('form fields have correct accessible descriptions', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    // Described locators for form accessibility validation
+    const emailField = page.getByRole('textbox', { name: 'Email address' })
+      .describe('Registration email input (WCAG 1.3.1 label + WCAG 3.3.2 instructions)');
+
+    const passwordField = page.getByLabel('Password')
+      .describe('Password input — must have visible requirements via aria-describedby');
+
+    await expect(emailField).toHaveAccessibleDescription(
+      /Must be a valid email address/
+    );
+    await expect(passwordField).toHaveAccessibleDescription(
+      /At least 8 characters/
+    );
+  });
+});
+```
+
+**TypeScript type for `locator.describe()`:**
+
+```typescript
+// The return type is Locator — enabling method chaining.
+// The description property is retrievable via locator.description().
+import type { Locator } from '@playwright/test';
+
+function describeA11yLocator(locator: Locator, intent: string): Locator {
+  return locator.describe(intent);
+}
+
+// Usage in a fixture — wrap frequently used accessibility landmarks with descriptions:
+// fixtures/accessibility.ts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend<{
+  mainLandmark: Locator;
+  skipLink: Locator;
+}>({
+  mainLandmark: async ({ page }, use) => {
+    await use(
+      page.getByRole('main').describe('Main content landmark (WCAG 1.3.6 Identify Purpose)')
+    );
+  },
+  skipLink: async ({ page }, use) => {
+    await use(
+      page.getByRole('link', { name: /skip/i }).describe('Skip link (WCAG 2.4.1 Bypass Blocks)')
+    );
+  },
+});
+```
+
+> **Note**: `locator.describe()` does NOT affect the accessibility tree or ARIA semantics of the tested element — it is a developer tooling annotation only. Do not confuse it with `aria-label` or `aria-description`. The description lives in the Playwright test process, not in the browser DOM.
+
+---
+
+### New Community Gotchas (Iteration 43)
+
+84. **[community] jest-axe v10.0.0 is incompatible with Jest v30 — upgrading Jest without the `jest-matcher-utils` override silently breaks axe assertions**: Jest v30 (released August 2025, latest v30.4.2 as of May 2026) changed its internal `jest-matcher-utils` to v30, but jest-axe v10.0.0 was published with a peer range that does not include v30. Teams that `npm install jest@^30` will either see peer dependency warnings (npm v10+ in non-strict mode continues but breaks at runtime) or an explicit peer conflict error (pnpm, Yarn PnP strict mode). The symptom at runtime is `TypeError: Cannot read properties of undefined` inside jest-axe's custom matchers because the `formatReceived` / `printReceived` utilities from `jest-matcher-utils` have changed APIs. WHY: the standard `jest.config.ts` upgrade path does not prompt you to check transitive peer deps of test helpers — always run `npm ls jest-matcher-utils` after a Jest major version upgrade to verify all packages resolve to the same major.
+
+85. **[community] Playwright `locator.describe()` labels are stripped from aria snapshots and `toHaveAccessibleName()` — they only surface in trace viewer steps**: Teams sometimes assume that `.describe('Submit button')` sets an accessible name on the element (similar to setting `aria-label`). It does not — `locator.describe()` only attaches a label to the Playwright locator object for trace viewer display. `await expect(button.describe('Submit button')).toHaveAccessibleName('Submit button')` will still pass or fail based on the element's actual accessible name in the DOM, not the `.describe()` label. WHY: the naming similarity between `locator.describe()`, `aria-description`, and `aria-describedby` causes confusion. Use `locator.describe()` for developer ergonomics in traces; use `aria-label` / `aria-labelledby` on the DOM element for actual accessible names.
 

@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.13 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, Spring Boot 3.5 SSL Testcontainers, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 33 | score: 99/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker) | mixed | iteration: 34 | score: 99/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -5478,5 +5478,213 @@ assertThat(untrustedXmlString).isXmlEqualTo(expectedXml);
 // DEPRECATED — do not use in test code
 // org.assertj.core.util.xml.XmlStringPrettyFormatter
 ```
+
+---
+
+## JUnit 5.14 — Migration Bridge to JUnit 6 (September 2025)
+
+JUnit 5.14.0 (September 30, 2025) is the first release explicitly designed as a **migration bridge to JUnit 6**. It introduces a new `ResourceSupport` utility class, replaces the `OutputDirectoryProvider` API with `OutputDirectoryCreator`, and deprecates several APIs that will be removed in JUnit 6. Patch releases (5.14.1–5.14.3) added `@ResourceLock` on `@ClassTemplate`, JDK 26 compatibility fixes, and a reliability fix for `@EnabledOnJre` with `JRE.OTHER`.
+
+### API Changes and Deprecations for JUnit 6 Migration
+
+```java
+// 5.14 deprecations you should address before migrating to JUnit 6:
+
+// 1. MediaType relocated — use the new package
+// DEPRECATED: org.junit.jupiter.api.extension.MediaType
+// REPLACEMENT: org.junit.jupiter.api.MediaType (same class, new home)
+import org.junit.jupiter.api.MediaType;   // 5.14+ correct import
+
+// 2. MediaType.APPLICATION_JSON_UTF_8 deprecated — UTF-8 is now implicit
+// DEPRECATED:
+MediaType old = MediaType.APPLICATION_JSON_UTF_8;
+// REPLACEMENT:
+MediaType current = MediaType.APPLICATION_JSON;  // UTF-8 is the assumed charset
+
+// 3. ParameterInfo package change
+// DEPRECATED: org.junit.jupiter.params.support.ParameterInfo
+// REPLACEMENT: org.junit.jupiter.params.ParameterInfo
+import org.junit.jupiter.params.ParameterInfo;   // moved to top-level params package
+
+// 4. OutputDirectoryProvider → OutputDirectoryCreator (affects custom Engine authors)
+// DEPRECATED in launcher/engine SPI:
+//   EngineDiscoveryRequest.getOutputDirectoryProvider()
+//   ExecutionRequest.getOutputDirectoryProvider()
+// REPLACEMENT: getOutputDirectoryCreator() — same semantics, resolved cyclic dependency
+```
+
+### New `ResourceSupport` Utility (5.14)
+
+`ResourceSupport` centralises classpath resource discovery methods that were previously scattered across `ReflectionSupport`. The underlying `Resource` abstraction was also moved from `org.junit.platform.commons.support.Resource` to `org.junit.platform.commons.io.Resource`, giving it proper I/O-package placement.
+
+```java
+import org.junit.platform.commons.support.ResourceSupport;
+import org.junit.platform.commons.io.Resource;
+
+// 5.14+ — use ResourceSupport for classpath resource scanning in custom extensions
+List<Resource> resources = ResourceSupport.findAllResourcesInPackage(
+    "com.example.test.fixtures",    // package path (dots, not slashes)
+    r -> r.getName().endsWith(".sql")  // filter: only .sql fixture files
+);
+
+for (Resource r : resources) {
+    String sql = new String(r.getUri().toURL().openStream().readAllBytes());
+    // load SQL fixture for test setup
+}
+```
+
+**Gotcha — `@EnabledOnJre` with `JRE.OTHER` (fixed in 5.14.3):** Before 5.14.3, `@EnabledOnJre(JRE.OTHER)` was unreliable on Java versions higher than the last named `JRE.*` enum constant. For example, running on JDK 26 with `JRE.JAVA_25` as the highest constant would cause the annotation to behave incorrectly. 5.14.3 fixes the comparison to treat any version beyond the last named constant as `JRE.OTHER`. Always use `@EnabledForJreRange(min = JRE.JAVA_21)` instead of `@EnabledOnJre(JRE.OTHER)` for forward-compatible JRE conditions.
+
+```java
+// FRAGILE — JRE.OTHER behaviour was broken on JDK 26 before 5.14.3
+@EnabledOnJre(JRE.OTHER)
+@Test
+void testOnUnknownJre() { /* unreliable pre-5.14.3 */ }
+
+// ROBUST — prefer range-based conditions
+@EnabledForJreRange(min = JRE.JAVA_21)   // runs on 21, 22, 23, 24, 25, 26, ...
+@Test
+void testOnModernJre() { /* future-proof */ }
+
+// ALSO GOOD — explicit list for known versions only
+@EnabledOnJre({ JRE.JAVA_21, JRE.JAVA_25 })
+@Test
+void testOnSpecificVersions() { /* explicit and readable */ }
+```
+
+**Gotcha — `@ResourceLock` on `@ClassTemplate` (fixed in 5.14.2):** Before 5.14.2, applying `@ResourceLock` to a class annotated with `@ClassTemplate` or `@ParameterizedClass` was silently ignored, causing concurrency issues when the same shared resource (e.g., a database, a port) was accessed by multiple class template instances in parallel. 5.14.2 enables `@ResourceLock` on template classes, so parallel execution correctly serializes access.
+
+```java
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.ValueSource;
+
+// @ResourceLock on @ParameterizedClass now works correctly in 5.14.2+
+@ParameterizedClass
+@ValueSource(strings = { "mysql", "postgres" })
+@ResourceLock(Resources.SYSTEM_PROPERTIES)   // silently ignored pre-5.14.2; enforced 5.14.2+
+class DatabaseCompatibilityTest {
+
+    @BeforeEach
+    void setUp(String dbType) {
+        System.setProperty("db.type", dbType);  // requires exclusive SYSTEM_PROPERTIES lock
+    }
+
+    @Test
+    void queriesWork() { /* ... */ }
+}
+```
+
+---
+
+## Mockito 5.20 — Generic Type Construction Mocking (September 2025)
+
+Mockito 5.20 introduced the ability to mock the construction of **generic types** — classes parameterized with type variables. Previously, `mockConstruction()` required a raw `Class<T>` reference, which did not carry generic type information, making it impossible to intercept constructors of types like `Repository<User>` or `Cache<String, Data>` in a type-safe way.
+
+```java
+import org.mockito.MockedConstruction;
+import org.mockito.Mockito;
+import static org.mockito.Mockito.*;
+
+// Before 5.20: mockConstruction only accepted raw class — no generic capture
+// try (MockedConstruction<Cache> mocked = mockConstruction(Cache.class)) { ... }
+// This worked for raw Cache but gave unchecked warnings for Cache<String, Data>
+
+// 5.20+ — mockConstructionWithAnswer and TypeToken-style capture for generics
+// Use the new mockConstruction overload with a TypeLiteral argument (when
+// the type token is needed to distinguish multiple generic instantiations)
+try (MockedConstruction<Repository> mocked = mockConstruction(
+        Repository.class,
+        (mock, context) -> {
+            // context.typeArguments() returns the actual type arguments passed to ctor
+            // (available when constructed via new Repository<User>())
+            List<Class<?>> typeArgs = context.getGenericTypeArguments();
+            if (!typeArgs.isEmpty() && typeArgs.get(0) == User.class) {
+                when(mock.findById(anyLong())).thenReturn(Optional.of(new User()));
+            }
+        }
+    )) {
+
+    // Code under test creates new Repository<User>() — caught by mockConstruction
+    UserService service = new UserService();  // creates new Repository<User> internally
+    Optional<User> result = service.getUser(1L);
+
+    assertThat(result).isPresent();
+    verify(mocked.constructed().get(0)).findById(1L);
+}
+```
+
+**When to use generic construction mocking:** It is most useful in legacy code where a service creates its own repository or cache instances (violating dependency injection) and you need to intercept those creations in unit tests without refactoring the production code. Prefer dependency injection over construction mocking in new code.
+
+**`ReturnsEmptyValues` for `Future`/`CompletionStage` (Mockito 5.21):** Mockito 5.21 also improved `ReturnsEmptyValues` (the default answer for unstubbed methods) to return completed futures rather than `null` for methods that return `Future<T>` or `CompletionStage<T>`. This prevents `NullPointerException` in code that chains `.thenApply()` on an unstubbed async method.
+
+```java
+@ExtendWith(MockitoExtension.class)
+class AsyncServiceTest {
+
+    @Mock
+    AsyncRepository repository;  // default answer = ReturnsEmptyValues
+
+    @Test
+    void unstubbed_future_returns_completed_future_not_null() {
+        // Before 5.21: repository.findAsync(1L) returned null
+        //   → chaining .thenApply() threw NullPointerException
+        // 5.21+: returns CompletableFuture.completedFuture(null) automatically
+        CompletableFuture<User> future = repository.findAsync(1L);
+        assertThat(future).isNotNull();           // no longer null
+        assertThat(future).isCompleted();         // immediately completed
+        assertThat(future.join()).isNull();        // value is null (no stub), but future is valid
+    }
+
+    @Test
+    void stubbing_overrides_default() throws Exception {
+        User alice = new User("alice");
+        when(repository.findAsync(42L)).thenReturn(CompletableFuture.completedFuture(alice));
+
+        User result = repository.findAsync(42L).get();
+        assertThat(result.name()).isEqualTo("alice");
+    }
+}
+```
+
+---
+
+## Spring Boot 3.5 — Test Condition Evaluation Report Property
+
+Spring Boot 3.5 added `spring.test.print-condition-evaluation-report`, a new property that controls whether the verbose `ConditionEvaluationReport` is printed when a `@SpringBootTest` fails. Prior to 3.5, this report was always printed on test failure, producing hundreds of lines of auto-configuration condition details that obscure the actual test failure message in CI logs.
+
+```properties
+# application-test.properties (or application.properties in src/test/resources)
+
+# Default (3.5+): true — prints the condition evaluation report on test failure
+spring.test.print-condition-evaluation-report=true
+
+# Set to false to suppress the report — useful when the auto-configuration
+# details are noise and your test failures are clear from the exception alone
+spring.test.print-condition-evaluation-report=false
+```
+
+```java
+@SpringBootTest
+@TestPropertySource(properties = "spring.test.print-condition-evaluation-report=false")
+class OrderServiceIntegrationTest {
+
+    @Autowired OrderService orderService;
+
+    @Test
+    void createOrder_persistsToDatabase() {
+        // When this test fails, Spring Boot 3.5+ will NOT dump the 200-line
+        // ConditionEvaluationReport — only the actual AssertionError is shown.
+        Order order = orderService.create(new OrderRequest("item-1", 3));
+        assertThat(order.id()).isNotNull();
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING);
+    }
+}
+```
+
+**When to suppress the report:** Turn off the condition evaluation report in well-established integration test suites where the auto-configuration is stable and the report is pure noise. Keep it enabled (the default) for new projects or when diagnosing bean-wiring failures — the report is essential for understanding which `@Conditional` evaluated to false when a required bean is missing.
+
+**Gotcha — noisy CI output from condition reports [community]:** A single `@SpringBootTest` that fails in CI can produce 300–500 lines of condition evaluation output, scrolling the actual assertion failure off the screen. This is the most common reason developers add `logging.level.org.springframework.boot.autoconfigure=ERROR` to test properties. The new property provides a cleaner opt-out.
 
 

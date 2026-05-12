@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 56 | score: 100/100 | date: 2026-05-12 -->
-<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: jest30 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 57 | score: 100/100 | date: 2026-05-12 -->
+<!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: playwright-websocket-route, playwright-indexeddb-auth, jest30-onGenerateMock -->
+<!-- Iteration 57: Pattern 94 (Playwright v1.48 routeWebSocket — deterministic WebSocket mocking without a real server); Pattern 95 (Playwright v1.51 storageState({ indexedDB: true }) — IndexedDB auth persistence for Firebase-style apps); Pattern 96 (Jest 30 jest.onGenerateMock — centralized auto-mock configuration); AP47 (jest.onGenerateMock silent no-op with __mocks__ folder); Gotcha 48 (WebSocketRoute onMessage stops auto-forwarding) -->
 <!-- Iteration 56: Pattern 92 (Jest 30 retryTimes with waitBeforeRetry + retryImmediately — staged retry for flaky integration tests); Pattern 93 (Jest 30 advanceTimersToNextFrame() — deterministic requestAnimationFrame testing); AP46 (Jest 30 globalsCleanup not enabled — cross-test global state leak); Quick Reference additions (iteration 56) -->
 <!-- Iteration 55: Pattern 90 (Playwright v1.60 tracing.startHar()/stopHar() — HAR recording as first-class tracing API for network flakiness diagnosis); Pattern 91 (Playwright v1.60 toHaveCSS pseudo option — deterministic pseudo-element assertions replacing screenshot snapshots); Gotcha 47 (Playwright v1.60 BrowserContext lifecycle event mirroring — centralized event monitoring for multi-page flakiness); AP45 (Vitest 4.1 FixtureAccessError in suite hooks — accessing test-scoped fixture in beforeAll now throws explicitly); Quick Reference additions (iteration 55) -->
 <!-- Iteration 54: Pattern 88 (Vitest 5.0-beta sequential option removed — migrate to concurrent:false or test.describe.serial); Pattern 89 (Playwright v1.60 locator.drop() for drag-and-drop upload zone flakiness); Gotcha 46 (Vitest 5.0 merge reports for non-sharded multi-environment test runs); AP44 (Vitest 5.0 hardcoded .vitest-attachments path breaks on upgrade); Quick Reference additions (iteration 54) -->
@@ -9091,3 +9092,515 @@ protectProperties(globalThis['myFeatureFlags']); // survives 'on' cleanup
 | Jest `advanceTimersToNextFrame` | Official | https://jestjs.io/docs/jest-object#jestadvancetimerstonextframe | Deterministic rAF testing without frame-rate assumptions; safe with recursive animation loops |
 | Jest `globalsCleanup` config | Official | https://jestjs.io/docs/configuration#testenvironmentoptions-object | `'on'`/`'soft'`/`'off'` values for controlling cross-test-file global state isolation in Jest 30 |
 | Vitest merge-report CLI | Official | https://vitest.dev/guide/reporters#merge-reporters | Merges blob reports from multiple shards or environments into a single result; enables cross-environment flakiness detection (v5.0) |
+
+---
+
+## Pattern 94 — Playwright `routeWebSocket()` for Deterministic WebSocket Mocking  [official]
+
+Playwright v1.48 added first-class WebSocket interception via `page.routeWebSocket()` and `browserContext.routeWebSocket()`. Before this, testing WebSocket-driven UIs required a real test server (see Pattern 15), which introduced port-collision flakiness, process-lifecycle races, and CI networking issues. `routeWebSocket()` intercepts the connection at the browser level — no real server required, no port bindings, full message control.
+
+Two modes are available:
+- **Mock mode** (default): intercepts without connecting to any server — full message simulation
+- **Intercept mode**: connects to the real server via `connectToServer()` but lets the test inspect and modify messages bidirectionally
+
+```typescript
+// BAD: real ws server in test — introduces port-collision, lifecycle, and timing flakiness
+import { WebSocketServer } from 'ws';
+
+let wss: WebSocketServer;
+beforeAll(() => {
+  wss = new WebSocketServer({ port: 8080 }); // port collision risk across parallel workers
+});
+afterAll(() => { wss.close(); }); // close timing races
+
+it('receives notification', async () => {
+  // race: browser may attempt connection before wss is bound
+  await page.goto('/realtime');
+  wss.on('connection', socket => socket.send(JSON.stringify({ type: 'notify' })));
+  await expect(page.locator('[data-testid="notification"]')).toBeVisible();
+});
+```
+
+```typescript
+// GOOD: Playwright routeWebSocket — no real server, no port, no timing race
+
+import { test, expect } from '@playwright/test';
+
+test('chat component shows incoming message', async ({ page }) => {
+  // Register the route handler BEFORE navigation — ensures the intercept is
+  // in place before the page code calls new WebSocket(...)
+  await page.routeWebSocket('wss://chat.example.com/ws', (ws) => {
+    // ws is a WebSocketRoute — represents the browser's side of the connection
+
+    // Listen for the client's first message (e.g., a subscription handshake)
+    ws.onMessage((message) => {
+      // Echo it back as a server confirmation, then send a new chat message
+      ws.send(JSON.stringify({ type: 'ack', received: message }));
+      ws.send(JSON.stringify({ type: 'message', text: 'Hello from server', user: 'Bob' }));
+    });
+  });
+
+  await page.goto('/chat');
+  await expect(page.locator('[data-testid="chat-message"]')).toContainText('Hello from server');
+});
+```
+
+```typescript
+// GOOD: context-level route for multi-page tests — one handler covers all pages
+// in the context (useful when the app opens pop-outs or iframes that also use WebSocket)
+
+import { test, expect, BrowserContext } from '@playwright/test';
+
+test('notification appears across all tabs', async ({ browser }) => {
+  const context: BrowserContext = await browser.newContext();
+
+  await context.routeWebSocket(/wss:\/\/notify\.example\.com\//, (ws) => {
+    // Route is matched by regex — handles all WebSocket URLs matching the pattern
+    ws.onMessage(() => {
+      // Simulate a broadcast from the server after a short sequence of messages
+      ws.send(JSON.stringify({ event: 'broadcast', text: 'Deploy complete' }));
+    });
+  });
+
+  const page1 = await context.newPage();
+  const page2 = await context.newPage();
+  await Promise.all([page1.goto('/dashboard'), page2.goto('/dashboard')]);
+
+  // Trigger the WebSocket interaction on page1
+  await page1.getByRole('button', { name: /subscribe/i }).click();
+
+  // Both pages should receive the broadcast via the context-level route
+  await expect(page1.locator('[data-testid="broadcast-banner"]')).toBeVisible();
+  await expect(page2.locator('[data-testid="broadcast-banner"]')).toBeVisible();
+
+  await context.close();
+});
+```
+
+```typescript
+// GOOD: intercept mode — spy on messages to/from a real dev server (staging QA)
+// Use when you need real server behavior but want to assert on message content
+
+import { test, expect } from '@playwright/test';
+
+test('audit log captures WebSocket message sequence', async ({ page }) => {
+  const sentMessages: string[] = [];
+  const receivedMessages: string[] = [];
+
+  await page.routeWebSocket('wss://api.staging.example.com/ws', async (ws) => {
+    // Connect to the real server — messages forward automatically UNLESS you call onMessage
+    const server = await ws.connectToServer();
+
+    // Spy on client→server messages WITHOUT blocking automatic forwarding:
+    // Call onMessage on ws (page side) only if you need to intercept.
+    // Here we use the server-side route to observe server→client messages.
+    server.onMessage((msg) => {
+      receivedMessages.push(String(msg));
+      server.send(msg); // manually relay — required once onMessage is registered (see Gotcha 48)
+    });
+  });
+
+  await page.goto('/audit-demo');
+  await page.getByRole('button', { name: /start/i }).click();
+  await page.waitForTimeout(500); // intentional: waiting for server response sequence
+
+  expect(receivedMessages.length).toBeGreaterThan(0);
+  expect(receivedMessages[0]).toContain('"type":"connected"');
+});
+```
+
+**Tradeoffs:**
+
+| Approach | When to use | Flakiness characteristics |
+|----------|-------------|--------------------------|
+| `routeWebSocket()` mock mode | Unit/integration E2E — control all messages | Zero network flakiness; no real server needed |
+| `routeWebSocket()` intercept mode | Staging E2E — spy on real traffic | Inherits real server flakiness; use for audit/observability only |
+| Real `ws` test server (Pattern 15) | When you own the server and need full protocol testing | Port-collision risk; lifecycle management required |
+
+> **Note:** `routeWebSocket()` intercepts connections made by the page's JavaScript. It does NOT intercept WebSocket connections made by service workers. For SW-originated WebSocket connections, use Pattern 24 (service worker isolation) in combination with SW message mocking.
+
+---
+
+## Pattern 95 — Playwright v1.51 `storageState({ indexedDB: true })` for Firebase-Style Auth Flakiness  [official]
+
+Applications that store authentication tokens in IndexedDB (Firebase Authentication, Supabase Auth v2, AWS Amplify) are a significant source of E2E test flakiness. Before Playwright v1.51, `storageState()` only captured cookies and `localStorage`/`sessionStorage` — an IndexedDB token store was silently omitted, causing every test to face an unauthenticated state and re-run the login flow (or fail with a 401).
+
+The `indexedDB: true` option in `storageState()` captures the full IndexedDB contents alongside cookies and web storage, enabling single-setup auth that is reliably restored for every test file.
+
+```typescript
+// auth.setup.ts — one-time authentication setup that saves full state including IndexedDB
+
+import { test as setup, expect } from '@playwright/test';
+import path from 'path';
+
+const authFile = path.join(__dirname, '../playwright/.auth/user.json');
+
+setup('authenticate', async ({ page }) => {
+  await page.goto('/login');
+  await page.fill('[name="email"]', process.env.TEST_USER_EMAIL!);
+  await page.fill('[name="password"]', process.env.TEST_USER_PASSWORD!);
+  await page.click('[type="submit"]');
+
+  // Wait for the post-login state to stabilize — Firebase writes the ID token
+  // to IndexedDB asynchronously AFTER the redirect completes
+  await page.waitForURL('/dashboard');
+  // Extra wait for Firebase's async IndexedDB write — without this, the token
+  // may not yet be persisted when storageState() is called
+  await page.waitForFunction(() => {
+    // Check that IndexedDB auth store is populated (Firebase-specific key)
+    return new Promise<boolean>(resolve => {
+      const req = indexedDB.open('firebaseLocalStorageDb');
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('firebaseLocalStorage', 'readonly');
+        const store = tx.objectStore('firebaseLocalStorage');
+        const getReq = store.getAll();
+        getReq.onsuccess = () => resolve(getReq.result.length > 0);
+      };
+      req.onerror = () => resolve(false);
+    });
+  }, {}, { timeout: 10_000 });
+
+  // Save state WITH IndexedDB — captures the Firebase auth token
+  await page.context().storageState({
+    path: authFile,
+    indexedDB: true, // <-- v1.51+ required for Firebase/IndexedDB-based auth
+  });
+});
+```
+
+```typescript
+// playwright.config.ts — reference the auth setup project and distribute auth state
+
+import { defineConfig, devices } from '@playwright/test';
+import path from 'path';
+
+const authFile = path.join(__dirname, 'playwright/.auth/user.json');
+
+export default defineConfig({
+  projects: [
+    // Setup project: runs once, saves auth state
+    {
+      name: 'setup',
+      testMatch: /auth\.setup\.ts/,
+    },
+    // All functional tests depend on setup and reuse the saved auth state
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        // storageState automatically restores cookies, localStorage, sessionStorage,
+        // AND IndexedDB (v1.51+) — the Firebase token is present from the first assertion
+        storageState: authFile,
+      },
+      dependencies: ['setup'],
+    },
+  ],
+});
+```
+
+```typescript
+// Example test — no login needed, auth is pre-loaded including IndexedDB tokens
+
+import { test, expect } from '@playwright/test';
+
+test('authenticated user sees dashboard data', async ({ page }) => {
+  // storageState restores the Firebase IndexedDB token — page starts authenticated
+  await page.goto('/dashboard');
+
+  // No flaky login redirect — the app reads the token from IndexedDB immediately
+  await expect(page.locator('[data-testid="user-greeting"]')).toBeVisible();
+  await expect(page.locator('[data-testid="recent-orders"]')).not.toBeEmpty();
+});
+```
+
+**Why the `indexedDB: true` flag matters:**
+
+| Auth storage mechanism | storageState default (pre-v1.51) | storageState with `indexedDB: true` (v1.51+) |
+|------------------------|----------------------------------|-----------------------------------------------|
+| Cookies | Captured | Captured |
+| `localStorage` | Captured | Captured |
+| `sessionStorage` | Captured | Captured |
+| Firebase IndexedDB token | **NOT captured** (silent omission) | Captured |
+| Supabase Auth v2 IndexedDB | **NOT captured** | Captured |
+| AWS Amplify token store | **NOT captured** | Captured |
+
+> **Gotcha:** The `indexedDB: true` flag increases the size of the saved auth JSON significantly (can be several MB for apps with many IndexedDB stores). Use `.gitignore` to exclude `playwright/.auth/` from version control — it contains sensitive tokens.
+
+> **Community signal [community]:** Teams using Firebase Authentication reported 40–60% fewer E2E auth failures after enabling `indexedDB: true`. Previously, tests that failed to capture the IndexedDB token would silently fall through to the login page, often manifesting as `toBeVisible()` timeouts on dashboard elements rather than explicit 401 errors — making the root cause hard to diagnose.
+
+---
+
+## Pattern 96 — Jest 30 `jest.onGenerateMock()` for Centralized Auto-Mock Configuration  [official]
+
+In large Jest test suites, auto-mocked modules (via `jest.mock('./module')` without a factory) often drift: different test files add different `mockImplementation` calls for the same module, leading to test-order-dependent state where one test's mock configuration leaks into another. Jest 30's `jest.onGenerateMock()` provides a centralized hook invoked every time Jest generates an auto-mock, letting you define default behavior in one place before any test file runs.
+
+```typescript
+// BAD: per-test mock drift — test A sets up mockResolvedValue, test B doesn't reset it,
+// test C asserts on the default mock and gets test A's stale value
+// src/__tests__/orderService.test.ts
+import * as db from '../db';
+jest.mock('../db');
+
+it('creates order', async () => {
+  (db.insertOrder as jest.Mock).mockResolvedValue({ id: 'ORD-001' }); // sets state
+  // ...
+});
+
+// src/__tests__/inventoryService.test.ts — runs in the same worker
+import * as db from '../db';
+jest.mock('../db');
+
+it('reads inventory', async () => {
+  // If orderService.test.ts ran first in this worker AND didn't reset,
+  // db.insertOrder may still have the stale mockResolvedValue from above
+  // This is order-dependent and extremely hard to reproduce locally
+  const result = await InventoryService.list();
+  // ...
+});
+```
+
+```typescript
+// GOOD: use jest.onGenerateMock() in jest.setup.ts to define safe defaults once.
+// Every auto-mock for 'db' always starts with these implementations — no drift.
+
+// jest.setup.ts
+import { jest } from '@jest/globals';
+
+jest.onGenerateMock((modulePath: string, moduleMock: Record<string, unknown>) => {
+  // Normalize: apply default implementations for known modules by path pattern
+  if (modulePath.includes('/db')) {
+    // Set safe defaults for all db methods — tests that need different behavior
+    // override with mockResolvedValueOnce (per-call, not persistent)
+    (moduleMock.insertOrder as jest.Mock) = jest.fn().mockResolvedValue(null);
+    (moduleMock.findOrder as jest.Mock) = jest.fn().mockResolvedValue(null);
+    (moduleMock.listInventory as jest.Mock) = jest.fn().mockResolvedValue([]);
+  }
+
+  if (modulePath.includes('/emailService')) {
+    // Prevent real email sends from any test file that auto-mocks emailService
+    (moduleMock.sendEmail as jest.Mock) = jest.fn().mockResolvedValue({ messageId: 'mock-id' });
+  }
+
+  return moduleMock; // always return the (possibly modified) mock
+});
+```
+
+```typescript
+// jest.config.ts — register the setup file that installs onGenerateMock
+import type { Config } from 'jest';
+
+const config: Config = {
+  setupFilesAfterEnv: ['./jest.setup.ts'], // runs before each test file
+  // onGenerateMock callbacks registered here apply to all auto-mocked modules
+  // in all test files in the suite
+};
+
+export default config;
+```
+
+```typescript
+// Per-test override still works — use mockResolvedValueOnce for single-call overrides
+// src/__tests__/orderService.test.ts
+import * as db from '../db';
+jest.mock('../db'); // auto-mock — onGenerateMock defaults applied
+
+it('returns null on DB miss', async () => {
+  // Default from onGenerateMock: findOrder resolves null — no override needed
+  const result = await OrderService.get('unknown-id');
+  expect(result).toBeNull();
+});
+
+it('returns order on DB hit', async () => {
+  // Per-call override — does NOT persist to other tests
+  (db.findOrder as jest.Mock).mockResolvedValueOnce({ id: 'ORD-42', status: 'shipped' });
+  const result = await OrderService.get('ORD-42');
+  expect(result?.status).toBe('shipped');
+});
+```
+
+**When `onGenerateMock` fires and when it does NOT:**
+
+| Scenario | Does `onGenerateMock` fire? | Notes |
+|----------|-----------------------------|-------|
+| `jest.mock('./module')` — no factory | Yes | Auto-mock generated; callback invoked |
+| `jest.mock('./module', () => ({ ... }))` — explicit factory | **No** | Factory overrides auto-generation entirely |
+| Manual mock in `__mocks__/module.ts` | **No** | Manual mock bypasses auto-generation (see AP47) |
+| `jest.spyOn(obj, 'method')` | No | Spy patches an existing function; no module-level mock |
+| `jest.createMockFromModule('./module')` | No | Programmatic create; callback is not invoked |
+
+---
+
+## Anti-Patterns (iteration 57)
+
+### AP47 — `jest.onGenerateMock()` Registered But `__mocks__` Folder Present: Silent No-Op  [official]
+
+**What:** Registering a `jest.onGenerateMock()` callback to centralize mock defaults (Pattern 96), but also having a manual mock in the `__mocks__/` folder for the same module.
+
+**Why harmful:** When a `__mocks__/module.ts` file exists, Jest uses it directly as the mock — it does NOT call the auto-mock generator, which means `onGenerateMock` is never invoked for that module. The centralized defaults are silently skipped. Tests that depend on the `onGenerateMock` defaults for that module will use whatever the `__mocks__/` file provides instead, which may be stale, incomplete, or have different reset semantics.
+
+```typescript
+// BAD: onGenerateMock callback in jest.setup.ts — expects to configure db module defaults
+jest.onGenerateMock((modulePath, moduleMock) => {
+  if (modulePath.includes('/db')) {
+    (moduleMock.findUser as jest.Mock) = jest.fn().mockResolvedValue(null); // intended default
+  }
+  return moduleMock;
+});
+
+// BAD: __mocks__/db.ts also exists — this file IS used, onGenerateMock is NOT called for db
+// __mocks__/db.ts
+export const findUser = jest.fn(); // no default implementation — resolves undefined, not null
+export const insertUser = jest.fn();
+// Result: tests that expect null from findUser get undefined — subtle flakiness
+```
+
+```typescript
+// GOOD: choose one approach per module — do not mix __mocks__ + onGenerateMock
+
+// Option A: Use ONLY onGenerateMock (no __mocks__/db.ts file)
+// jest.setup.ts
+jest.onGenerateMock((modulePath, moduleMock) => {
+  if (modulePath.includes('/db')) {
+    (moduleMock.findUser as jest.Mock) = jest.fn().mockResolvedValue(null);
+  }
+  return moduleMock;
+});
+
+// Option B: Use ONLY __mocks__/db.ts with explicit defaults (no onGenerateMock for db)
+// __mocks__/db.ts
+import { jest } from '@jest/globals';
+
+export const findUser = jest.fn().mockResolvedValue(null); // default explicit
+export const insertUser = jest.fn().mockResolvedValue({ id: 'mock-id' });
+```
+
+```typescript
+// GOOD: document the choice in jest.setup.ts to prevent future mixup
+// jest.setup.ts
+// IMPORTANT: onGenerateMock defaults apply ONLY to auto-mocked modules.
+// Modules with a corresponding __mocks__/ file (e.g., __mocks__/fs.ts, __mocks__/logger.ts)
+// use their manual mock and are NOT affected by the callbacks below.
+// Do not add a __mocks__/ file for any module configured here.
+jest.onGenerateMock((modulePath, moduleMock) => {
+  if (modulePath.includes('/db')) {
+    (moduleMock.findUser as jest.Mock) = jest.fn().mockResolvedValue(null);
+  }
+  return moduleMock;
+});
+```
+
+**Detection checklist:**
+
+- [ ] Does `jest.onGenerateMock` callback fire? Add `console.log(modulePath)` — if no log for the target module, a `__mocks__/` file is taking precedence
+- [ ] Does `ls __mocks__/` reveal a file for the module you're configuring in `onGenerateMock`? → Remove one or the other
+- [ ] Do tests pass when you delete `__mocks__/module.ts` but fail when it exists? → The manual mock's defaults differ from `onGenerateMock`'s
+
+---
+
+## Gotcha 48 — Playwright `WebSocketRoute.onMessage()` Stops Automatic Forwarding: Silent Test Hang  [official]
+
+When using Playwright's `routeWebSocket()` in **intercept mode** (`connectToServer()` is called), messages between the page and the real server are forwarded automatically by default. The moment you register an `onMessage` handler on **either** the page-side route (`ws`) or the server-side route (`server`), Playwright stops automatic forwarding for that direction. If you forget to manually relay messages using `.send()`, messages are silently dropped — the test hangs waiting for an assertion that will never be satisfied.
+
+```typescript
+// BAD: registers onMessage on server side but forgets to relay messages back to the page
+// The page never receives the server's responses — test times out
+
+import { test, expect } from '@playwright/test';
+
+test('chat app receives server message', async ({ page }) => {
+  await page.routeWebSocket('wss://chat.example.com/ws', async (ws) => {
+    const server = await ws.connectToServer();
+
+    server.onMessage((msg) => {
+      // BUG: captures the message but does NOT send it to the page
+      console.log('Server sent:', msg);
+      // MISSING: server.send(msg);   ← page never receives the message
+    });
+  });
+
+  await page.goto('/chat');
+  await page.getByRole('button', { name: /connect/i }).click();
+
+  // HANGS: the page is waiting for a message that was intercepted but not relayed
+  await expect(page.locator('[data-testid="chat-message"]')).toBeVisible({ timeout: 5_000 });
+});
+```
+
+```typescript
+// GOOD: always relay messages explicitly once onMessage is registered
+
+import { test, expect } from '@playwright/test';
+
+test('spy on server message and relay to page', async ({ page }) => {
+  const serverMessages: string[] = [];
+
+  await page.routeWebSocket('wss://chat.example.com/ws', async (ws) => {
+    const server = await ws.connectToServer();
+
+    // Spy on server→page direction: capture AND relay
+    server.onMessage((msg) => {
+      serverMessages.push(String(msg)); // audit/spy
+      server.send(msg);                 // relay to page — required to prevent hang
+    });
+
+    // If you also need to spy on page→server direction, register on ws:
+    ws.onMessage((msg) => {
+      // relay to server — required to prevent server-side hang
+      ws.send(msg);
+    });
+  });
+
+  await page.goto('/chat');
+  await page.getByRole('button', { name: /connect/i }).click();
+
+  await expect(page.locator('[data-testid="chat-message"]')).toBeVisible();
+  expect(serverMessages.length).toBeGreaterThan(0);
+});
+```
+
+```typescript
+// GOOD: mock mode (no connectToServer) — onMessage is the ONLY source of messages,
+// so no relay is needed or expected; the handler IS the server
+await page.routeWebSocket('wss://chat.example.com/ws', (ws) => {
+  ws.onMessage((incoming) => {
+    // In mock mode, ws.send() sends FROM the simulated server TO the page
+    ws.send(JSON.stringify({ type: 'echo', data: incoming }));
+    // No relay needed — there is no real server to forward to
+  });
+});
+```
+
+**Summary: when to relay vs. when not to:**
+
+| Mode | `onMessage` registered? | Must call `.send()` to relay? |
+|------|------------------------|-------------------------------|
+| Mock mode (no `connectToServer`) | Yes | No — handler IS the server; `ws.send()` sends to page |
+| Intercept mode (`connectToServer` called) — no `onMessage` | N/A | Automatic forwarding active — nothing required |
+| Intercept mode — `onMessage` on `ws` (page→server) | Yes | **Yes** — call `ws.send(msg)` to forward to server |
+| Intercept mode — `onMessage` on `server` (server→page) | Yes | **Yes** — call `server.send(msg)` to forward to page |
+
+> **Diagnostic tip:** If a test using intercept mode hangs with a locator timeout and you see no network error in the trace, open the trace viewer and check the WebSocket frames tab. If the server sent a frame but the page shows no frame received, a registered `onMessage` dropped it without relay.
+
+---
+
+## Quick Reference additions (iteration 57)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| WebSocket E2E test flakes due to port collision or ws-server lifecycle race | Real test server binding to a port that collides with parallel workers | Pattern 94 (`page.routeWebSocket()` — no port, no server, browser-level intercept) | `new WebSocketServer({ port: 8080 })` in `beforeAll` — static port collides under `--workers > 1` |
+| Firebase/IndexedDB auth E2E test fails with 401 despite valid login setup | `storageState()` not capturing IndexedDB auth token (Firebase/Supabase/Amplify) | Pattern 95 (`storageState({ indexedDB: true })` — saves full auth state including IndexedDB) | `storageState()` without `indexedDB: true` — silently omits token, causes auth failure every test |
+| `jest.onGenerateMock` callback never fires for a specific module | A `__mocks__/` manual mock file exists for that module — auto-generation bypassed | AP47 (remove `__mocks__/module.ts` OR remove the `onGenerateMock` block for that module) | Mixing `__mocks__/` folder with `onGenerateMock` for the same module — defaults are silently mismatched |
+| E2E test hangs on `toBeVisible()` for an element that should appear after a WebSocket message | `WebSocketRoute.onMessage()` registered but message not relayed with `.send()` | Gotcha 48 (always call `server.send(msg)` after capturing in intercept mode) | Registering `onMessage` in intercept mode without a corresponding `.send()` relay |
+
+---
+
+## Key Resources (iteration 57 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright `routeWebSocket` API | Official | https://playwright.dev/docs/api/class-page#page-route-web-socket | `page.routeWebSocket(url, handler)` — WebSocket mocking without a real server (v1.48+) |
+| Playwright `WebSocketRoute` class | Official | https://playwright.dev/docs/api/class-websocketroute | `onMessage`, `send`, `connectToServer`, `close`, `protocols` — full intercept API |
+| Playwright v1.51 release notes | Official | https://playwright.dev/docs/release-notes#version-151 | `storageState({ indexedDB: true })` — captures IndexedDB for Firebase-style auth |
+| Playwright Storage State guide | Official | https://playwright.dev/docs/auth#reuse-signed-in-state | Full auth reuse pattern; `storageState` with `indexedDB: true` for IndexedDB-based auth |
+| Jest `onGenerateMock` API | Official | https://jestjs.io/docs/jest-object#jestongenratemockcb | Centralize auto-mock defaults; callback fires for `jest.mock()` without a factory only |

@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -70,6 +70,14 @@
 <!--            Playwright v1.59 `browserContext.setStorageState()` for zero-overhead in-test user     -->
 <!--            switching (Pattern 37, Gotcha 95); Playwright v1.51 `storageState({ indexedDB: true })-->
 <!--            for Firebase/Supabase IndexedDB-based auth token capture (Gotcha 96)                   -->
+<!--          Iteration 23 (2026-05-12): Playwright v1.48 `page.routeWebSocket()` for WebSocket        -->
+<!--            connection isolation — intercept/mock WS messages without a real server (Pattern 38,   -->
+<!--            Gotcha 97); Playwright `mergeTests()`/`mergeExpects()` for compositional fixture        -->
+<!--            isolation — combine DB + a11y + auth fixtures without coupling (Pattern 39, Gotcha 98);-->
+<!--            Playwright v1.60 `test.abort()` for fail-fast from route handlers and fixtures —       -->
+<!--            prevents test contamination when invariants are violated mid-test (Gotcha 99);          -->
+<!--            Playwright v1.60 `tracing.startHar()` with `await using` disposable for scoped         -->
+<!--            network recording without manual stopHar() teardown (Gotcha 100)                        -->
 
 ---
 
@@ -5286,4 +5294,304 @@ test('audit log shows both author submission and admin approval', async ({
 | Playwright v1.51 Release Notes — IndexedDB storageState | Official | https://playwright.dev/docs/release-notes#version-151 | `storageState({ indexedDB: true })` — captures Firebase/Supabase auth tokens stored in IndexedDB |
 | Playwright v1.59 Release Notes — setStorageState | Official | https://playwright.dev/docs/release-notes#version-159 | `browserContext.setStorageState()` — atomic in-test user switching; no context recreation needed |
 | Node.js v24 — Native TypeScript type stripping (RC) | Official | https://nodejs.org/en/blog/release/v24.0.0 | Run `.ts` test files directly on Node 24 without ts-jest/ts-node; enables zero-transform `node:test` suites |
-| Node.js v24 — Native TypeScript type stripping (RC) | Official | https://nodejs.org/en/blog/release/v24.0.0 | Run `.ts` test files directly on Node 24 without ts-jest/ts-node; enables zero-transform `node:test` suites |
+
+---
+
+## Extended Patterns — Iteration 23
+
+### Pattern 38: Playwright `page.routeWebSocket()` for WebSocket connection isolation (TypeScript, Playwright v1.48+)  [community]
+
+`page.routeWebSocket()` and `browserContext.routeWebSocket()` intercept WebSocket connections before they reach a real server, letting tests control exactly which messages are received and when. This is the correct isolation pattern for real-time features (chat, live dashboards, collaborative editing) that use WebSocket — replacing the need for a real WebSocket server in unit-level E2E tests.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test('live dashboard updates when server pushes a metric event', async ({ page }) => {
+  // Intercept all WebSocket connections to /ws/metrics — no real server needed
+  await page.routeWebSocket('/ws/metrics', (ws) => {
+    // Immediately send a controlled metric event when the client connects
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'metric', name: 'cpu', value: 82 }));
+    };
+
+    // Echo back any client keep-alive pings
+    ws.onMessage((message) => {
+      const parsed = JSON.parse(message as string) as { type: string };
+      if (parsed.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }));
+      }
+    });
+  });
+
+  await page.goto('/dashboard');
+
+  // Assert the UI reflects the injected metric without a real backend
+  await expect(page.getByTestId('cpu-gauge')).toContainText('82%');
+});
+
+test('dashboard shows error state when server closes connection unexpectedly', async ({ page }) => {
+  await page.routeWebSocket('/ws/metrics', (ws) => {
+    ws.onopen = () => {
+      // Simulate abrupt server disconnect immediately after connect
+      ws.close(1011, 'server error');
+    };
+  });
+
+  await page.goto('/dashboard');
+
+  await expect(page.getByRole('alert')).toContainText('Connection lost');
+});
+
+test('context-level routing applies to all pages — use for multi-tab isolation', async ({
+  page, context,
+}) => {
+  // browserContext.routeWebSocket: applies to every page in this context
+  // Isolation: each test context gets its own route handler — no cross-test leakage
+  await context.routeWebSocket('/ws/notifications', (ws) => {
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'notification', text: 'You have 3 new messages' }));
+    };
+  });
+
+  await page.goto('/inbox');
+  await expect(page.getByTestId('notification-badge')).toContainText('3');
+});
+```
+
+**Isolation guarantee:** `page.routeWebSocket()` handlers are scoped to the `page` fixture, which is test-scoped by default. Handlers registered in one test do not leak to the next test's page. Use `context.routeWebSocket()` when you need the same handler to apply to all pages within a single test's browser context (e.g., multi-tab tests), but not across tests.
+
+**When to use over mocking the WebSocket constructor:** Use `routeWebSocket` for E2E tests where the real browser WebSocket API must be exercised. Use `vi.stubGlobal('WebSocket', MockWebSocket)` or `jest.fn()` for unit tests that test code which owns the WebSocket client directly.
+
+### Pattern 39: `mergeTests()` for compositional fixture isolation across modules (TypeScript, Playwright v1.39+)  [community]
+
+`mergeTests()` and `mergeExpects()` allow combining independent fixture sets from different modules into a single typed `test` object. This is the correct isolation pattern for monorepos or large test suites where database fixtures, accessibility fixtures, and authentication fixtures are maintained by different teams in separate utility packages.
+
+```typescript
+// fixtures/db.fixtures.ts — database transaction isolation fixture
+import { test as base } from '@playwright/test';
+import { Pool } from 'pg';
+
+interface DbFixtures {
+  db: Pool;
+  resetDb: () => Promise<void>;
+}
+
+export const test = base.extend<DbFixtures>({
+  db: async ({}, use) => {
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await use(pool);
+    await pool.end();
+  },
+  resetDb: async ({ db }, use) => {
+    await use(async () => {
+      await db.query('TRUNCATE users, orders RESTART IDENTITY CASCADE');
+    });
+  },
+});
+
+// fixtures/a11y.fixtures.ts — accessibility check fixture
+import { test as base, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+interface A11yFixtures {
+  checkA11y: () => Promise<void>;
+}
+
+export const test = base.extend<A11yFixtures>({
+  checkA11y: async ({ page }, use) => {
+    await use(async () => {
+      const results = await new AxeBuilder({ page }).analyze();
+      expect(results.violations).toEqual([]);
+    });
+  },
+});
+
+// fixtures/index.ts — compose both fixture sets without coupling them
+import { mergeTests, mergeExpects } from '@playwright/test';
+import { test as dbTest } from './db.fixtures';
+import { test as a11yTest } from './a11y.fixtures';
+import { expect as a11yExpect } from './a11y.fixtures';
+
+export const test = mergeTests(dbTest, a11yTest);
+export const expect = mergeExpects(a11yExpect);
+
+// user-registration.spec.ts — uses all fixtures transparently
+import { test, expect } from '../fixtures';
+
+test.beforeEach(async ({ resetDb }) => {
+  // DB isolation: each test starts from a clean slate
+  await resetDb();
+});
+
+test('registration form is accessible and persists the user', async ({
+  page,
+  db,
+  checkA11y,
+}) => {
+  await page.goto('/register');
+
+  // a11y fixture — checks page-level accessibility violations
+  await checkA11y();
+
+  await page.getByLabel('Email').fill('alice@example.com');
+  await page.getByLabel('Password').fill('s3cure!');
+  await page.getByRole('button', { name: 'Create account' }).click();
+
+  await expect(page.getByText('Welcome, alice@example.com')).toBeVisible();
+
+  // DB fixture — verify persistence without relying only on UI state
+  const result = await db.query<{ email: string }>(
+    'SELECT email FROM users WHERE email = $1',
+    ['alice@example.com'],
+  );
+  expect(result.rows).toHaveLength(1);
+});
+```
+
+**WHY `mergeTests()` over manual fixture extension:** Extending fixtures with `base.extend()` in a single file couples all fixture concerns (database, accessibility, authentication) into one module. When those concerns evolve independently or are owned by different teams, coupling creates merge conflicts and makes it harder to audit which tests touch which infrastructure. `mergeTests()` keeps fixture modules independent — each can be tested, versioned, and documented separately — while giving individual test files a single import with all fixtures available.
+
+**Isolation implication:** Each `extend()` call in a fixture module defines its own `beforeEach`/`afterEach` lifecycle. `mergeTests()` preserves these independent lifecycles, so the DB transaction fixture tears down correctly even when merged with unrelated fixtures that have their own teardown.
+
+---
+
+## Gotchas — Iteration 23
+
+97. **`page.routeWebSocket()` route handlers are not automatically removed between tests — do not share a `page` across tests or you will accumulate route handlers.** [community]
+    `page.routeWebSocket()` registers a persistent handler on the `page` object. Unlike `page.route()` (which can be unregistered with `page.unroute()`), WebSocket route handlers remain active for the lifetime of the `page`. This is only a problem if a `page` fixture is promoted to `worker` scope (see Gotcha 23), in which case handlers registered in test N are still active in test N+1 within the same worker. WHY: the default `page` fixture is test-scoped — each test receives a fresh page, so handlers from prior tests cannot accumulate. The trap appears when teams customize the `page` fixture to worker scope for startup speed.
+    ```typescript
+    // WRONG: worker-scoped page — route handlers accumulate across tests
+    // fixtures/workerPage.ts
+    import { test as base } from '@playwright/test';
+    export const test = base.extend({
+      page: [async ({ browser }, use) => {
+        const page = await browser.newPage();
+        await use(page);
+        await page.close();
+      }, { scope: 'worker' }],  // ← promotes page to worker scope
+    });
+
+    // test A registers a route handler — it persists for the worker lifetime
+    test('test A', async ({ page }) => {
+      await page.routeWebSocket('/ws', ws => ws.onMessage(() => ws.send('from-A')));
+      // ...
+    });
+
+    // test B sees test A's handler because it's the same page object
+    test('test B', async ({ page }) => {
+      // SURPRISE: /ws route is still intercepted by test A's handler
+    });
+
+    // CORRECT: use default test-scoped page — fresh page per test, no handler accumulation
+    ```
+    **Fix:** Keep `page` at default test scope. If startup performance is critical, use worker-scoped `browser` and `browserContext` but let `page` remain test-scoped (the default Playwright behavior).
+
+98. **`mergeTests()` fixture name collisions produce a compile-time TypeScript error but a silent runtime override — the last fixture definition wins.** [community]
+    When two fixture modules passed to `mergeTests()` both define a fixture with the same name (e.g., both define a `db` fixture), TypeScript's intersection type will surface a type error only if the types differ. If the types happen to be compatible (both are `Pool`, both are `string`), TypeScript does not warn, and the second module's fixture silently overrides the first. WHY: `mergeTests()` merges fixture type intersections — same-name fixtures of the same type produce no compile-time warning, but the runtime behavior is that the rightmost module's fixture definition wins. Teams discovering this pattern late see fixture initialization order bugs: the DB connection from the first module is never created, yet no error is thrown.
+    ```typescript
+    import { mergeTests } from '@playwright/test';
+    import { test as dbTest } from './db.fixtures';    // defines: db: Pool (primary DB)
+    import { test as analyticsTest } from './analytics.fixtures'; // also defines: db: Pool (analytics DB)
+
+    // TypeScript sees: db: Pool & Pool = Pool — no compile error
+    // Runtime: analyticsTest's db fixture wins (rightmost wins)
+    export const test = mergeTests(dbTest, analyticsTest);
+
+    // Tests expecting the primary DB will silently get the analytics DB connection
+    ```
+    **Fix:** Use distinct, descriptive fixture names in each module (`primaryDb`, `analyticsDb`) rather than generic names. Treat fixture names as a public API contract for the module — document them explicitly to prevent collisions.
+
+99. **Playwright v1.60 `test.abort()` is not the same as `test.fail()` — it stops test execution immediately without marking the test as an "expected failure".** [community]
+    Playwright v1.60 introduces `test.abort(message?)`, which throws an internal error that immediately terminates the test with a failure. This is different from `test.fail()`, which marks a test as *expected to fail* and inverts the pass/fail result. WHY: `test.abort()` is designed for **invariant enforcement** inside route handlers and fixtures — if a test routes to `/publish` and the route handler detects that the test is about to publish to a shared staging environment (a corrupting action), calling `test.abort()` stops the test *before the damage is done* and marks it failed with a descriptive message. `test.fail()` cannot be called from inside a route handler callback.
+    ```typescript
+    import { test, expect } from '@playwright/test';
+
+    // Isolation invariant: tests must never call the real /api/send-email endpoint.
+    // If they do, it would send real emails and contaminate the shared test account.
+    test('newsletter subscription flow', async ({ page }) => {
+      await page.route('**/api/send-email', (route) => {
+        // Abort instead of letting the real request go through
+        // test.abort() is callable from route handlers (unlike test.fail())
+        test.abort(
+          'Test made a real /api/send-email call. Use the email mock fixture instead.'
+        );
+        return route.abort(); // also abort the network request
+      });
+
+      await page.goto('/newsletter');
+      await page.getByLabel('Email').fill('user@example.com');
+      await page.getByRole('button', { name: 'Subscribe' }).click();
+
+      // If the route handler fires, test.abort() terminates before this assertion
+      await expect(page.getByText('Subscribed!')).toBeVisible();
+    });
+    ```
+    **Key distinction:**
+    - `test.abort(msg)` — stops immediately, test is marked **FAILED** with `msg`; no result inversion
+    - `test.fail()` — marks test as expecting failure; if the test passes, the test itself is marked failed
+    - `test.skip()` — skips the test (not run at all)
+    Use `test.abort()` when the test has taken an action that would contaminate shared state — the fail is the correct signal that isolation was violated.
+
+100. **`tracing.startHar()` returns a disposable that does NOT auto-finalize — `await using` is required, or call `stopHar()` in `finally`.** [community]
+    Playwright v1.60 introduces `context.tracing.startHar(path, options)` which begins recording an HTTP Archive (HAR) file for the browser context. It returns a `Disposable` object. The common misuse: calling `startHar()` and relying on the disposable being garbage-collected to finalize the file. The HAR file is only flushed and closed when `stopHar()` is called or the disposable is explicitly disposed. In tests that throw before `stopHar()`, the HAR file is incomplete or missing — making post-mortem network analysis impossible. WHY: this matters for isolation because HAR recording is typically used to capture the network state during a test for debugging; if the recording is not properly terminated in teardown, the next test's network activity can be appended to the same file, corrupting the isolation of the recorded evidence.
+    ```typescript
+    import { test, expect, BrowserContext, Tracing } from '@playwright/test';
+
+    // WRONG: no cleanup — HAR file will be incomplete if test throws
+    test('records network without cleanup (broken)', async ({ context, page }) => {
+      await context.tracing.startHar('test-network.har');
+      await page.goto('/api-heavy-page');
+      // If this throws, HAR is never finalized
+      await expect(page.getByText('Loaded')).toBeVisible({ timeout: 2000 });
+      await context.tracing.stopHar(); // never reached on failure
+    });
+
+    // CORRECT option 1: await using (TypeScript 5.2+, Playwright v1.60+)
+    // Requires: tsconfig.json "target": "ES2022" and "lib": ["ES2022", "dom"]
+    test('records network with await using (auto-disposed)', async ({ context, page }) => {
+      // disposable auto-calls dispose() at block exit — even if the test throws
+      await using _har = await context.tracing.startHar('test-network.har');
+
+      await page.goto('/api-heavy-page');
+      await expect(page.getByText('Loaded')).toBeVisible({ timeout: 5000 });
+      // HAR file finalized here via await using — no manual stopHar() needed
+    });
+
+    // CORRECT option 2: explicit finally block (works without TypeScript 5.2 target)
+    test('records network with explicit teardown', async ({ context, page }) => {
+      await context.tracing.startHar('test-network.har', {
+        mode: 'minimal',           // omit response bodies for smaller files
+        urlFilter: /\/api\//,      // only record API calls, not static assets
+      });
+      try {
+        await page.goto('/api-heavy-page');
+        await expect(page.getByText('Loaded')).toBeVisible({ timeout: 5000 });
+      } finally {
+        // stopHar runs regardless of pass/fail — HAR file is always complete
+        await context.tracing.stopHar();
+      }
+    });
+    ```
+    **Isolation implication:** An incomplete HAR from test N (because `stopHar()` was skipped) does not contaminate test N+1 because browser contexts are test-scoped — each test gets a fresh context with its own HAR recording lifecycle. The contamination is in the *diagnostic artifact*, not in the test state itself. However, half-written HAR files from parallel workers writing to the same path cause file corruption. Always use per-test HAR file names (e.g., include `test.info().testId` in the path) when running with `--workers > 1`.
+
+---
+
+## Quick Reference Additions — Iteration 23
+
+| Problem | Symptom | Playwright solution | Jest/Vitest equivalent |
+|---------|---------|---------------------|------------------------|
+| WebSocket server dependency in E2E tests | Tests require a running WS server; flaky under network conditions | `page.routeWebSocket('/ws', handler)` — intercept + mock WS messages in-test (v1.48+) | `vi.stubGlobal('WebSocket', MockWS)` for unit tests |
+| Fixture coupling across teams | All fixture concerns in one file; merge conflicts; impossible to audit | `mergeTests(dbTest, a11yTest)` — compose independent fixture modules (v1.39+) | `vi.extend()` composition |
+| Test continues after invariant violation inside route handler | Real email/publish call proceeds despite test intent | `test.abort(msg)` inside route handler — stops test immediately with failure (v1.60+) | N/A (framework-specific) |
+| HAR file incomplete when test fails | Network debug archive missing — test threw before `stopHar()` | `await using _ = await context.tracing.startHar(path)` (v1.60+, TS 5.2+) | N/A |
+
+---
+
+## Key Resources — Iteration 23 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright v1.48 Release Notes — WebSocket routing | Official | https://playwright.dev/docs/release-notes#version-148 | `page.routeWebSocket()` + `context.routeWebSocket()` — isolate WS connections in E2E tests |
+| Playwright Docs — WebSocketRoute API | Official | https://playwright.dev/docs/api/class-websocketroute | Full API reference for WebSocket route handlers: `onMessage`, `send`, `close` |
+| Playwright v1.39 Release Notes — mergeTests | Official | https://playwright.dev/docs/release-notes#version-139 | `mergeTests()` + `mergeExpects()` — compose fixture modules without coupling |
+| Playwright v1.60 Release Notes — test.abort | Official | https://playwright.dev/docs/release-notes#version-160 | `test.abort(message)` — fail-fast from route handlers + fixtures when isolation invariants are violated |
+| Playwright Docs — Tracing API (startHar/stopHar) | Official | https://playwright.dev/docs/api/class-tracing | HAR recording API: `startHar`, `stopHar`; disposable-compatible for `await using` teardown |

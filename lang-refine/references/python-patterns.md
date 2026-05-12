@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 49 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -53,6 +53,7 @@
      [testing-focus run] Iter 47 (2026-05-12): 95/100 (+310 lines) — added comprehensive Testing section covering pytest fixtures/scopes/yield teardown/conftest.py, @pytest.mark.parametrize + pytest.param + indirect, built-in fixtures (tmp_path, monkeypatch, caplog, capsys, capfd), pytest.raises/warns/approx, pytest 8.x/9.x new features (RaisesGroup, HIDDEN_PARAM, subtests, native TOML config), Hypothesis property-based testing (@given, @settings, @example, @composite, st.* strategies, assume/note/target, database), and community gotchas #45 (fixture scope leakage), #46 (monkeypatch vs patch namespace), #47 (Hypothesis filter() rejection ratio); sourced from docs.pytest.org/en/stable/changelog.html + docs.pytest.org/en/stable/how-to/fixtures.html + practitioner synthesis
      Iter 48 (2026-05-12): 98/100 (+350 lines) — added Hypothesis stateful testing (RuleBasedStateMachine, @rule, @initialize, @invariant, Bundle, multiple(), consumes(), run_state_machine_as_test); pytest 8.3/8.4/9.0 features: pytest.raises(check=), capteesys fixture, collect_imported_tests, console_output_style=times, --xfail-tb, --no-fold-skipped, strict_parametrization_ids; pytest 8.4 behavior changes (async-without-plugin → error, non-None return → error); community gotchas #48 (sync test requesting async fixture), #49 (non-None return from test); sourced from docs.pytest.org/en/stable/changelog.html + practitioner synthesis
      Iter 49 (2026-05-12): 100/100 (+~420 lines) — added patch.dict/patch.multiple patterns, pytest-mock plugin deep-dive (mocker fixture, spy, stopall), freezegun/time-machine datetime mocking with comparison table, responses HTTP mocking, pytest-httpx/aioresponses for async HTTP, st.register_type_strategy() for Hypothesis custom types, pytest-xdist parallel testing with xdist_group/worker isolation patterns, pytest-cov coverage configuration with branch coverage; community gotchas #50 (xdist session-fixture is per-worker), #51 (freezegun misses C-ext time), #52 (responses only intercepts requests); sourced from practitioner synthesis + docs
+     Iter 50 (2026-05-12): 100/100 (+~330 lines) — added snapshot testing (syrupy + inline-snapshot); pytest-benchmark micro-benchmark testing; mutation testing with mutmut; pytest-timeout + pytest-randomly CI plugins; pytest-asyncio asyncio_default_fixture_loop_scope deprecation; community gotchas #53 (syrupy auto-update wipes human-reviewed baselines), #54 (pytest-benchmark warm-up vs measurement confusion), #55 (mutmut false positives from equivalent mutations), #56 (pytest-asyncio event_loop fixture deprecation); sourced from practitioner synthesis + official docs
 -->
 
 
@@ -9577,5 +9578,548 @@ pytest -n auto --cov=src --cov-report=xml
 coverage combine         # merge worker coverage files (auto-runs with --cov)
 coverage report
 ```
+
+---
+
+### Snapshot Testing — `syrupy` and `inline-snapshot`
+
+Snapshot tests assert that output *matches a previously-approved baseline* rather than a manually-written expected value. They are especially useful for complex, deeply-nested outputs (serialised objects, rendered HTML, API payloads) where writing a full `assert` by hand is impractical.
+
+#### `syrupy` — File-Based Snapshots
+
+`syrupy` stores snapshots as files in a `__snapshots__/` directory beside the test file. The first run creates the files; subsequent runs compare against them.
+
+```bash
+pip install syrupy
+```
+
+```python
+# tests/test_api.py
+import pytest
+from myapp.serializers import serialize_order
+
+
+@pytest.fixture
+def sample_order():
+    return {"id": 42, "items": [{"sku": "ABC", "qty": 2}], "total": 19.99}
+
+
+# First run (no snapshot yet): FAILS with
+#   "snapshot does not exist — run with --snapshot-update to create"
+# After --snapshot-update: creates __snapshots__/test_api/test_order_serialization.ambr
+def test_order_serialization(snapshot, sample_order):
+    result = serialize_order(sample_order)
+    assert result == snapshot          # compare against stored snapshot
+
+
+# Inline diff on failure — syrupy shows a coloured diff, not just "not equal"
+
+
+# ── Updating snapshots ─────────────────────────────────────────────────────────
+# pytest --snapshot-update               # update ALL snapshots (review diff in git)
+# pytest --snapshot-update test_api.py   # update only this file's snapshots
+# pytest --snapshot-warn-unused          # warn about stale snapshot files
+
+
+# ── Custom serialiser for non-standard types ──────────────────────────────────
+from syrupy.extensions.amber import AmberSnapshotSerializer
+
+
+class CustomSerializer(AmberSnapshotSerializer):
+    @classmethod
+    def _serialize(cls, data, depth=0, visited=None):
+        # Round floats to 2 dp so minor floating-point drift doesn't break snapshots
+        if isinstance(data, float):
+            return f"{data:.2f}"
+        return super()._serialize(data, depth=depth, visited=visited)
+
+
+@pytest.fixture
+def snapshot(snapshot):
+    return snapshot.use_extension(CustomSerializer)
+```
+
+**`pyproject.toml` configuration:**
+
+```toml
+[tool.pytest.ini_options]
+# Treat snapshots as test artifacts — always check __snapshots__/ into git.
+# Diff snapshot changes in code review just as you would diff assertion changes.
+```
+
+#### `inline-snapshot` — Snapshots Inside the Test File
+
+`inline-snapshot` stores the expected value as a literal inside the test function itself, automatically updating the source file when you run with `--update-snapshots`.
+
+```bash
+pip install inline-snapshot
+```
+
+```python
+from inline_snapshot import snapshot
+
+
+def test_user_repr():
+    user = {"name": "Alice", "age": 30, "active": True}
+    # On first run: snapshot() is empty, test fails.
+    # With --update-snapshots: the literal below is written by the tool.
+    assert user == snapshot({"active": True, "age": 30, "name": "Alice"})
+
+
+def test_error_message():
+    try:
+        int("not a number")
+    except ValueError as e:
+        assert str(e) == snapshot("invalid literal for int() with base 10: 'not a number'")
+
+
+# ── Partial snapshots — assert only what matters ──────────────────────────────
+from inline_snapshot import Is
+
+
+def test_partial_fields():
+    result = {"id": 1001, "created_at": "2024-01-01T00:00:00Z", "name": "Bob"}
+    # Only snapshot the stable fields; skip dynamic 'id' and 'created_at'
+    assert result["name"] == snapshot("Bob")
+    assert result["id"] == Is(int)          # assert type only, not value
+```
+
+**Choosing between syrupy and inline-snapshot:**
+
+| Aspect | `syrupy` | `inline-snapshot` |
+|---|---|---|
+| Storage | `__snapshots__/*.ambr` files | Inside the test file |
+| Best for | Large outputs (HTML, JSON blobs) | Short values, quick iteration |
+| Diff review | Git diff on `.ambr` file | Git diff on test file |
+| CI update flow | `--snapshot-update` flag | `--update-snapshots` flag |
+| Partial matching | Limited | `Is()`, `HasLen()`, `Contains()` |
+
+---
+
+### `pytest-benchmark` — Micro-Benchmark Testing
+
+`pytest-benchmark` integrates micro-benchmarks into pytest. Benchmarks run the target callable many times, warm up, and report min/mean/max/stddev/rounds automatically.
+
+```bash
+pip install pytest-benchmark
+```
+
+```python
+import pytest
+
+
+def compute_fibonacci(n: int) -> int:
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+
+# ── Basic benchmark: the benchmark fixture calls the callable repeatedly ───────
+def test_fibonacci_perf(benchmark):
+    result = benchmark(compute_fibonacci, 30)
+    assert result == 832040     # functional assertion still applies
+
+
+# ── Benchmark a method or callable requiring setup ────────────────────────────
+def test_sort_perf(benchmark):
+    import random
+    data = list(range(10_000))
+    random.shuffle(data)
+
+    # benchmark.pedantic: control rounds, warmup_rounds, and setup
+    result = benchmark.pedantic(
+        sorted,
+        args=(data,),
+        rounds=50,
+        warmup_rounds=5,
+    )
+    assert result[0] == 0
+
+
+# ── Grouping and naming benchmarks ────────────────────────────────────────────
+@pytest.mark.benchmark(group="serialisation")
+def test_json_serialize(benchmark):
+    import json
+    payload = {"items": list(range(100)), "meta": {"v": 1}}
+    benchmark(json.dumps, payload)
+
+
+@pytest.mark.benchmark(group="serialisation")
+def test_msgpack_serialize(benchmark):
+    import msgpack  # pip install msgpack
+    payload = {"items": list(range(100)), "meta": {"v": 1}}
+    benchmark(msgpack.packb, payload, use_bin_type=True)
+```
+
+**`pyproject.toml` configuration:**
+
+```toml
+[tool.pytest.ini_options]
+# Store results in a JSON file for CI regression detection
+addopts = ["--benchmark-autosave"]
+
+[tool.benchmark]
+# Fail if any benchmark is >20% slower than the last stored result
+compare-fail = ["mean:20%"]
+storage = ".benchmarks"
+min_rounds = 5
+warmup = true
+```
+
+**CLI workflow:**
+
+```bash
+pytest tests/test_perf.py              # run benchmarks, print table
+pytest --benchmark-only                # skip non-benchmark tests
+pytest --benchmark-skip                # skip benchmark tests
+pytest --benchmark-compare             # compare against last saved run
+pytest --benchmark-compare=0001        # compare against specific save
+pytest --benchmark-histogram           # generate ASCII histogram
+```
+
+---
+
+### Mutation Testing with `mutmut`
+
+Mutation testing evaluates test suite quality by making small code changes ("mutations") and verifying that at least one test fails for each mutation. A mutation that no test catches is a "survived mutant" — it reveals a gap in your tests.
+
+```bash
+pip install mutmut
+```
+
+```bash
+# ── Basic workflow ─────────────────────────────────────────────────────────────
+mutmut run                  # mutate src/ and run tests; saves results to .mutmut-cache
+mutmut results              # summary: killed / survived / suspicious / timeout
+mutmut show 3               # show diff for mutation #3
+mutmut html                 # generate HTML report in html/ directory
+
+# ── Targeting a specific module ───────────────────────────────────────────────
+mutmut run --paths-to-mutate src/myapp/utils.py
+
+# ── Run only mutations that survived last time (fast re-run after fixing tests)
+mutmut run --rerun-all
+```
+
+**`pyproject.toml` configuration:**
+
+```toml
+[tool.mutmut]
+paths_to_mutate = "src/"
+backup = false
+runner = "python -m pytest -x --timeout=10"    # -x: stop on first failure (faster)
+tests_dir = "tests/"
+dict_synonyms = "Struct, NamedTuple"            # treat these as dict-like for mutations
+```
+
+**Interpreting results:**
+
+```
+Mutation score: 72% (144/200 mutants killed)
+Survived mutants: 56        ← tests don't catch these changes
+Killed mutants: 144         ← tests correctly fail for these
+Suspicious: 3               ← tests errored (not failed) for these mutations
+Timeouts: 3                 ← mutation caused infinite loop / slow test
+```
+
+**Triaging survived mutants:**
+
+```python
+# Original code:
+def discount(price: float, pct: float) -> float:
+    if pct > 100:
+        raise ValueError("pct must be <= 100")
+    return price * (1 - pct / 100)
+
+# Survived mutation (mutmut changed > to >=):
+# if pct >= 100:
+#     raise ValueError(...)
+# No test passes pct=100 exactly — add a boundary test:
+
+def test_discount_boundary():
+    # 100% discount → 0.0; pct=100 is valid
+    assert discount(50.0, 100) == pytest.approx(0.0)
+    # 101% is invalid
+    with pytest.raises(ValueError):
+        discount(50.0, 101)
+```
+
+**When NOT to chase every surviving mutant:** String-literal mutations in log messages and docstrings routinely survive — they are not worth adding tests for. Mark them with `# pragma: no mutate` to exclude from future runs.
+
+```python
+log.info("Processing request %s", request_id)  # pragma: no mutate
+```
+
+---
+
+### `pytest-timeout` and `pytest-randomly` — CI Hygiene Plugins
+
+#### `pytest-timeout` — Per-Test and Suite Timeouts
+
+`pytest-timeout` terminates tests that run longer than a specified limit, preventing hung tests from stalling CI indefinitely.
+
+```bash
+pip install pytest-timeout
+```
+
+```python
+import pytest
+
+
+# ── Global timeout via pyproject.toml ─────────────────────────────────────────
+# [tool.pytest.ini_options]
+# timeout = 30              # 30-second default for every test
+
+
+# ── Per-test timeout override ─────────────────────────────────────────────────
+@pytest.mark.timeout(5)
+def test_quick_operation():
+    import time
+    time.sleep(1)    # fine: < 5 seconds
+    assert True
+
+
+@pytest.mark.timeout(60)
+def test_slow_integration():
+    """Allowed to run up to 60 seconds despite the 30-second default."""
+    pass
+
+
+# ── Disable timeout for a specific test ──────────────────────────────────────
+@pytest.mark.timeout(0)
+def test_no_timeout():
+    """Timeout of 0 means unlimited — use sparingly."""
+    pass
+
+
+# ── Timeout method: "signal" (default on Unix) vs "thread" ───────────────────
+# "signal" uses SIGALRM: only works on Unix, but cleans up properly.
+# "thread" uses a watchdog thread: works on Windows, but the test thread
+# continues running after pytest reports timeout (resource leak risk).
+```
+
+**`pyproject.toml`:**
+
+```toml
+[tool.pytest.ini_options]
+timeout = 30
+timeout_method = "signal"    # "thread" on Windows CI
+```
+
+#### `pytest-randomly` — Randomised Test Order
+
+`pytest-randomly` shuffles test order on each run. This surfaces hidden order dependencies (tests that only pass when run after another test that leaves shared state).
+
+```bash
+pip install pytest-randomly
+```
+
+```bash
+pytest                        # shuffled order; seed printed to output
+pytest -p no:randomly         # disable randomisation for debugging
+pytest --randomly-seed=12345  # fix seed for reproducibility
+pytest --randomly-seed=last   # repeat the last failing seed
+```
+
+```python
+# ── pytest-randomly also randomises parametrize order ─────────────────────────
+@pytest.mark.parametrize("value", [1, 2, 3, 4, 5])
+def test_always_positive(value):
+    assert value > 0
+
+# ── Pinning order within a group (for dependent tests) ────────────────────────
+# Use pytest-ordering or explicit marks if two tests must run consecutively:
+# @pytest.mark.order("first")
+# def test_setup_database(): ...
+```
+
+**`pyproject.toml`:**
+
+```toml
+[tool.pytest.ini_options]
+# No config needed — pytest-randomly activates automatically once installed.
+# To always use a fixed seed in CI (sacrifices order-dependency detection):
+# randomly_seed = 0
+```
+
+**Rule:** Always check in the failing seed when a randomised run exposes an order dependency. Fix the underlying state coupling, then re-run with `--randomly-seed=last` to confirm the fix.
+
+---
+
+### Community Gotcha #53: `syrupy --snapshot-update` Overwrites Human-Reviewed Baselines Without Confirmation  [community]
+
+**Problem:** Running `pytest --snapshot-update` unconditionally overwrites **all** existing snapshots, including ones that were intentionally approved and committed. A developer running `--snapshot-update` to create one new snapshot silently "approves" every other change in the suite at the same time.
+
+**Why:** `syrupy` regenerates all snapshots that match any test that ran during that invocation. There is no "approve this one" granularity in the basic workflow.
+
+**Fix:** Scope `--snapshot-update` to the specific test(s) you intend to update. Review the `git diff` of `__snapshots__/` before committing.
+
+```bash
+# BAD — updates EVERYTHING in the suite
+pytest --snapshot-update
+
+# GOOD — update only the snapshots for one file
+pytest tests/test_api.py --snapshot-update
+
+# GOOD — update only the snapshots for one test by node ID
+pytest "tests/test_api.py::test_order_serialization" --snapshot-update
+
+# After updating, always inspect the diff before staging:
+git diff __snapshots__/
+```
+
+**CI rule:** Never pass `--snapshot-update` to your CI pipeline. Any snapshot that differs from the committed baseline should cause a CI failure, not a silent auto-update.
+
+---
+
+### Community Gotcha #54: `pytest-benchmark` Measures Warm Cache, Not Cold Start  [community]
+
+**Problem:** `pytest-benchmark` runs the callable many times (default: `rounds` is chosen automatically). By the second or third round the CPU instruction cache, branch predictor, and Python's `LOAD_FAST` specialisation are warm. The reported `min` time is for the *hot* path — it does not reflect the cold-start latency a user sees when the function is first called.
+
+**Why:** CPython 3.12+ adaptive specialisation (`SPECIALIZING_OPCODE`) compiles frequently-executed bytecode paths into faster specialised forms after ~8 calls. A benchmark with 1000 rounds measures the specialised path almost exclusively.
+
+**Fix — use `pedantic()` with `warmup_rounds=0` for cold-start measurement, or `warmup_rounds=10+` for steady-state throughput:**
+
+```python
+def test_cold_start(benchmark):
+    """Measure first-call latency — no warm-up."""
+    benchmark.pedantic(
+        my_function,
+        args=(input_data,),
+        rounds=20,
+        warmup_rounds=0,    # no warm-up: each round is as cold as possible
+    )
+
+
+def test_hot_throughput(benchmark):
+    """Measure steady-state throughput after JIT specialisation."""
+    benchmark.pedantic(
+        my_function,
+        args=(input_data,),
+        rounds=500,
+        warmup_rounds=10,   # discard first 10 rounds from statistics
+    )
+```
+
+**When cold-start matters:** HTTP request handlers (called infrequently), startup code, import-time logic. When steady-state throughput matters: tight loops, serialisers, parsers.
+
+---
+
+### Community Gotcha #55: `mutmut` Reports Equivalent Mutations as Survived  [community]
+
+**Problem:** Many survived `mutmut` mutations are *semantically equivalent* to the original code — the mutation produces identical behaviour, so no test can kill it. Blindly writing tests to kill every survived mutant wastes time and produces brittle tests.
+
+**Why:** A classic example is mutating `+0` to `-0` in integer arithmetic, or changing `!=` to `is not` when both sides are always interned small integers. The mutation changes syntax but not semantics.
+
+**Identifying equivalent mutations:**
+
+```python
+# Original:
+def clamp(value: int, lo: int, hi: int) -> int:
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+# mutmut may generate: change `return lo` to `return lo + 0`
+# This is an equivalent mutation — no test can distinguish it from the original.
+
+# Another: change `if value < lo:` to `if not value >= lo:`
+# Logically identical — kills no tests, but mutmut counts it as survived.
+```
+
+**Workflow for triaging survived mutants:**
+
+```bash
+mutmut show 23      # inspect the diff
+# If it is clearly equivalent: suppress with a comment
+# If it reveals a real gap: write the test
+```
+
+```python
+# Mark known-equivalent lines to exclude from future mutation runs:
+def clamp(value: int, lo: int, hi: int) -> int:  # pragma: no mutate
+    ...
+```
+
+**Rule:** Target a *mutation score* (killed / total) of ≥70%, not 100%. A score above 85% for a business-logic module is excellent. Chasing 100% signals a need to audit for equivalent mutations, not a need for more tests.
+
+---
+
+### Community Gotcha #56: `pytest-asyncio` `event_loop` Fixture Deprecation  [community]
+
+**Problem:** In `pytest-asyncio` ≥0.21, overriding the built-in `event_loop` fixture to change its scope (e.g. to `session` or `module`) emits a `DeprecationWarning`. In ≥0.23, it is a hard error. Projects that create a module- or session-scoped `event_loop` to share async fixtures across tests break silently or loudly after upgrading.
+
+**Why:** The `event_loop` fixture is now an implementation detail of `pytest-asyncio`. The replacement mechanism is the `asyncio_default_fixture_loop_scope` ini-option and the `@pytest.fixture(loop_scope=...)` parameter on async fixtures.
+
+**Old pattern (breaks ≥0.23):**
+
+```python
+# conftest.py — DO NOT DO THIS in pytest-asyncio ≥0.21
+import asyncio
+import pytest
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Override to make event loop session-scoped."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+```
+
+**New pattern (pytest-asyncio ≥0.21):**
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"   # default loop scope for all async fixtures
+```
+
+```python
+# conftest.py — correct approach
+import pytest
+import asyncio
+
+
+# For a session-scoped async resource: declare loop_scope explicitly on the fixture
+@pytest.fixture(scope="session", loop_scope="session")
+async def db_pool():
+    """Session-scoped async fixture — shares the session event loop."""
+    pool = await create_db_pool()
+    yield pool
+    await pool.close()
+
+
+async def create_db_pool():
+    # Simulate async pool creation
+    await asyncio.sleep(0)
+    return object()
+
+
+# Function-scoped async fixtures require no special loop_scope — they use the default.
+@pytest.fixture
+async def db_conn(db_pool):
+    conn = await acquire_connection(db_pool)
+    yield conn
+    await release_connection(conn)
+
+
+async def acquire_connection(pool):
+    await asyncio.sleep(0)
+    return object()
+
+
+async def release_connection(conn):
+    await asyncio.sleep(0)
+```
+
+**Migration checklist:**
+1. Remove any custom `event_loop` fixture override.
+2. Set `asyncio_default_fixture_loop_scope` in `pyproject.toml` to match your previous override scope (`"session"`, `"module"`, or `"function"`).
+3. Add `loop_scope=` to any async fixtures that need a non-default scope.
+4. Run `pytest -W error::DeprecationWarning` to catch remaining usages.
 
 ---

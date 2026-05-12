@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 24 | score: 97/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 25 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow + typescript-6.0-temporal-api (WebFetch 2026-05-12) + vitest-3.2-abortsignal + ts5to6-codemod | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
@@ -10,6 +10,7 @@
 <!-- extension 2026-05-12: iter 22 — added Vitest 4.1 ARIA snapshot TDD for accessibility contracts (toMatchAriaSnapshot/toMatchAriaInlineSnapshot); Type-Level TDD with Vitest expectTypeOf and *.test-d.ts files; gotchas #38–#39 -->
 <!-- extension 2026-05-12: iter 23 — added TypeScript 6.0 baseUrl deprecation → paths migration for test aliases; #/ subpath import syntax alternative to @/ aliases; noUncheckedSideEffectImports now on-by-default in TS 6.0 (correction to earlier "opt-in" description); --moduleResolution bundler + --module commonjs valid combo; Vitest 4.1 coverage ignore comments with @preserve flag for esbuild; gotchas #40–#42 -->
 <!-- extension 2026-05-12: iter 24 — added Vitest 3.2 native vi.spyOn/vi.fn Disposable support (direct using, no wrapper needed); Vitest 3.2 scoped fixtures (scope:'file'|'worker' in test.extend); Vitest 3.2 unified Matchers type (replaces older Assertion<R> per-context pattern); Google TotT 2025 posts (Functional Core Oct 2025, Arrange Data Flow Jan 2025) added to Key Resources; gotchas #43–#45 -->
+<!-- extension 2026-05-12: iter 25 — added Temporal API TDD patterns (TypeScript 6.0 built-in types, ClockService interface injection, vi.setSystemTime for Temporal.Now); Vitest 3.2 AbortSignal per-test-case for timeout-aware TDD; ts5to6 codemod reference in TS 6.0 migration section; gotchas #46–#47 -->
 
 ## Core Principles
 
@@ -2767,6 +2768,7 @@ it('retrieves orders by customer id', async () => {
 3. Set `"rootDir"` explicitly — the inference changed.
 4. Run `tsc --noEmit` after upgrading — expect 20–100 new errors on a 50k-line codebase; most are `types` configuration errors and removed-option errors.
 5. Use `"ignoreDeprecations": "6.0"` as a temporary escape hatch during migration — it will not work in TypeScript 7.0.
+6. Use the **`ts5to6` automated codemod** ([github.com/andrewbranch/ts5to6](https://github.com/andrewbranch/ts5to6)) to mechanically migrate `baseUrl`-relative `paths`, remove deprecated `module`/`target` options, and update `rootDir` inferences. Run it before upgrading the `typescript` package version to get a clean diff of the configuration changes needed.
 
 **[community] The `types: []` default change is the highest-impact TDD gotcha in TypeScript 6.0.** Teams that rely on globally available `describe`/`it`/`expect` from Vitest globals will see immediate compile errors after upgrading without adding `"types": ["vitest/globals"]`. The fix is one line, but it will block CI if the upgrade happens without reading the migration guide first.
 
@@ -5061,6 +5063,262 @@ describe('OrderService', () => {
 
 45. **[community] `vi.spyOn` with `using` in Vitest 3.2+ must not be mixed with `afterEach(() => vi.restoreAllMocks())` — double restoration silently fails.** When a team migrates from `afterEach(() => vi.restoreAllMocks())` to `using spy = vi.spyOn(...)`, leaving the old `afterEach` in place causes double restoration. The first disposal (the `using` scope exit) calls `mockRestore()`, resetting the spy. The second restoration (the `afterEach`) then attempts to restore an already-restored spy — which is a no-op in Vitest but can produce confusing state if the spy was on a prototype method that gets called between disposal and the `afterEach`. The correct migration: replace `afterEach(() => vi.restoreAllMocks())` with `using` declarations on individual spies, or keep the `afterEach` as a safety net but accept that it double-restores. Do not mix the two patterns in the same test file without being aware that `vi.restoreAllMocks()` is now a no-op for spies already cleaned up by `using`.
 
+---
+
+### TypeScript 6.0 — Temporal API TDD: Clock Injection Pattern [community]
+
+TypeScript 6.0 ships built-in types for the stage-4 `Temporal` API (available via `--target esnext` or `"lib": ["esnext"]`). Teams migrating date/time logic from `new Date()` to `Temporal.Now.instant()` or `Temporal.Now.plainDateTimeISO()` encounter a new TDD challenge: `Temporal.Now` is a global singleton and cannot be spied on via `vi.spyOn` in the same way that `Date.now` can be faked with `vi.useFakeTimers()`. Vitest's fake timer support does not yet control `Temporal.Now` (as of Vitest 4.1).
+
+The correct TDD approach is **Clock Injection**: define a `Clock` interface that abstracts over `Temporal.Now`, inject it into domain classes, and supply a `FakeClock` in test cases. This is the same pattern used for `Date` abstraction before `vi.useFakeTimers()` existed — and it produces cleaner domain code regardless of which time API is used.
+
+```typescript
+// clock.ts — Clock interface abstracting Temporal.Now (TypeScript 6.0 built-in types)
+import type { Temporal } from 'temporal-polyfill'; // or '@js-temporal/polyfill' pre-TS 6.0 es2025
+
+// In TypeScript 6.0 with "lib": ["esnext"], Temporal is globally available:
+export interface Clock {
+  now(): Temporal.Instant;
+  today(): Temporal.PlainDate;
+  nowInZone(timeZone: string): Temporal.ZonedDateTime;
+}
+
+// SystemClock.ts — production implementation wrapping Temporal.Now
+export class SystemClock implements Clock {
+  now(): Temporal.Instant {
+    return Temporal.Now.instant();
+  }
+
+  today(): Temporal.PlainDate {
+    return Temporal.Now.plainDateISO();
+  }
+
+  nowInZone(timeZone: string): Temporal.ZonedDateTime {
+    return Temporal.Now.zonedDateTimeISO(timeZone);
+  }
+}
+
+// FakeClock.ts — test double for TDD; controls the "current time"
+export class FakeClock implements Clock {
+  #instant: Temporal.Instant;
+
+  constructor(isoString: string = '2026-01-15T10:00:00Z') {
+    this.#instant = Temporal.Instant.from(isoString);
+  }
+
+  now(): Temporal.Instant {
+    return this.#instant;
+  }
+
+  today(): Temporal.PlainDate {
+    return this.#instant.toZonedDateTimeISO('UTC').toPlainDate();
+  }
+
+  nowInZone(timeZone: string): Temporal.ZonedDateTime {
+    return this.#instant.toZonedDateTimeISO(timeZone);
+  }
+
+  /** TDD helper: advance the fake clock by a duration */
+  advance(duration: Temporal.DurationLike): void {
+    this.#instant = this.#instant.add(duration);
+  }
+
+  /** TDD helper: set an absolute point in time */
+  setTo(isoString: string): void {
+    this.#instant = Temporal.Instant.from(isoString);
+  }
+}
+```
+
+```typescript
+// subscription-service.test.ts — TDD with FakeClock and Temporal types
+import { describe, it, expect, beforeEach } from 'vitest';
+import { SubscriptionService } from './SubscriptionService.js';
+import { FakeClock } from '../test-doubles/FakeClock.js';
+
+describe('SubscriptionService', () => {
+  let clock: FakeClock;
+  let service: SubscriptionService;
+
+  beforeEach(() => {
+    // RED: clock starts at a fixed point; test is deterministic regardless of wall time
+    clock = new FakeClock('2026-01-15T00:00:00Z');
+    service = new SubscriptionService(clock);
+  });
+
+  it('marks a subscription as expired when past the end date', () => {
+    const sub = service.create({ startISO: '2026-01-01', durationDays: 30 });
+    // Subscription expires on 2026-01-31
+
+    clock.advance({ days: 31 }); // now = 2026-02-15
+    expect(service.isExpired(sub.id)).toBe(true);
+  });
+
+  it('marks a subscription as active on the last day', () => {
+    const sub = service.create({ startISO: '2026-01-01', durationDays: 30 });
+
+    clock.advance({ days: 30 }); // now = 2026-02-14 — still within window
+    expect(service.isExpired(sub.id)).toBe(false);
+  });
+
+  it('throws when a subscription start date is in the future', () => {
+    // RED: drives the validation rule — future starts must be rejected
+    expect(() => service.create({ startISO: '2026-12-01', durationDays: 30 }))
+      .toThrow('Subscription start date cannot be in the future');
+  });
+});
+```
+
+```typescript
+// SubscriptionService.ts — GREEN: injected Clock drives all temporal logic
+import type { Clock } from './clock.js';
+import type { Temporal } from 'temporal-polyfill';
+
+interface Subscription {
+  id: string;
+  start: Temporal.PlainDate;
+  end: Temporal.PlainDate;
+}
+
+export class SubscriptionService {
+  readonly #clock: Clock;
+  readonly #subs = new Map<string, Subscription>();
+
+  constructor(clock: Clock) {
+    this.#clock = clock;
+  }
+
+  create(input: { startISO: string; durationDays: number }): Subscription {
+    const start = Temporal.PlainDate.from(input.startISO);
+    const today = this.#clock.today();
+
+    if (Temporal.PlainDate.compare(start, today) > 0) {
+      throw new Error('Subscription start date cannot be in the future');
+    }
+
+    const end = start.add({ days: input.durationDays });
+    const id = crypto.randomUUID();
+    const sub: Subscription = { id, start, end };
+    this.#subs.set(id, sub);
+    return sub;
+  }
+
+  isExpired(id: string): boolean {
+    const sub = this.#subs.get(id);
+    if (!sub) throw new Error(`Unknown subscription: ${id}`);
+    const today = this.#clock.today();
+    return Temporal.PlainDate.compare(today, sub.end) > 0;
+  }
+}
+```
+
+**Why inject a `Clock` interface instead of using `vi.setSystemTime()` with `Temporal`:**
+
+| Approach | Works with Temporal.Now | Type-safe | No Vitest internals | Design pressure |
+|----------|------------------------|-----------|---------------------|-----------------|
+| `vi.useFakeTimers()` | No (Vitest 4.1) | N/A | Yes | None |
+| `vi.spyOn(Temporal.Now, 'instant')` | Possible but fragile | Yes | Yes | None |
+| **Clock injection (recommended)** | Yes | Yes | Yes | Forces explicit dependency |
+
+**[community] The most common Temporal TDD mistake is reaching for `vi.spyOn(Temporal.Now, 'instant')` as a shortcut.** While `vi.spyOn` can intercept `Temporal.Now.instant`, it creates a global mutation that leaks across tests unless carefully restored, and it does not cover every `Temporal.Now.*` method. The Clock interface injection approach is four extra lines of production code and produces universally testable, deterministic temporal logic — the correct TDD trade-off.
+
+---
+
+### Vitest 3.2 — Per-Test `AbortSignal` for Cancellation-Aware TDD [community]
+
+Vitest 3.2 added an `AbortSignal` to each test case's context (`ctx.signal`). The signal is aborted when the test case times out or is cancelled (e.g., by `bail: 1` stopping the suite). This enables TDD for cancellation-aware code — domain logic that should react to in-flight request cancellation — without needing a separate fake signal factory.
+
+```typescript
+// order-search.test.ts — TDD for cancellation-aware domain logic
+import { describe, it, expect } from 'vitest';
+import { searchOrders } from './OrderSearch.js';
+import { InMemoryOrderIndex } from '../test-doubles/InMemoryOrderIndex.js';
+
+describe('OrderSearch', () => {
+  it('returns results for a valid query', async (ctx) => {
+    const index = new InMemoryOrderIndex([
+      { id: 'ORD-1', description: 'blue widget' },
+      { id: 'ORD-2', description: 'red gadget' },
+    ]);
+
+    // ctx.signal is live — not yet aborted at this point
+    const results = await searchOrders('blue', index, ctx.signal);
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe('ORD-1');
+  });
+
+  it('aborts the search when the signal fires', async (ctx) => {
+    const index = new InMemoryOrderIndex([]);
+
+    // Simulate cancellation by creating an already-aborted signal
+    const controller = new AbortController();
+    controller.abort(new DOMException('User cancelled', 'AbortError'));
+
+    await expect(searchOrders('anything', index, controller.signal))
+      .rejects.toThrow('User cancelled');
+  });
+
+  it('propagates the test timeout signal to long-running operations', async (ctx) => {
+    // Use ctx.signal directly — it will be aborted if the test times out
+    // This TDD pattern ensures the production code honours AbortSignal correctly
+    const index = new SlowOrderIndex(delayMs: 100);
+    const results = await searchOrders('widget', index, ctx.signal);
+    expect(results.length).toBeGreaterThanOrEqual(0);
+  }, { timeout: 500 }); // test-level timeout; ctx.signal fires if exceeded
+});
+```
+
+```typescript
+// OrderSearch.ts — GREEN: production code that honours AbortSignal
+export async function searchOrders(
+  query: string,
+  index: OrderIndex,
+  signal: AbortSignal
+): Promise<Order[]> {
+  signal.throwIfAborted(); // Temporal fast-fail at entry point
+  const results = await index.search(query, { signal });
+  signal.throwIfAborted(); // Check again after await — signal may have fired
+  return results;
+}
+```
+
+**TDD use cases for `ctx.signal`:**
+
+1. **Cancellation-aware domain logic:** Pass `ctx.signal` directly to the function under test to verify it propagates the signal to collaborators — no need to create a separate `AbortController` in most test cases.
+
+2. **Timeout-driven cancellation testing:** Set a short `timeout` on a test case and pass `ctx.signal` to the implementation. If the implementation does not honour the signal, the test harness times out rather than hanging indefinitely — surfacing the missing cancellation handling as a test failure rather than a CI timeout.
+
+3. **Streaming / async iterator tests:** Pass `ctx.signal` to an async generator under test to verify it stops producing values on cancellation.
+
+```typescript
+// async-iterator TDD: verify generator respects cancellation
+it('stops producing events when the signal is aborted', async (ctx) => {
+  const emitter = new OrderEventEmitter();
+  const events: string[] = [];
+  const controller = new AbortController();
+
+  // Start consuming; cancel after 3 events
+  for await (const event of emitter.stream(controller.signal)) {
+    events.push(event.type);
+    if (events.length === 3) controller.abort();
+  }
+
+  expect(events).toHaveLength(3);
+  // If stream() did not honour the signal, the loop would never exit
+});
+```
+
+**[community] Before `ctx.signal` was available in Vitest 3.2, teams passed `new AbortController().signal` directly or used `vi.fn()` stubs for the signal parameter.** The `ctx.signal` approach is superior for timeout-driven cancellation tests because it is automatically wired to Vitest's internal test lifecycle: if the test times out, the signal fires, the test fails with a timeout error, and any outstanding async work can clean up via the signal. Teams using the old manual `AbortController` pattern had to manually synchronise the controller lifetime with the `afterEach` hook.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 25)
+
+46. **[community] The `ts5to6` codemod does not update `"types"` arrays — the highest-impact TDD breakage must be fixed manually.** The `ts5to6` automated migration tool ([github.com/andrewbranch/ts5to6](https://github.com/andrewbranch/ts5to6)) handles `baseUrl` → `paths` migration, deprecated option removal, and `rootDir` inference fixes. However, it does not add `"types": ["vitest/globals"]` (or `"jest"` / `"mocha"`) to `tsconfig.json` — because it cannot know which test framework's globals your project uses. Teams that run the codemod and assume the migration is complete will still hit the `Cannot find name 'describe'` TypeScript error in every test file. The correct checklist: run `ts5to6` for mechanical config changes, then manually add the `types` array entry for the test runner, then run `tsc --noEmit` to catch any remaining issues. Do not use `ts5to6` as the sole migration step before upgrading `typescript`.
+
+47. **[community] `ctx.signal` in Vitest 3.2 is not the same as an `AbortController` created in `beforeEach` — it fires on test _timeout_, not on `afterEach`.** Teams who read about `ctx.signal` and attempt to use it as a general teardown signal (e.g., for cleaning up background tasks in all test cases, not just timeout cases) will find it does not fire when a test case completes normally. `ctx.signal` is only aborted on timeout or external cancellation. For general cleanup of background async work, continue to use `using` (TypeScript 5.2 Explicit Resource Management) or `afterEach` hooks. The correct use of `ctx.signal` is narrowly scoped: pass it to production code that should be cancellation-aware, and verify it is honoured when the timeout fires. Mixing `ctx.signal` with `afterEach` teardown logic creates a race: the `afterEach` cleanup may run before the signal fires (normal completion), making the cleanup correct, but for a timeout case the signal fires during the test body before `afterEach` — a different execution path the cleanup code may not handle.
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -5110,3 +5368,6 @@ describe('OrderService', () => {
 | Google Testing Blog — "Sort Lines in Source Code" | Blog post | https://testing.googleblog.com/2025/09/sort-lines-in-source-code.html | 2025 Google TotT post; consistent line ordering in test doubles and fixtures reduces merge conflicts and improves scanability during TDD refactor phase |
 | Node.js Subpath Imports | Docs | https://nodejs.org/api/packages.html#subpath-imports | `package.json` `imports` field for `#/` subpath imports; works with Vitest `runner: 'node'` and `viteModuleRunner: false` without bundler plugins |
 | Vitest 4.1 Coverage Ignore Comments | Docs | https://vitest.dev/guide/coverage | Coverage ignore comments require `@preserve` annotation in esbuild pipelines: `/* v8 ignore next -- @preserve */`; without `@preserve`, esbuild strips comments before coverage instrumentation |
+| TypeScript 6.0 Temporal API | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | Stage-4 Temporal API built-in types in TS 6.0 via `"lib": ["esnext"]`; use Clock interface injection (not vi.spyOn) for TDD against Temporal.Now |
+| ts5to6 Migration Codemod | Tool | https://github.com/andrewbranch/ts5to6 | Automates mechanical TypeScript 6.0 migration: `baseUrl`→`paths`, deprecated options, `rootDir` inference; does NOT update `"types"` arrays (must be done manually for test runner globals) |
+| Vitest 3.2 — AbortSignal per Test Case | Docs | https://vitest.dev/guide/test-context.html | `ctx.signal` fired on test timeout; enables TDD for cancellation-aware code; distinct from `afterEach` cleanup — fires only on timeout/cancellation, not normal test completion |

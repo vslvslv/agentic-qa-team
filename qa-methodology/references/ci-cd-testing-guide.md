@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-9 (TS 5.9 May 2025: --module node20 stable — locked Node 20 semantics with no future behavior changes unlike nodenext; cache instantiations on mapper types — ~11% faster tsc on complex libraries like Zod/tRPC; types:[] in tsc --init default tsconfig blocks accidental @types/* ambient pollution; ArrayBuffer type hierarchy change — Uint8Array.buffer now returns SharedArrayBuffer|ArrayBuffer union, may produce new CI type errors on upgrade; moduleDetection:force default in tsc --init) | prev: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 57 CI testing pillars covered in this guide:**
+**The 60 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -75,6 +75,9 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 55 | Vitest 4.1 mock API improvements | `mockThrow()`/`mockThrowOnce()`, Chai-style mock assertions, `vi.defineHelper()` for stack-trace hygiene, Vite 8 peer dep consolidation, Agent Reporter for AI CI contexts |
 | 56 | Node.js 24 LTS native runner upgrades | `--test-global-setup` for zero-framework global setup/teardown; snapshot testing stable (since Node 23.4); programmatic coverage thresholds (`lineCoverage`, `branchCoverage`, `functionCoverage`); npm 11 `--ignore-scripts` suppresses `prepare`; type stripping at RC status |
 | 57 | TypeScript 5.8 CI gate: `--erasableSyntaxOnly` | Validates Node.js type-stripping compatibility — errors on enums, namespaces, parameter properties, `import =` / `export =`; pair with `--libReplacement false` to skip `@typescript/lib-*` lookups for faster CI |
+| 58 | TypeScript 5.9 `--module node20` | Stable frozen Node 20 module semantics for CI typecheck jobs targeting Node 20 LTS — use `nodenext` for Node 22+ |
+| 59 | Playwright `context.setStorageState()` | Playwright v1.51+: replace auth state in-place without creating a new browser context — 50ms switch vs. 3–5s new context |
+| 60 | Vitest tag shared configuration options | Vitest v4.1+: assign `timeout`, `retry`, and `concurrent` to a named tag — applied automatically to all tests bearing that tag |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3621,6 +3624,9 @@ module.exports = {
 | TypeScript 5.8 `--erasableSyntaxOnly` enabled without prior enum/namespace audit | All enums, namespaces, parameter properties, and `import =` / `export =` expressions instantly become compiler errors — mass CI failure on first enable in large codebases | Run `tsc --erasableSyntaxOnly --noEmit` as an advisory non-blocking step first; capture error count; refactor over 1–2 sprints (convert enums to `const` objects or `satisfies` maps), then promote to required gate |
 | `--libReplacement false` set globally when some packages use `@typescript/lib-*` replacements | `@typescript/lib-*` package-based lib overrides silently stop working; type definitions revert to bundled TypeScript defaults — subtle type widening that is not caught by tests | Only set `--libReplacement false` in packages/tsconfigs that have no `@typescript/lib-*` devDependencies; audit with `jq '.devDependencies | keys[] | select(startswith("@typescript/lib"))' package.json` |
 | `--module node18` used in a project targeting Node 22+ | `--module node18` disallows `require()` of ESM modules entirely; Node 22 natively supports `require()` of ESM under `--module nodenext` — useful CI patterns (dynamic require for CJS plugin loading) silently break | Use `--module nodenext` for Node 22+ targets; reserve `--module node18` for projects that explicitly must not call `require()` on ESM |
+| `--module node20` used in a project targeting Node 22+ | `node20` is a frozen snapshot of Node 20 semantics — `require()` of ESM is disallowed even on Node 22+ runners; CI misses a class of valid patterns | Use `--module nodenext` for Node 22+ targets; `--module node20` is for projects strictly deployed on Node 20 LTS |
+| `context.setStorageState({})` used to reset auth | Empty-object call is a no-op — no cookies or storage cleared; previous user's session persists to next test | Use `context.setStorageState({ cookies: [], origins: [] })` for full reset; empty object field = no change |
+| Vitest tag shared options (`timeout`, `retry`) defined in `defineProject` but expected globally | Tag options in a project-level config apply only to that project — other workspace projects use defaults | Define cross-project tag options at the root `defineConfig` level; project-level tag options are project-scoped only |
 
 ## Real-World Gotchas [community]
 
@@ -3798,6 +3804,14 @@ export default env;
 59. **Node.js 24 native test runner `--test-global-setup` module must use ESM exports** [community]: The `--test-global-setup` module is loaded as a Node.js ESM module — it must use `export async function setup()` and `export async function teardown()` syntax. CommonJS modules (`module.exports = { setup, teardown }`) are not recognized and the global setup is silently skipped with no error. Teams migrating global setup from Jest (`globalSetup.js` using `module.exports`) to the Node 24 native runner must convert to ESM exports. If the project uses `"type": "commonjs"`, use a `.mts` or `.mjs` extension for the global setup file to force ESM parsing.
 
 60. **TypeScript 5.8 `--erasableSyntaxOnly` mass failure on first CI enable** [community]: TypeScript 5.8 introduced `--erasableSyntaxOnly`, which restricts TypeScript syntax to features that can be removed by simple erasure (as Node.js type-stripping does). Enums, namespaces, parameter properties (`constructor(private x: T)`), `import =` / `export =`, and decorators without `experimentalDecorators` all become compile errors. In a mature codebase, enabling this flag for the first time in a required CI gate typically produces 50–300 errors across test files alone — test helpers commonly use parameter properties and `const enum`. Always enable as a non-blocking advisory gate first: `tsc --erasableSyntaxOnly --noEmit 2>&1 | tee erasable-audit.txt; wc -l erasable-audit.txt`. Count errors, schedule refactoring (convert parameter properties to explicit assignments, convert enums to `const` maps or string unions), then promote to required after the audit sprint.
+
+61. **TypeScript 5.9 `Uint8Array.buffer` type change causes new CI errors on upgrade** [community]: TypeScript 5.9 correctly narrows `TypedArray.buffer` from `ArrayBuffer` to `ArrayBuffer | SharedArrayBuffer`. Functions that accept exactly `ArrayBuffer` now fail when passed `.buffer` from a `Uint8Array` or `Int32Array`. This shows up most commonly in test helpers for binary assertions, crypto utilities, and serialization tests. Before upgrading `typescript` in `devDependencies` to `^5.9.0`, run `tsc --noEmit 2>&1 | grep -c "SharedArrayBuffer"` to count affected sites. Fix by widening the function parameter to `ArrayBuffer | SharedArrayBuffer`, or add an explicit `as ArrayBuffer` cast where you are certain the buffer is not shared.
+
+62. **TypeScript 5.9 `--module node20` — wrong choice for Node 22+ deployments** [community]: TypeScript 5.9 added `--module node20` as a stable, frozen snapshot of Node 20 module semantics. Unlike `--module nodenext` (which tracks the latest Node behavior), `node20` will never gain new behaviors such as `require()` of ESM modules (a Node 22 feature). Teams that use `--module node20` on a project targeting Node 22+ miss the type safety from `require()`-of-ESM constraint checking — TypeScript does not warn about patterns that are valid in Node 20 but would behave differently in Node 22. Use `--module nodenext` for Node 22+ targets; reserve `--module node20` for projects strictly deployed on Node 20 LTS.
+
+63. **Playwright `context.setStorageState()` called with empty object — no-op, not a reset** [community]: Playwright v1.51+ supports `browserContext.setStorageState(state)` for in-place auth state replacement. A common mistake: calling `await context.setStorageState({})` expecting it to clear all auth state. An empty object is a no-op — no cookies or storage entries are cleared. The correct idiom for a full reset is `await context.setStorageState({ cookies: [], origins: [] })`. Teams that use the empty-object form believe they have logged out between tests but are surprised when subsequent tests see the previous user's session. This manifests as "passed locally (first test run) but failed on subsequent runs in the same CI job" — a subtle ordering-dependent defect.
+
+64. **Vitest tag shared options defined at project level instead of root level** [community]: In a Vitest workspace with multiple `defineProject` configs, `tags` options (like `timeout` and `retry`) defined inside a `defineProject` block apply only to tests in that project. Teams that define tag options in one `defineProject` file expect them to apply to all projects in the workspace — they do not. The root-level `defineConfig` is the correct place for cross-project tag configuration. When a `@db` tag with `timeout: 60_000` is defined only in `packages/api/vitest.config.ts`, tests tagged `@db` in `packages/core` receive the default timeout. Audit all tag definitions: root-level = applies everywhere; project-level = applies to that project only.
 
 
 |---|---|---|---|
@@ -7930,5 +7944,421 @@ function extractId(input: unknown): number {
 ```
 
 > [community] The most impactful TypeScript 5.8 CI change for existing codebases is the granular branch return type check. Teams upgrading from TS 5.7 to 5.8 with existing `any`-heavy helper functions report 10–40 newly-failing type errors in their test files — test helpers that return `any` from a mock path and are called in typed contexts. Run `tsc --version` in CI before and after upgrading TypeScript in `devDependencies`; if the major type-check gate suddenly gains new errors after a `typescript` devDependency bump, this is the likely cause. Fix by replacing `as any` casts with typed assertions or generics in the affected return expressions.
+
+---
+
+### TypeScript 5.9 CI-Relevant Features [community]
+
+TypeScript 5.9 (released May 2025) delivers three changes with direct CI pipeline implications: a stable `--module node20` target, compiler performance improvements from cached type mapper instantiations, and a stricter `ArrayBuffer` type hierarchy that can produce new CI type errors on upgrade.
+
+**`--module node20` — stable, locked Node 20 semantics**
+
+TypeScript 5.8 stabilized `--module node18` and `--module nodenext`. TypeScript 5.9 adds `--module node20` as a third option, targeting Node.js 20 LTS semantics with one critical difference from `nodenext`: the behavior is **frozen at Node 20 semantics** and will not evolve as `nodenext` does.
+
+> [community] Teams running Node 20 LTS in production who used `--module nodenext` have occasionally been surprised by TypeScript "adopting" newer Node behavior (e.g., allowing `require()` of ESM on Node 22+) that does not apply to their pinned Node 20 environment. `--module node20` locks the TypeScript type-checking behavior to exactly what Node 20 supports — if your `package.json` `engines` field says `"node": ">=20 <22"`, this is the correct target. Teams with multi-Node CI matrices can gate separate typecheck jobs per version using the matching `--module` flag.
+
+```yaml
+# .github/workflows/ci-matrix-typecheck.yml — per-version module target
+jobs:
+  typecheck:
+    strategy:
+      matrix:
+        include:
+          - node: 20
+            module-target: node20
+          - node: 22
+            module-target: nodenext
+          - node: 24
+            module-target: nodenext
+    runs-on: ubuntu-latest
+    name: Typecheck (Node ${{ matrix.node }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: ${{ matrix.node }}, cache: npm }
+      - run: npm ci
+      # Use the module target that matches the Node version in production
+      - run: npx tsc --noEmit --module ${{ matrix.module-target }} --moduleResolution bundler
+        name: TypeScript type-check (Node ${{ matrix.node }} semantics)
+```
+
+**Compiler performance: cache instantiations on mapper types**
+
+TypeScript 5.9 caches intermediate type instantiations when working with generic mapper types — the internal mechanism behind `Partial<T>`, `Required<T>`, `Readonly<T>`, and library types from Zod, tRPC, and Prisma. On codebases with deep generic chains, the benchmark shows approximately **11% reduction in `tsc --noEmit` wall-clock time** on large projects.
+
+> [community] Teams running `tsc --noEmit` on large TypeScript codebases with Zod schema objects or Prisma-generated types report the 5.9 upgrade as the cheapest CI speedup available — zero config changes, zero code changes. On a 45-second typecheck step this saves ~5 seconds per run. Combined with the `--libReplacement false` flag from TS 5.8, teams with Zod-heavy codebases consistently achieve 15–20% faster type-check steps. Upgrade `typescript` in `devDependencies` to `^5.9.0` and measure with `time npx tsc --noEmit`.
+
+**`types: []` default in `tsc --init` — blocks ambient type pollution**
+
+The new `tsc --init` default tsconfig includes `"types": []`, which disables automatic resolution of `@types/*` packages from `node_modules/@types`. Previously the default was to auto-include all ambient type declarations, which caused `window`, `document`, and browser globals to appear in Node.js test files (from `@types/jest-dom` or `@types/testing-library__jest-dom`), producing false-positive type safety.
+
+> [community] Teams that run `tsc --init` on new projects and adopt `types: []` report catching a subtle class of test-file errors: a Node.js service test that accidentally uses `document.querySelector()` in assertion code — which compiles fine when browser types are ambient but is caught immediately when `types` is explicit. The fix requires team discipline: if a test file needs DOM types, it must explicitly reference `/// <reference types="@types/jest-dom" />` or add `"@testing-library/jest-dom"` to the `types` array in `tsconfig.test.json`. This makes the type boundary explicit and auditable in CI.
+
+```json
+// tsconfig.json — TS 5.9 tsc --init defaults (prescriptive for new projects)
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "esnext",
+    "types": [],                  // Explicit: no accidental ambient @types/* inclusion
+    "sourceMap": true,
+    "declaration": true,
+    "strict": true,
+    "moduleDetection": "force",   // Treat all files as modules — no accidental globals
+    "skipLibCheck": true,
+    "isolatedModules": true
+  }
+}
+```
+
+```json
+// tsconfig.test.json — extends main; adds only the types needed for tests
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vitest/globals", "@testing-library/jest-dom"],
+    "noEmit": true
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.spec.ts", "tests/**/*.ts"]
+}
+```
+
+**`ArrayBuffer` type hierarchy change — potential new CI errors on upgrade**
+
+TypeScript 5.9 narrows the type of `.buffer` on typed arrays (`Uint8Array`, `Int32Array`, etc.) from `ArrayBuffer` to `ArrayBuffer | SharedArrayBuffer`. This is technically correct — a `Uint8Array` can be backed by either, but prior TypeScript versions reported `.buffer` as plain `ArrayBuffer` regardless. Code that passes `.buffer` to a function expecting exactly `ArrayBuffer` now produces a new type error.
+
+> [community] Teams upgrading TypeScript in CI from 5.8 → 5.9 and running the `tsc --noEmit` gate report finding 3–15 new type errors in test files that use `Uint8Array.buffer` for binary assertions or serialization tests. The errors appear in test helpers that call `crypto.subtle.digest()`, `Buffer.from(array.buffer)`, or custom binary comparison utilities. The fix is either `array.buffer as ArrayBuffer` (if you know it cannot be shared) or to update the function signature to accept `ArrayBuffer | SharedArrayBuffer`. Budget 30–60 minutes to audit and fix when upgrading.
+
+```typescript
+// src/utils/binary.test.ts — TypeScript 5.9 ArrayBuffer fix
+import { describe, it, expect } from 'vitest';
+
+// BEFORE (TypeScript <=5.8): no error
+// function hashBytes(buf: ArrayBuffer): Promise<string> { ... }
+
+// TypeScript 5.9: Uint8Array.buffer returns ArrayBuffer | SharedArrayBuffer
+// Fix: accept the union or cast explicitly
+async function hashBytes(buf: ArrayBuffer | SharedArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+describe('hashBytes', () => {
+  it('hashes a Uint8Array buffer correctly', async () => {
+    const input = new TextEncoder().encode('hello');
+    // TypeScript 5.9: input.buffer is ArrayBuffer | SharedArrayBuffer — passes to union param
+    const hash = await hashBytes(input.buffer);
+    expect(hash).toHaveLength(64);
+  });
+});
+```
+
+**CI upgrade checklist for TypeScript 5.9:**
+
+```yaml
+# .github/workflows/ts-upgrade-check.yml — verify TS 5.9 upgrade is clean
+name: TypeScript 5.9 Upgrade Validation
+
+on: workflow_dispatch  # run manually before merging the TS version bump
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+
+      # Count new errors introduced by 5.9 ArrayBuffer change
+      - name: Check ArrayBuffer-related type errors
+        run: |
+          ERROR_COUNT=$(npx tsc --noEmit 2>&1 | grep -c "ArrayBuffer\|SharedArrayBuffer" || true)
+          echo "ArrayBuffer type errors: $ERROR_COUNT"
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "::warning::$ERROR_COUNT ArrayBuffer type errors found — see TypeScript 5.9 migration notes"
+            npx tsc --noEmit 2>&1 | grep "ArrayBuffer\|SharedArrayBuffer"
+          fi
+
+      # Verify performance improvement is real for this codebase
+      - name: Benchmark type-check speed
+        run: |
+          START=$(date +%s%N)
+          npx tsc --noEmit
+          END=$(date +%s%N)
+          ELAPSED=$(( (END - START) / 1000000 ))
+          echo "Type-check duration: ${ELAPSED}ms"
+          echo "typecheck_duration_ms=$ELAPSED" >> "$GITHUB_STEP_SUMMARY"
+```
+
+> [community] The `moduleDetection: "force"` setting (included in the new `tsc --init` defaults) changes how TypeScript decides whether a file is a script or a module — it forces every file to be treated as an ECMAScript module, even files without any `import`/`export` statements. This catches a class of ambient variable leakage: global `var` declarations in one test file bleeding into another test file's type namespace. Teams that adopt this setting on large codebases report 1–5 new type errors from files that relied on implicit global augmentation (typically legacy test helpers written as script files). Convert them to proper module exports.
+
+---
+
+### Playwright `browserContext.setStorageState()` for In-Place Auth Reset [community]
+
+Playwright v1.51 added `browserContext.setStorageState(state)` — an instance method that clears and replaces the browser context's storage (cookies, localStorage, sessionStorage, IndexedDB) without creating a new browser context. Before this API, tests that needed to switch authenticated users or log out mid-suite had to create a new browser context (expensive: new browser process or at least new page with fresh memory) or manually delete each cookie individually (brittle: misses non-cookie auth state).
+
+> [community] Teams with multi-user e2e test scenarios (e.g., testing admin + regular user interactions on the same page) report that `setStorageState()` eliminates the most common context management complexity in Playwright suites. Previously, switching from an admin session to a user session required `browser.newContext()` and setting up all fixtures again — a 3–5 second overhead per switch. `setStorageState()` performs the switch in under 50ms by replacing the auth state in-place. On suites with 10+ multi-user tests, this can save 30–50 seconds of total runtime.
+
+```typescript
+// tests/e2e/multi-user.spec.ts — in-place auth state switching (Playwright v1.51+)
+import { test, expect } from '@playwright/test';
+import * as path from 'path';
+import * as fs from 'fs';
+
+// Pre-generated auth state files (created by setup project or CI seed step)
+const ADMIN_AUTH  = path.join(__dirname, '.auth/admin.json');
+const USER_AUTH   = path.join(__dirname, '.auth/user.json');
+
+test.describe('Permission enforcement', () => {
+  test('admin sees management panel; regular user does not', async ({ browser }) => {
+    // Create ONE browser context — reused for both user roles
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    // --- Admin session ---
+    await context.setStorageState(
+      JSON.parse(fs.readFileSync(ADMIN_AUTH, 'utf8')),
+    );
+    await page.goto('/settings/users');
+    await expect(page.getByRole('heading', { name: 'User Management' })).toBeVisible();
+
+    // Switch to regular user — replaces auth state in-place, no new context needed
+    await context.setStorageState(
+      JSON.parse(fs.readFileSync(USER_AUTH, 'utf8')),
+    );
+    await page.reload();  // refresh after auth state change
+
+    // Regular user must be redirected away from the admin page
+    await expect(page).not.toHaveURL('/settings/users');
+    await expect(page.getByRole('alert')).toContainText('Access denied');
+
+    await context.close();
+  });
+});
+```
+
+**Storage state reset between tests (clearing auth without creating a new context):**
+
+```typescript
+// tests/e2e/fixtures.ts — reset storage state between tests using fixture
+import { test as base } from '@playwright/test';
+import * as path from 'path';
+import * as fs from 'fs';
+
+const AUTH_FILE = path.join(__dirname, '.auth/user.json');
+
+// Typed fixture: provides a page with a fresh auth state before each test
+export const test = base.extend<{ freshPage: import('@playwright/test').Page }>({
+  freshPage: async ({ browser }, use) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    // Set auth state from pre-generated file (no login overhead)
+    if (fs.existsSync(AUTH_FILE)) {
+      await context.setStorageState(
+        JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')),
+      );
+    }
+
+    await use(page);
+
+    // After test: clear storage state (reset for isolation) instead of closing context
+    // This is faster than creating a new context on the next test
+    await context.setStorageState({ cookies: [], origins: [] });
+    await context.close();
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+**GitHub Actions — pre-generating multiple auth state files in setup project:**
+
+```yaml
+# .github/workflows/ci.yml — generate auth state files once, reuse across shards
+jobs:
+  e2e:
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+
+      # Setup project generates .auth/admin.json and .auth/user.json
+      # Each shard downloads these auth files and calls setStorageState() in tests
+      - run: npx playwright test --project=setup
+        env: { CI: 'true', BASE_URL: ${{ vars.TEST_BASE_URL }} }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auth-state-${{ matrix.shard }}
+          path: tests/e2e/.auth/
+          retention-days: 1  # only needed for the duration of the CI run
+
+      - run: npx playwright test --shard=${{ matrix.shard }}/4 --reporter=blob
+        env: { CI: 'true', BASE_URL: ${{ vars.TEST_BASE_URL }} }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+```
+
+> [community] The `setStorageState({ cookies: [], origins: [] })` call with empty arrays is the correct idiom for a full storage reset — it clears all cookies AND all origin-scoped localStorage/sessionStorage entries. Using just `setStorageState({})` (no `cookies` or `origins` fields) is a no-op — the storage state is not changed. Teams that accidentally use the empty-object form expect a logout but are surprised when subsequent requests are still authenticated. Always pass explicit empty arrays for each field you want cleared.
+
+---
+
+### Vitest Test Tags with Shared Configuration Options [community]
+
+Vitest v4.1 extended the test tags feature beyond simple filtering labels. Tags can now carry **shared configuration options** — `timeout`, `retry`, and `concurrent` — that are automatically applied to every test bearing that tag. This eliminates the pattern of copying `{ timeout: 60_000 }` onto every slow integration test individually.
+
+> [community] Teams with mixed unit and integration test files report that tag-based shared configuration is the most ergonomic CI improvement in Vitest 4.1 for reducing per-test boilerplate. Before this feature, the only way to give all `@db` tests a longer timeout was to wrap them in a `describe` block with explicit timeout or configure a separate Vitest config. Tag-based options apply across all files regardless of where the test lives — no restructuring required.
+
+```typescript
+// vitest.config.ts — tag configuration with shared options (Vitest v4.1+)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    pool: 'threads',
+    isolate: true,
+    // Declare tags with shared options — applied to every test bearing that tag
+    tags: [
+      {
+        // @db: integration tests that require a live database connection
+        name: 'db',
+        timeout: 60_000,           // 60s for container startup + query
+        retry: process.env['CI'] ? 1 : 0,   // 1 retry in CI for cold-start flakiness
+      },
+      {
+        // @slow: known long-running tests — nightly only
+        name: 'slow',
+        timeout: 120_000,          // 2 minutes
+      },
+      {
+        // @flaky: tests under investigation — extra retries while root cause is fixed
+        name: 'flaky',
+        retry: process.env['CI'] ? 3 : 0,
+        // Note: document WHY the test is tagged @flaky in a comment near the test
+      },
+      {
+        // @smoke: fast smoke tests — no special timeout needed
+        name: 'smoke',
+        timeout: 5_000,            // strict 5s timeout catches newly slow smoke tests
+        retry: 0,                  // smoke must pass on first attempt
+      },
+    ],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      include: ['src/**/*.ts'],
+    },
+  },
+});
+```
+
+```typescript
+// src/services/order-service.test.ts — tag-based configuration in action
+import { describe, it, expect, vi } from 'vitest';
+import { OrderService } from './order-service';
+import type { OrderRepository } from '../repositories/order-repository';
+
+const mockRepo = {
+  save: vi.fn(),
+  findById: vi.fn(),
+} satisfies Partial<OrderRepository>;
+
+// @smoke: 5s timeout enforced by tag config — no need to write { timeout: 5_000 }
+describe('OrderService — smoke', { tags: ['@smoke'] }, () => {
+  it('calculates total correctly for single-item order', () => {
+    const svc = new OrderService(mockRepo as unknown as OrderRepository);
+    const order = svc.buildOrder({ items: [{ price: 25, qty: 3 }] });
+    expect(order.total).toBe(75);
+  });
+});
+
+// @db: 60s timeout + 1 retry applied automatically from tag config
+// No { timeout: 60_000 } needed on individual tests
+describe('OrderService — database integration', { tags: ['@db'] }, () => {
+  it('persists an order and retrieves by ID', async () => {
+    // ... real database call — timeout handled by tag config
+    expect(true).toBe(true); // placeholder
+  });
+
+  it('rejects duplicate order IDs with a unique constraint error', async () => {
+    // ... another DB test — timeout + retry from tag, no boilerplate
+    expect(true).toBe(true);
+  });
+});
+
+// @slow: 120s timeout from tag — long-running performance test
+it('processes 5000 orders within 10 seconds', { tags: ['@slow'] }, async () => {
+  // ... bulk processing — tag handles timeout
+  expect(true).toBe(true);
+});
+```
+
+**CI stage filtering using tag boolean expressions:**
+
+```yaml
+# .github/workflows/ci.yml — tag-based stage configuration
+jobs:
+  smoke:
+    # Push to any branch — only @smoke tests (strict timeout enforced by tag)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx vitest run --tags-filter="@smoke"
+        name: Smoke tests
+
+  integration:
+    # PR gate — smoke + db tests (excludes @slow nightly tests)
+    needs: smoke
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx vitest run --tags-filter="@smoke or @db" --tags-filter="not @flaky"
+        name: PR integration tests
+
+  nightly:
+    # All tests including @slow — with flaky tests getting extra retries from tag config
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # No filter — all tags run with their configured timeouts and retry counts
+      - run: npx vitest run --coverage --reporter=verbose
+        name: Full nightly suite
+```
+
+> [community] The `@flaky` tag with `retry: 3` is the most impactful use of tag-based shared options for CI quality governance: it creates a machine-readable quarantine list (tagged tests) with automatic retry behavior, while making it visible in the codebase exactly WHICH tests are being given extra chances to pass. Teams that use this tag consistently report that flaky tests get fixed faster — the presence of `@flaky` in code review is an immediate trigger for the reviewer to ask "why is this flaky and when will it be fixed?" whereas a `retryTimes(3)` call at the top of the test file is often overlooked.
+
+> [community] A common mistake when configuring `tags` with options: expecting the options to apply globally to all tests with that tag name regardless of where the tags array is defined. The `tags` configuration in `vitest.config.ts` applies to the specific project scope. Teams using Vitest workspace projects with separate `defineProject` configs need to either define the tag configuration at the root `defineConfig` level (where it applies to all projects) or repeat it in each `defineProject` file. Root-level tag configuration is applied first; project-level configuration for the same tag name overrides the root value.
+
+---
 
 

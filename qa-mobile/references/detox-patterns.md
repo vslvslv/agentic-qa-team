@@ -1,6 +1,7 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 51 | score: 99/100 | date: 2026-05-12 -->
-<!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 (May 2026) -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 52 | score: 99/100 | date: 2026-05-12 -->
+<!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 #4948 + Issues #4937 #4942 #4945 #4901 (May 2026) -->
+<!-- iteration 52 (2026-05-12) adds: Gotcha 89 (ADB commands fail when Android device serial contains parentheses, e.g. mDNS/Wi-Fi serials like "adb-xxx (2)._adb-tls", Issue #4937), Gotcha 90 (SyncStatusSchema rejects null one_time_events object from iOS DetoxSync causing "Failed to execute the current status query" diagnostic errors, Issue #4942), Gotcha 91 (Android WebView injection silently broken in LavaMoat / JS-restricted environments before PR #4943 fix — upgrade to post-20.51.1 or use ignoreUnexpectedMessages:'warn'), Gotcha 92 (withAncestor() returns null on Android with New Architecture/Fabric — RN NewArch regression, Issue #4901), plus community note on toHaveText() lacking RegExp support (Issue #4914 workaround pattern), anti-pattern checklist rows 89-92, 4 new source links; 63 patterns total; ~10050+ lines -->
 <!-- iteration 51 (2026-05-12) adds: Gotcha 85 (iOS 26+ biometric API breaking change: --matchFace/--matchFinger deprecated, use --biometricMatch/--biometricNonmatch with --booted flag, Detox 20.51+, PR #4932), Gotcha 86 (Android <Modal> creates separate native Window — tap events silently bypass modal layer, Issue #4928), Gotcha 87 (RN 0.85 requires Detox 20.51+, version matrix update), Gotcha 88 (atIndex(N).getAttributes() on iOS returned ALL matching elements before fix in 20.51.x, PR #4912), Pattern 60 (Android Modal interaction workaround using restructured hierarchy), anti-pattern checklist rows 85-88, 4 new source links; 63 patterns total; ~9920+ lines -->
 <!-- iteration 44 (2026-05-12) adds: WebView testing (by.web() matchers, web element interactions, hybrid app patterns), visual regression with device.takeScreenshot() + external tools, JUnit XML CI reporting (jest-junit), React Native 0.78+ New Architecture strict mode notes, device.resetContentAndSettings() for deep iOS simulator reset, network activity tracking (NetworkSynchronizationEnabled per-configuration), 7 new community gotchas (44–50: by.web() IPC latency vs native sync, visual diff false positives from dynamic content, jest-junit path collision in sharded CI, device.resetContentAndSettings() permission re-grant pattern, Android API 35 predictive back gesture breaking by.system() back button, Hermes debugger port conflict on parallel CI jobs, and WebView URL not yet updated when Detox selector fires) -->
 <!-- iteration 45 (2026-05-12) adds: by.system() full dialog workflow (permissions/alerts/sheets), device.openURL() deep link testing pattern, parallel worker configuration for large suites, by.traits() iOS accessibility traits testing, element.getAttributes() extended inspection, device.shake() shake gesture testing, 6 new community gotchas (51–56: by.system() label locale mismatch, deep link cold-start race condition, parallel workers sharing global launchArgs, by.traits() not available on Android, getAttributes() returning null for off-screen elements, device.shake() no-op on physical devices without shake hardware) -->
@@ -9842,6 +9843,203 @@ The Detox maintainers are tracking an upstream fix to automatically target the `
 | Tapping elements inside RN `<Modal>` on Android | Move interactive elements outside `<Modal>` or use a non-Modal overlay; modal content lives in a separate native Window layer that Espresso cannot reach without explicit root targeting (Gotcha 86) |
 | Using RN 0.85 with Detox < 20.51 | Upgrade to Detox 20.51+ for React Native 0.85 compatibility (Gotcha 87) |
 | `element(by.id('item')).atIndex(2).getAttributes()` on iOS expecting a single-object result with Detox < 20.51 | Upgrade to 20.51+; before the fix (PR #4912), `atIndex()` was ignored and `getAttributes()` returned an `{elements: [...]}` array for all matches instead of a single object (Gotcha 88) |
+| ADB commands failing with "syntax error near unexpected token '('" on physical Android device connected via Wi-Fi | Caused by mDNS device serials containing parentheses — upgrade to a Detox version that quotes the serial, or force USB connection for CI (Gotcha 89) |
+| "Failed to execute the current status query" appearing in Detox logs on iOS even when synchronization is working | iOS DetoxSync legitimately emits `null` for `one_time_events.description.object`; the JS SyncStatusSchema rejects it — not a test failure, but it hides real diagnostic output (Gotcha 90) |
+| Android WebView content returns empty or tests fail with `element not found` inside a WebView on an app using LavaMoat or a restricted JS runtime | Upgrade to Detox build after PR #4943 (post-20.51.1); before the fix, WebView HTML injection threw silently and could emit error events breaking tests (Gotcha 91) |
+| `element(by.id('child').withAncestor(by.id('parent'))).atIndex(0)` fails with "was null" on Android with React Native New Architecture (Fabric) | Known regression in Detox with RN New Architecture on Android (Issue #4901); fall back to `by.id('child').and(by.descendant(by.id('parent')))` or add a unique testID to the child element to remove the `withAncestor` dependency (Gotcha 92) |
+| `toHaveText('Order #12345')` fails when order numbers are dynamic | `toHaveText()` does not accept `RegExp` (Issue #4914 open as of May 2026); use `getAttributes()` + `jestExpect(attrs.text).toMatch(/^Order #\d+/)` for dynamic content assertions (Gotcha 93) |
+
+---
+
+## Gotcha 89 — ADB commands fail when device serial contains parentheses (mDNS/Wi-Fi) [community]
+
+When a physical Android device connects via Wi-Fi, Android ADB assigns an mDNS serial in the form `adb-<uid> (2)._adb-tls-connect._tcp`. The parentheses are shell-special characters. Detox's `ADB.js` constructs the `-s <serial>` flag by string interpolation without quoting, so the shell treats `(2)` as a subshell expression and throws:
+
+```
+/bin/sh: syntax error near unexpected token '('
+```
+
+This surfaces as an apparent ADB failure unrelated to your test code.
+
+**Affected versions**: Detox ≤ 20.51.1 (Issue #4937, open as of May 2026)
+
+**Workaround options:**
+
+```bash
+# Option A — Force USB connection in CI (preferred for reliability)
+# In your CI pipeline, use USB tethering so the serial is numeric (e.g., "5721009297")
+adb devices   # verify serial is numeric before running Detox
+
+# Option B — Pin the device serial to the USB form in .detoxrc.js
+# (avoids relying on mDNS-assigned serial strings)
+```
+
+```js
+// .detoxrc.js — force a specific device serial to avoid mDNS serial issues
+module.exports = {
+  devices: {
+    physicalAndroid: {
+      type: 'android.attached',
+      device: {
+        adbName: '5721009297',  // numeric USB serial, not the mDNS form
+      },
+    },
+  },
+};
+```
+
+**Rule of thumb**: If Detox fails on a physical Android device with "syntax error near unexpected token '('" and not on the emulator, check `adb devices` — if the serial contains parentheses, you are hitting this bug.
+
+---
+
+## Gotcha 90 — SyncStatusSchema rejects `null` `one_time_events` object from iOS DetoxSync [community]
+
+iOS's DetoxSync framework intentionally serializes `null` for certain sync-status `object` fields (e.g., bundle-load events). Detox's JavaScript-side `SyncStatusSchema.json` enforces a strict string type, so these valid native payloads are rejected and the following error is logged:
+
+```
+Failed to execute the current status query
+```
+
+**Impact**: This is a **diagnostic** failure only — test execution continues. However, the error suppresses the helpful sync-status breakdown that normally appears when a `waitFor` times out, making flakiness harder to debug.
+
+**Affected versions**: Detox ≤ 20.51.1 (Issue #4942, open as of May 2026)
+
+**Workaround**: When debugging a `waitFor` timeout on iOS, temporarily add an additional `captureViewHierarchy()` before the failing line to compensate for the lost sync-status output:
+
+```js
+it('waits for data to load', async () => {
+  await element(by.id('refresh-button')).tap();
+
+  // If waitFor times out and sync-status output is blank, capture the view hierarchy
+  // to understand what is visible while the app is "busy":
+  await device.captureViewHierarchy('pre-timeout-state');  // remove after debugging
+
+  await waitFor(element(by.id('data-list')))
+    .toBeVisible()
+    .withTimeout(10000);
+});
+```
+
+**Fix ETA**: A schema patch to allow `string | null` for `one_time_events.description.object` is the expected resolution. Track Issue #4942.
+
+---
+
+## Gotcha 91 — Android WebView injection silently broken in LavaMoat / restricted JS environments (pre-PR #4943)
+
+Before the fix landed in PR #4943, Detox's Android `ViewHierarchyGenerator.kt` injected a bare JavaScript snippet into WebViews to extract HTML. In apps using **LavaMoat** (a locked-down JS sandbox) or other restricted runtime environments where certain global objects are unavailable, the injected code threw a runtime exception. The exception:
+
+1. Was **not surfaced to the test** (no explicit failure message)
+2. Could emit an error event that broke the Detox synchronization state
+3. Caused downstream `by.web()` selectors to silently return nothing
+
+**Affected versions**: Detox ≤ 20.51.1 with Android WebViews in restricted JS environments
+
+**Fix**: PR #4943 wraps the injection in a try-catch that returns a fallback empty HTML document on error. The fix shipped post-20.51.1.
+
+**Workaround until upgrade**:
+
+```js
+// Add ignoreUnexpectedMessages: 'warn' to your session config to surface
+// the hidden error events instead of silently swallowing them:
+// .detoxrc.js
+module.exports = {
+  session: {
+    ignoreUnexpectedMessages: 'warn',  // 'ignore' hides them, 'throw' breaks tests
+  },
+  // ...
+};
+```
+
+```js
+// When by.web() selectors return nothing in LavaMoat apps, verify the WebView is
+// not in a restricted context by checking for the error in Jest output:
+// "Error: Cannot access property 'document' of undefined"
+// If seen: upgrade to a Detox build that includes PR #4943.
+```
+
+---
+
+## Gotcha 92 — `withAncestor()` returns null on Android with React Native New Architecture (Fabric) [community]
+
+A regression introduced with React Native New Architecture (Fabric renderer) on Android causes `withAncestor()` queries to fail with "was null" even when both the parent and child elements are visibly rendered:
+
+```js
+// Fails with "was null" on Android + RN New Architecture:
+const row = element(by.id('row-item').withAncestor(by.id('items-list'))).atIndex(0);
+await expect(row).toBeVisible();  // throws: element was null
+```
+
+**Root cause**: Fabric changes the view hierarchy node types used by Espresso's view hierarchy traversal. The ancestor matcher relies on legacy bridge node types that are not present in the Fabric tree (Issue #4901, open as of May 2026).
+
+**Workarounds:**
+
+```js
+// Option A — Give the child a unique testID that does not need ancestor scoping
+// In your component:
+// <View testID="items-list">
+//   {items.map((item, i) => (
+//     <Row testID={`row-item-${item.id}`} key={item.id} />
+//   ))}
+// </View>
+//
+// In your test (no ancestor needed):
+await expect(element(by.id(`row-item-${targetId}`))).toBeVisible();
+
+// Option B — Use .and() with a descendant filter (often survives Fabric)
+// Check the child's own unique properties instead of climbing to parent:
+await expect(
+  element(by.id('row-item').and(by.text(targetTitle)))
+).toBeVisible();
+
+// Option C — Use atIndex() scoping when only one element per screen is expected
+await expect(element(by.id('row-item')).atIndex(0)).toBeVisible();
+```
+
+**Rule of thumb**: If a test using `withAncestor()` passes on iOS but fails on Android with New Architecture enabled, apply Option A (unique per-item testIDs) as the permanent fix — it is also the most resilient selector strategy regardless of architecture.
+
+---
+
+## Gotcha 93 — `toHaveText()` does not accept `RegExp` — use `getAttributes()` + `jestExpect().toMatch()` [community]
+
+As of Detox 20.51.1, `toHaveText()` only accepts a `string` argument. There is no built-in regex overload (Issue #4914 open as of March 2026). Tests that assert dynamic content (order numbers, timestamps, IDs) with exact strings will break when the dynamic part changes.
+
+```js
+// WRONG — will fail when the order number changes:
+await expect(element(by.id('confirmation-label'))).toHaveText('Order #12345 confirmed');
+
+// CORRECT — extract text and use Jest's regex matcher:
+const attrs = await element(by.id('confirmation-label')).getAttributes();
+jestExpect(attrs.text).toMatch(/^Order #\d+ confirmed$/);
+```
+
+```js
+// Pattern for any dynamic suffix (timestamp, ID, locale-formatted number):
+it('shows a formatted order total', async () => {
+  const attrs = await element(by.id('order-total-label')).getAttributes();
+  // Matches "$1,234.56" or "€1.234,56" regardless of locale
+  jestExpect(attrs.text).toMatch(/[\d,.]+/);
+  const numericValue = parseFloat(attrs.text.replace(/[^\d.]/g, ''));
+  jestExpect(numericValue).toBeGreaterThan(0);
+});
+```
+
+**Note**: `by.text()` already accepts `string | RegExp` for selectors. The gap is only in the assertion direction (`toHaveText`). Track Issue #4914 for the future `toHaveText(text: string | RegExp)` overload.
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 52 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| `device.matchFace()` / `device.unmatchFace()` on iOS 26+ simulator | Upgrade to Detox 20.51+; applesimutils removed the `--matchFace` flag on iOS 26+, now uses `--biometricMatch`/`--biometricNonmatch` with `--booted` (Gotcha 85) |
+| Tapping elements inside RN `<Modal>` on Android | Move interactive elements outside `<Modal>` or use a non-Modal overlay; modal content lives in a separate native Window layer that Espresso cannot reach without explicit root targeting (Gotcha 86) |
+| Using RN 0.85 with Detox < 20.51 | Upgrade to Detox 20.51+ for React Native 0.85 compatibility (Gotcha 87) |
+| `element(by.id('item')).atIndex(2).getAttributes()` on iOS expecting a single-object result with Detox < 20.51 | Upgrade to 20.51+; before the fix (PR #4912), `atIndex()` was ignored and `getAttributes()` returned an `{elements: [...]}` array for all matches instead of a single object (Gotcha 88) |
+| Tests failing with "syntax error near unexpected token '('" on physical Android via Wi-Fi | mDNS device serial contains parentheses — upgrade Detox or force USB connection (Gotcha 89) |
+| "Failed to execute the current status query" masking iOS sync diagnostics during `waitFor` timeouts | iOS DetoxSync emits `null` for some fields; add `captureViewHierarchy()` before failing line as debug aid while awaiting upstream schema fix (Issue #4942) (Gotcha 90) |
+| `by.web()` selectors returning nothing in Android apps using LavaMoat | Upgrade to post-PR #4943 Detox build; set `ignoreUnexpectedMessages: 'warn'` to surface hidden injection errors (Gotcha 91) |
+| `element(by.id('child').withAncestor(by.id('parent')))` failing with "was null" on Android + New Architecture | RN Fabric regression (Issue #4901); use unique per-item testIDs or `.and(by.text())` to remove `withAncestor` dependency (Gotcha 92) |
+| `toHaveText('Order #12345')` breaking when order number changes | `toHaveText()` has no RegExp overload; use `getAttributes()` + `jestExpect(attrs.text).toMatch(/regex/)` (Gotcha 93) |
 
 ---
 
@@ -9871,4 +10069,9 @@ The Detox maintainers are tracking an upstream fix to automatically target the `
 - Detox `atIndex().getAttributes()` iOS fix (20.51+): https://github.com/wix/Detox/pull/4912
 - Detox Android Modal window isolation (open issue): https://github.com/wix/Detox/issues/4928
 - Detox RN 0.85.2 support (20.51+): https://github.com/wix/Detox/pull/4936
+- Detox Android WebView injection error handling (PR #4943): https://github.com/wix/Detox/pull/4943
+- Detox ADB serial parentheses bug (open issue): https://github.com/wix/Detox/issues/4937
+- Detox SyncStatusSchema null rejection (open issue): https://github.com/wix/Detox/issues/4942
+- Detox withAncestor Android New Architecture regression (open issue): https://github.com/wix/Detox/issues/4901
+- Detox toHaveText RegExp support request (open issue): https://github.com/wix/Detox/issues/4914
 - React Navigation Testing: https://reactnavigation.org/docs/testing/

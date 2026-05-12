@@ -1,6 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 41 | score: 97/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 42 | score: 97/100 | date: 2026-05-12 -->
 <!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide, /app/tooling/typescript-support, /app/references/experiments, /guides/references/cypress-studio -->
+<!-- new in this iteration (42): fix stale result.code → result.exitCode in pattern 29 (Cypress 15 breaking change); 3 new community gotchas (117-119): Chrome autofill popup suppression (15.6.0), cy.intercept() multi-alias hang during navigation (fixed 15.12.0), cy.intercept() delay ≥ 2^31 now throws (15.13.1); pattern 131: multi-intercept + navigation safe patterns with 15.12.0 context -->
 <!-- new in this iteration (41): structural fix — restored missing "### 68. Pure API Test Suite with cy.request()" heading (was orphaned prose); score revised to 97/100 after independent review of all 130 patterns against Cypress changelog 15.0–15.14.2: no uncovered 2025-2026 APIs or breaking changes found; verified coverage complete through latest Cypress 15.14.2 release (2026-04-29) -->
 <!-- new in this iteration (40): cy.press() modifier key limitations + cy.type() chord fallback (pattern 125), Studio AI assertion suggestions workflow (pattern 126), cy.prompt() CT + browser restrictions (pattern 127), experimentalFastVisibility shadow DOM caveat (pattern 128), Cypress 15 tsx config parsing + TypeScript 6 + Vite 8 setup (pattern 129), Brotli compression proxy (pattern 130), 6 new community gotchas (111-116): cy.press() modifier key chord limitation, experimentalFastVisibility shadow DOM break, cy.prompt() CT-only restriction, cy.prompt() Chromium-only, ts-loader upgrade webpack config break (15.14.2), Brotli proxy corruption pre-15.11 -->
 <!-- new in this iteration (39): Next.js 16 Component Testing (pattern 122), cy.prompt() Command Log self-healing badge visibility (pattern 123), Command Log Hide HTTP Requests toggle (pattern 124), 5 new community gotchas (106-110): cy.wait() unhandled rejection on teardown (15.14.2), cy.prompt() beforeunload navigation hang, cy.press() yields null cannot chain, Next.js 16 Turbopack not supported in CT, cy.press() focuses document.body when no focused element -->
@@ -970,7 +971,7 @@ it('calls a method on the subject and asserts result', () => {
 
 ### 29. Running Shell Commands with cy.exec()
 
-`cy.exec()` runs a shell command in the Node.js context and yields `{ code, stdout, stderr }`. Use it for database seeding scripts, file cleanup, and compile-step verification.
+`cy.exec()` runs a shell command in the Node.js context and yields `{ exitCode, stdout, stderr }`. Use it for database seeding scripts, file cleanup, and compile-step verification. Note: in Cypress 15 the `code` property was renamed to `exitCode` — TypeScript users get a compile error pointing to the change.
 
 ```typescript
 it('seeds the database before the test', () => {
@@ -978,7 +979,7 @@ it('seeds the database before the test', () => {
     timeout: 30_000,       // allow up to 30 s for DB seed
     failOnNonZero: true,   // fail the test if exit code !== 0
   }).then((result) => {
-    expect(result.code).to.eq(0);
+    expect(result.exitCode).to.eq(0);  // 'exitCode' since Cypress 15 (was 'code' in Cy 14)
     cy.log(`Seed output: ${result.stdout}`);
   });
 
@@ -8395,5 +8396,95 @@ it('verifies Brotli encoding is active (informational test)', () => {
 115. **Cypress 15.14.2 `ts-loader` upgrade (9.5.2 → 9.5.7) breaks projects that pin ts-loader as a peer dependency in custom webpack preprocessor config** [community] — Cypress 15.14.2 updated `ts-loader` from 9.5.2 to 9.5.7 as a dependency. Projects that use `@cypress/webpack-preprocessor` with a custom `webpack.config.ts` that explicitly installs and pins `ts-loader@9.5.2` (a common pattern to ensure version consistency) will get a version conflict warning in npm/pnpm and may get duplicate ts-loader instances if the package manager installs both. The symptom is TypeScript compile errors during Cypress startup that don't appear in the normal `tsc --noEmit` run — the duplicate ts-loader resolves types differently. Fix: remove the explicit `ts-loader` pin from `devDependencies` and let Cypress manage the version, or set `"ts-loader": ">=9.5.2"` as a peer dependency to accept any compatible version.
 
 116. **APIs behind Brotli-compressing CDNs produce binary `res.body` in `cy.intercept()` handlers on Cypress < 15.11** [community] — Staging and production APIs served behind Cloudflare, Fastly, or Nginx with Brotli enabled return `Content-Encoding: br` responses that Cypress versions before 15.11 do not decompress. In `cy.intercept()` route handlers, `res.body` is a binary Buffer or base64 string instead of the expected JavaScript object. The failure is non-obvious because the Network tab in DevTools shows the decoded JSON (browsers handle Brotli natively), but the Cypress runner receives raw bytes. The standard workaround was to set `Accept-Encoding: gzip, deflate` on all intercepted requests, which forces gzip and avoids Brotli. Upgrade to Cypress 15.11+ to eliminate this workaround — Brotli decompression is now built into the proxy.
+
+117. **Chrome's autofill popup overlays form fields during `.type()` on address and payment forms — tests silently interact with the overlay instead of the input** [community] — Chrome displays an autofill suggestion popup when Cypress calls `.type()` on inputs with names or autocomplete attributes that Chrome recognizes as personal data fields (`name`, `email`, `address`, `cc-number`, `tel`, etc.). The popup overlays the element, intercepting click and keyboard events. The most common symptom is that `.type()` appears to succeed (the command log shows green) but the input value is replaced by the autofill suggestion at the end of typing rather than containing the typed text — causing downstream `.should('have.value', ...)` assertions to fail or, worse, pass with an unexpected autofill value. Cypress 15.6.0 added automatic autofill popup suppression: it injects a `<meta name="ROBOTS" content="noindex">` tag and sets `autocomplete="off"` on the active input frame at test startup. This suppression is active by default with no configuration required. If you are on Cypress < 15.6.0, the workarounds are: (a) call `cy.get('input').invoke('attr', 'autocomplete', 'off')` before `.type()` on affected fields; (b) add `autocomplete="off"` to your form element in test environments via a feature flag; or (c) use `cy.type()` with `{ force: true }` which bypasses overlay interception checks but masks the root cause. WHY: the autofill popup is a browser-native overlay (not a DOM element) and cannot be closed by Cypress commands. Teams that upgrade from Cypress 14 to 15 and remove their manual `autocomplete="off"` workarounds should verify they are on Cypress 15.6+ before removing the attribute — earlier 15.x versions did not include the suppression.
+
+118. **`cy.intercept()` could permanently hang when multiple intercepts are pending and the page navigates mid-wait — fixed in Cypress 15.12.0** [community] — Before Cypress 15.12.0, a specific race condition caused `cypress run` to hang indefinitely (no timeout, no error) when all of these conditions were met simultaneously: (1) two or more `cy.intercept()` aliases were registered; (2) `cy.wait(['@alias1', '@alias2'])` (multi-alias form) was pending; and (3) the application triggered a page navigation while those requests were in flight. The navigation caused a "stability change" event inside Cypress that interrupted the internal wait queue, leaving the multi-wait in a pending state that never resolved and was never cleaned up. The result was a CI job that ran until the global job timeout (typically 60 minutes) rather than failing with a meaningful error. Cypress 15.12.0 fixed the stability-change handling in the multi-wait queue. If you are on Cypress < 15.12.0 and hit this pattern, the workaround is to split `cy.wait(['@alias1', '@alias2'])` into sequential single waits: `cy.wait('@alias1'); cy.wait('@alias2');` — the single-alias form does not trigger the race condition. Add a `cy.url().should('include', '/expected-path')` assertion between the waits to force stability before the next wait begins.
+
+119. **`cy.intercept()` `delay` values ≥ 2³¹ ms (≈ 596 hours) were silently discarded before Cypress 15.13.1 — now a validation error is thrown** [community] — `setTimeout(fn, n)` in V8 silently fires immediately when `n >= 2**31` because the integer overflows to a negative value. Before Cypress 15.13.1, passing a large `delay` to a `cy.intercept()` stub (e.g., `{ delay: 2 ** 31 }` or a programmatically computed value like `timeoutSeconds * 1000` where `timeoutSeconds` was accidentally set to a large number) caused the stub to respond immediately instead of being delayed, with no error or warning. Tests that depended on the delay to simulate slow network conditions would pass when they should have timed out. Cypress 15.13.1 added an explicit validation: any `delay` value ≥ `2**31 - 1` now throws `"cy.intercept() delay value must be less than 2^31 - 1 milliseconds"` at stub registration time, surfacing the bug immediately. If you have a delay computed from an external config (e.g., `NETWORK_DELAY_MS` env var), add a guard: `const safeDelay = Math.min(delay, 2 ** 31 - 2);` or assert in a beforeAll that the value is sane.
+
+---
+
+## Additional Real-World Gotchas (Iteration 42) [community]
+
+---
+
+### 131. Multi-Intercept + Navigation — Safe Patterns and the 15.12.0 Hang Fix
+
+Waiting on multiple `cy.intercept()` aliases while a page navigation is in progress is a common pattern in single-page applications where a user action simultaneously triggers several API calls and navigates to a new route. Before Cypress 15.12.0 this combination could hang the runner indefinitely.
+
+```typescript
+// ❌ RISKY (Cypress < 15.12.0): multi-alias wait during navigation can hang
+it('submits order and navigates to confirmation', () => {
+  cy.intercept('POST', '/api/orders').as('createOrder');
+  cy.intercept('GET', '/api/orders/*').as('fetchOrder');
+
+  cy.get('[data-cy="submit-order"]').click();
+
+  // If /submit triggers navigation AND both requests fire during the transition,
+  // cy.wait() hangs on Cypress < 15.12.0 — upgrade or use sequential waits below.
+  cy.wait(['@createOrder', '@fetchOrder']);  // ← hangs pre-15.12
+  cy.url().should('include', '/confirmation');
+});
+
+// ✅ SAFE on all Cypress 15.x versions: sequential single-alias waits
+it('submits order and navigates to confirmation (safe pattern)', () => {
+  cy.intercept('POST', '/api/orders').as('createOrder');
+  cy.intercept('GET', '/api/orders/*').as('fetchOrder');
+
+  cy.get('[data-cy="submit-order"]').click();
+
+  cy.wait('@createOrder');                   // wait for POST first
+  cy.url().should('include', '/confirmation'); // assert navigation completed
+  cy.wait('@fetchOrder');                    // then wait for GET (now on the new route)
+
+  cy.get('[data-cy="order-id"]').should('be.visible');
+});
+
+// ✅ ALSO SAFE (Cypress 15.12.0+): multi-alias form now works after navigation hang fix
+it('submits order — multi-alias wait (Cypress 15.12.0+ only)', () => {
+  cy.intercept('POST', '/api/orders').as('createOrder');
+  cy.intercept('GET', '/api/orders/*').as('fetchOrder');
+
+  cy.get('[data-cy="submit-order"]').click();
+
+  // Safe post-15.12.0 — stability-change during navigation no longer stalls the queue
+  cy.wait(['@createOrder', '@fetchOrder']);
+  cy.url().should('include', '/confirmation');
+});
+```
+
+```typescript
+// Pattern: verify response bodies on navigation-coupled requests
+it('order creation payload is correct and response is persisted', () => {
+  cy.intercept('POST', '/api/orders', (req) => {
+    // Validate the request body before continuing
+    expect(req.body).to.deep.include({
+      items: [{ sku: 'WIDGET-001', qty: 2 }],
+    });
+    req.continue();
+  }).as('createOrder');
+
+  cy.get('[data-cy="submit-order"]').click();
+
+  cy.wait('@createOrder').then(({ request, response }) => {
+    expect(response?.statusCode).to.eq(201);
+    const orderId = response?.body?.id as string;
+    expect(orderId).to.be.a('string');
+    // Confirm the UI uses the response ID
+    cy.get('[data-cy="order-id"]').should('have.text', orderId);
+  });
+});
+```
+
+**Why navigation-coupled multi-intercept waits are tricky:**
+
+| Cypress version | Multi-alias wait + navigation | Recommendation |
+|----------------|------------------------------|----------------|
+| < 15.12.0 | May hang indefinitely | Use sequential single waits |
+| 15.12.0–15.14.2 | Fixed | Multi-alias form is safe |
+| Any version | Sequential waits | Always safe, prefer in shared utility code |
+
+**[community]** WHY: The hang was caused by Cypress's internal "stability" mechanism: after a navigation event, Cypress waits for the page to be "stable" before processing the next command. In the pre-15.12 race condition, the multi-alias wait's internal bookkeeping received the stability-change event and deadlocked against the pending request resolution. The bug was reported by teams testing checkout flows where clicking "Submit Order" triggers both a POST (order creation) and a GET (order details fetch) simultaneously, and the POST response redirects to the confirmation page — exactly the pattern that exercises all three conditions at once.
 
 ---

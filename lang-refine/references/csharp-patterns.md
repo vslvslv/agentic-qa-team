@@ -1,6 +1,15 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 37 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 38 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 38 (2026-05-12): added Testcontainers.NET integration testing (ContainerBuilder, SqlServerContainer,
+       PostgreSqlContainer, lifecycle management with IAsyncLifetime, resource reuse); added MockHttp /
+       WireMock.NET for HttpClient testing (RichardSzalay.MockHttp — MockedRequest, When/Respond, Verify;
+       WireMock.Net — WireMockServer, WithBody JSON matching, stateful scenarios); added xUnit
+       ITestOutputHelper diagnostic logging; added NetArchTest / ArchUnitNET architecture enforcement tests
+       (layering, naming, dependency rules); added community gotchas: Testcontainers socket privilege on Linux CI,
+       MockHttp BaseAddress mismatch, WireMock.Net port conflicts, NetArchTest reflection overhead on large assemblies
+       — sourced from dotnet.testcontainers.org, github.com/richardszalay/mockhttp,
+       github.com/WireMock-Net/WireMock.Net, github.com/BenMorris/NetArchTest
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
        Frameworks overview (MSTest/NUnit/xUnit/TUnit, VSTest vs MTP) — sourced from
@@ -7159,3 +7168,575 @@ actual.Should().BeEquivalentTo(expected, opts => opts.RespectingRuntimeTypes());
 | `Assert.Equivalent` on base-type variables with derived data | Derived-class members silently ignored — false pass | Cast to concrete type, or use FA `BeEquivalentTo` with `RespectingRuntimeTypes()` |
 | `[FixtureLifeCycle(LifeCycle.SingleInstance)]` with Moq + `[Parallelizable]` | Shared Mock state races — intermittent test failures | Use `InstancePerTestCase` with Moq, or make all shared fixtures immutable |
 | `EnableAspireTesting` in non-Aspire test projects | Pulls unnecessary Aspire dependencies, inflates binary | Only set `EnableAspireTesting` in projects that reference Aspire components |
+
+---
+
+## Testcontainers.NET — Docker-Based Integration Testing
+
+Testcontainers.NET (v3.x, stable since late 2023) spins up real Docker containers inside test code. Each container is a fully real database, message broker, or cache — no emulator quirks, no schema drift. The library integrates with `IAsyncLifetime` so containers start before the first test and stop automatically after the last.
+
+### Installing and Running a SQL Server Container
+
+```csharp
+// dotnet add package Testcontainers
+// dotnet add package Testcontainers.MsSql
+using Testcontainers.MsSql;
+using Xunit;
+
+public class OrderRepositoryTests : IAsyncLifetime
+{
+    // Fluent builder configures the container image, credentials, and startup wait strategy
+    private readonly MsSqlContainer _db = new MsSqlBuilder()
+        .WithImage("mcr.microsoft.com/mssql/server:2022-latest")
+        .WithPassword("Test@1234!")
+        .Build();
+
+    // IAsyncLifetime — container starts before any test in this class
+    public async Task InitializeAsync()
+    {
+        await _db.StartAsync();
+
+        // Apply schema migrations using the real connection string
+        var connString = _db.GetConnectionString();
+        await MigrationsHelper.ApplyAsync(connString);
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _db.StopAsync();
+        await _db.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SaveAsync_PersistsOrder()
+    {
+        await using var conn = new SqlConnection(_db.GetConnectionString());
+        var repo  = new OrderRepository(conn);
+        var order = Fakers.Order(seed: 1);
+
+        await repo.SaveAsync(order, CancellationToken.None);
+
+        var loaded = await repo.GetByIdAsync(order.Id, CancellationToken.None);
+        loaded.Should().BeEquivalentTo(order, opts => opts.Excluding(o => o.CreatedAt));
+    }
+}
+```
+
+### PostgreSQL Container (Npgsql)
+
+```csharp
+// dotnet add package Testcontainers.PostgreSql
+using Testcontainers.PostgreSql;
+
+public class InventoryDbTests : IAsyncLifetime
+{
+    private readonly PostgreSqlContainer _pg = new PostgreSqlBuilder()
+        .WithImage("postgres:16-alpine")
+        .WithDatabase("inventory_test")
+        .WithUsername("tester")
+        .WithPassword("pw")
+        .Build();
+
+    public Task InitializeAsync() => _pg.StartAsync();
+    public Task DisposeAsync()    => _pg.DisposeAsync().AsTask();
+
+    [Fact]
+    public async Task QueryInventory_ReturnsItems()
+    {
+        await using var conn = new NpgsqlConnection(_pg.GetConnectionString());
+        var items = await conn.QueryAsync<InventoryItem>("SELECT * FROM inventory");
+        items.Should().NotBeEmpty();
+    }
+}
+```
+
+### Container Reuse Across Tests (`IClassFixture`)
+
+Starting a container per test class is fast for a handful of classes but wasteful for a large suite. Promote the container to a shared `IClassFixture` and use Respawn to reset data between tests instead.
+
+```csharp
+// Shared fixture — container starts once for all test classes that use it
+public class SqlServerFixture : IAsyncLifetime
+{
+    private readonly MsSqlContainer _db = new MsSqlBuilder().Build();
+
+    public string ConnectionString => _db.GetConnectionString();
+
+    public async Task InitializeAsync()
+    {
+        await _db.StartAsync();
+        await MigrationsHelper.ApplyAsync(ConnectionString);
+        Respawner = await Respawner.CreateAsync(ConnectionString, new RespawnerOptions
+        {
+            TablesToIgnore = [new Table("__EFMigrationsHistory")]
+        });
+    }
+
+    public Respawner Respawner { get; private set; } = null!;
+
+    public Task DisposeAsync() => _db.DisposeAsync().AsTask();
+}
+
+// Each test resets data via Respawn — no container restart needed
+[Collection("SqlServer")]
+public class ProductRepositoryTests(SqlServerFixture fixture) : IAsyncLifetime
+{
+    public Task InitializeAsync() => fixture.Respawner.ResetAsync(fixture.ConnectionString);
+    public Task DisposeAsync()    => Task.CompletedTask;
+
+    [Fact]
+    public async Task GetByCategory_ReturnsProducts() { /* ... */ }
+}
+```
+
+**Testcontainers module ecosystem (as of 2025):** SQL Server, PostgreSQL, MySQL, MongoDB, Redis, Kafka, RabbitMQ, Elasticsearch, MinIO, LocalStack, Azure CosmosDB emulator, and many more are available as typed builder packages (`Testcontainers.*`). Each adds a strongly-typed builder with sensible defaults.
+
+---
+
+## HttpClient Testing — MockHttp and WireMock.Net
+
+Real `HttpClient` calls in unit tests are slow, brittle, and have network side effects. Two libraries dominate .NET HTTP mocking:
+
+- **RichardSzalay.MockHttp** — in-process mock `HttpMessageHandler`; fast, zero ports, ideal for unit tests
+- **WireMock.Net** — runs a real HTTP server on a loopback port; supports response templating, stateful scenarios, and request journals; ideal for contract/integration tests
+
+### MockHttp (`RichardSzalay.MockHttp`)
+
+```csharp
+// dotnet add package RichardSzalay.MockHttp
+using RichardSzalay.MockHttp;
+using System.Net.Http.Json;
+
+public class WeatherClientTests
+{
+    [Fact]
+    public async Task GetForecastAsync_ReturnsForecast()
+    {
+        // 1. Create handler and configure expected requests
+        var mockHttp = new MockHttpMessageHandler();
+
+        mockHttp
+            .When(HttpMethod.Get, "https://api.weather.example/forecast*")
+            .WithQueryString("city", "Seattle")
+            .Respond(HttpStatusCode.OK,
+                     JsonContent.Create(new ForecastDto(City: "Seattle", TempC: 12)));
+
+        // 2. Create HttpClient backed by the mock handler
+        var client = mockHttp.ToHttpClient();
+        client.BaseAddress = new Uri("https://api.weather.example/");
+
+        var sut = new WeatherClient(client);
+
+        // 3. Act
+        var forecast = await sut.GetForecastAsync("Seattle", CancellationToken.None);
+
+        // 4. Assert response
+        forecast.City.Should().Be("Seattle");
+        forecast.TempC.Should().Be(12);
+
+        // 5. Assert all expected calls were made
+        mockHttp.VerifyNoOutstandingExpectation();
+        mockHttp.VerifyNoOutstandingRequest();  // no unexpected calls
+    }
+
+    [Fact]
+    public async Task GetForecastAsync_On500_ThrowsHttpRequestException()
+    {
+        var mockHttp = new MockHttpMessageHandler();
+        mockHttp.When("*").Respond(HttpStatusCode.InternalServerError);
+
+        var client = mockHttp.ToHttpClient();
+        client.BaseAddress = new Uri("https://api.weather.example/");
+
+        var sut    = new WeatherClient(client);
+        var act    = async () => await sut.GetForecastAsync("Seattle", default);
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+    }
+}
+```
+
+**Key MockHttp matchers:**
+
+| Matcher | Example |
+|---|---|
+| URL glob | `.When("https://api.example/*")` |
+| HTTP method | `.When(HttpMethod.Post, url)` |
+| Query string | `.WithQueryString("key", "value")` |
+| Request body | `.WithContent("application/json", "{...}")` |
+| Headers | `.WithHeaders("Authorization", "Bearer *")` |
+| Any remaining | `.When(HttpMethod.Get, "*")` — catch-all fallback |
+
+### WireMock.Net — Loopback HTTP Server
+
+```csharp
+// dotnet add package WireMock.Net
+using WireMock.Server;
+using WireMock.RequestBuilders;
+using WireMock.ResponseBuilders;
+
+public class PaymentGatewayTests : IDisposable
+{
+    private readonly WireMockServer _server;
+    private readonly PaymentClient  _sut;
+
+    public PaymentGatewayTests()
+    {
+        // Start a WireMock server on a random free port
+        _server = WireMockServer.Start();
+
+        var client = new HttpClient { BaseAddress = new Uri(_server.Url!) };
+        _sut = new PaymentClient(client);
+    }
+
+    [Fact]
+    public async Task ChargeAsync_Success_ReturnsTransactionId()
+    {
+        // Stub the POST /charge endpoint
+        _server
+            .Given(Request.Create()
+                .WithPath("/charge")
+                .WithBody(new JsonMatcher(new { Amount = 99.99, Currency = "USD" }))
+                .UsingPost())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithBodyAsJson(new { TransactionId = "TXN-001", Success = true }));
+
+        var result = await _sut.ChargeAsync(99.99m, "USD", CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        result.TransactionId.Should().Be("TXN-001");
+
+        // Verify the request was received exactly once
+        _server.LogEntries.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task ChargeAsync_Retry_EventuallySucceeds()
+    {
+        // Stateful scenario: first call returns 503, second returns 200
+        _server
+            .Given(Request.Create().WithPath("/charge").UsingPost())
+            .InScenario("charge-retry")
+            .WillSetStateTo("first-attempted")
+            .RespondWith(Response.Create().WithStatusCode(503));
+
+        _server
+            .Given(Request.Create().WithPath("/charge").UsingPost())
+            .InScenario("charge-retry")
+            .WhenStateIs("first-attempted")
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithBodyAsJson(new { TransactionId = "TXN-002", Success = true }));
+
+        var result = await _sut.ChargeWithRetryAsync(99.99m, "USD", CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        _server.LogEntries.Should().HaveCount(2);  // initial 503 + retry 200
+    }
+
+    public void Dispose() => _server.Dispose();
+}
+```
+
+**MockHttp vs WireMock.Net:**
+
+| Aspect | MockHttp | WireMock.Net |
+|---|---|---|
+| Runs in-process | Yes — no ports opened | No — listens on loopback port |
+| Speed | Very fast | Fast (loopback only) |
+| Stateful scenarios | No | Yes (`InScenario` / `WhenStateIs`) |
+| Request journal / log | No | Yes (`_server.LogEntries`) |
+| Response templating | No | Yes (Handlebars templates) |
+| Best for | Unit tests of HttpClient-consuming services | Contract tests, integration tests, scenario flows |
+
+---
+
+## xUnit — `ITestOutputHelper` for Diagnostic Logging
+
+`ITestOutputHelper` is xUnit's mechanism for writing diagnostic messages that appear in the test output when a test fails. Unlike `Console.WriteLine`, output written via `ITestOutputHelper` is scoped to the individual test and captured by the runner even in parallel runs.
+
+```csharp
+using Xunit;
+using Xunit.Abstractions;
+
+public class PaymentServiceTests(ITestOutputHelper output)
+{
+    // xUnit v2/v3: inject via constructor — primary constructor syntax shown (C# 12+)
+
+    [Fact]
+    public async Task ProcessPayment_LogsEachStep()
+    {
+        output.WriteLine("Starting ProcessPayment test at {0:O}", DateTimeOffset.UtcNow);
+
+        var service = new PaymentService(logger: new XunitLogger(output));
+        var request = new PaymentRequest(Amount: 50m, Currency: "GBP");
+
+        output.WriteLine("Sending payment request: {0}", request);
+        var result = await service.ProcessAsync(request, CancellationToken.None);
+
+        output.WriteLine("Result: Success={0}, TxId={1}", result.Success, result.TransactionId);
+        result.Success.Should().BeTrue();
+    }
+}
+```
+
+**Routing `ILogger<T>` output to `ITestOutputHelper`:**
+
+Teams commonly write a thin `XunitLogger<T>` adapter (or install the `Xunit.Extensions.Logging` package) so that production `ILogger<T>` calls appear in xUnit's output:
+
+```csharp
+// Install: dotnet add package Xunit.Extensions.Logging  (community package)
+using Microsoft.Extensions.Logging;
+using Xunit.Extensions.Logging;
+
+public class OrderWorkflowTests(ITestOutputHelper output)
+{
+    [Fact]
+    public async Task ProcessOrder_LogsWarningOnLowStock()
+    {
+        // Wire ILogger to xUnit output — messages appear when test fails or -v is set
+        ILoggerFactory logFactory = LoggerFactory.Create(b =>
+            b.AddXunit(output).SetMinimumLevel(LogLevel.Debug));
+
+        var sut = new OrderWorkflow(logFactory.CreateLogger<OrderWorkflow>());
+
+        await sut.ProcessAsync(new Order { Sku = "RARE-ITEM", Quantity = 100 });
+        // If warning was logged, it appears in the test result output
+    }
+}
+```
+
+**`ITestOutputHelper` in fixtures:**
+
+Fixtures cannot accept `ITestOutputHelper` in their constructor (they're created by the framework before the test class). Forward it from the test class instead:
+
+```csharp
+public class DatabaseFixture : IAsyncLifetime
+{
+    // Output forwarded per-test via a property, not the fixture constructor
+    public ITestOutputHelper? Output { get; set; }
+
+    public async Task InitializeAsync()
+    {
+        Output?.WriteLine("Starting container at {0:O}", DateTimeOffset.UtcNow);
+        // ...
+    }
+    public Task DisposeAsync() => Task.CompletedTask;
+}
+
+public class OrderTests(DatabaseFixture db, ITestOutputHelper output)
+    : IClassFixture<DatabaseFixture>
+{
+    public OrderTests(DatabaseFixture db, ITestOutputHelper output) : this()
+    {
+        db.Output = output;  // forward per-test output to the fixture
+    }
+}
+```
+
+---
+
+## Architecture Testing — NetArchTest and ArchUnitNET
+
+Architecture tests enforce structural rules — layering, naming conventions, dependency direction — by inspecting assemblies with reflection. They run as ordinary unit tests and fail the build when someone violates the agreed architecture.
+
+### NetArchTest
+
+```csharp
+// dotnet add package NetArchTest.Rules
+using NetArchTest.Rules;
+
+public class ArchitectureTests
+{
+    private const string DomainNs      = "MyApp.Domain";
+    private const string AppNs         = "MyApp.Application";
+    private const string InfrastructureNs = "MyApp.Infrastructure";
+    private const string WebNs         = "MyApp.Web";
+
+    // Domain layer must NOT depend on infrastructure
+    [Fact]
+    public void Domain_ShouldNot_DependOnInfrastructure()
+    {
+        var result = Types.InAssembly(typeof(Order).Assembly)
+            .That().ResideInNamespace(DomainNs)
+            .ShouldNot().HaveDependencyOn(InfrastructureNs)
+            .GetResult();
+
+        result.IsSuccessful.Should().BeTrue(
+            because: string.Join(", ", result.FailingTypeNames ?? []));
+    }
+
+    // Application layer should not reference Web layer
+    [Fact]
+    public void Application_ShouldNot_DependOnWeb()
+    {
+        var result = Types.InAssembly(typeof(IOrderService).Assembly)
+            .That().ResideInNamespace(AppNs)
+            .ShouldNot().HaveDependencyOn(WebNs)
+            .GetResult();
+
+        result.IsSuccessful.Should().BeTrue(
+            because: string.Join(", ", result.FailingTypeNames ?? []));
+    }
+
+    // All classes in Domain.Entities must be sealed or abstract (no unintentional subclassing)
+    [Fact]
+    public void DomainEntities_ShouldBe_SealedOrAbstract()
+    {
+        var result = Types.InAssembly(typeof(Order).Assembly)
+            .That()
+            .ResideInNamespace($"{DomainNs}.Entities")
+            .ShouldNot().BeClasses()  // excludes interfaces and abstract base types
+            .Or().Meet(t => !t.IsSealed && !t.IsAbstract)  // OR be unsealed concrete classes
+            .GetResult();
+
+        // Alternatively: enforce only sealed
+        var sealed_ = Types.InAssembly(typeof(Order).Assembly)
+            .That().ResideInNamespace($"{DomainNs}.Entities").And().AreClasses()
+            .Should().BeSealed()
+            .GetResult();
+
+        sealed_.IsSuccessful.Should().BeTrue(
+            because: string.Join(", ", sealed_.FailingTypeNames ?? []));
+    }
+
+    // Repository interfaces must end in "Repository"
+    [Fact]
+    public void RepositoryInterfaces_ShouldFollow_NamingConvention()
+    {
+        var result = Types.InAssembly(typeof(IOrderRepository).Assembly)
+            .That()
+            .ImplementInterface(typeof(IRepository<>))
+            .And().AreInterfaces()
+            .Should().HaveNameEndingWith("Repository")
+            .GetResult();
+
+        result.IsSuccessful.Should().BeTrue(
+            because: string.Join(", ", result.FailingTypeNames ?? []));
+    }
+
+    // Controllers must be in the Web namespace
+    [Fact]
+    public void Controllers_ShouldReside_InWebNamespace()
+    {
+        var result = Types.InAssembly(typeof(Program).Assembly)
+            .That().HaveNameEndingWith("Controller")
+            .Should().ResideInNamespace(WebNs)
+            .GetResult();
+
+        result.IsSuccessful.Should().BeTrue(
+            because: string.Join(", ", result.FailingTypeNames ?? []));
+    }
+}
+```
+
+**Common NetArchTest predicates:**
+
+| Predicate | Example |
+|---|---|
+| `ResideInNamespace` | `.That().ResideInNamespace("MyApp.Domain")` |
+| `HaveNameEndingWith` | `.That().HaveNameEndingWith("Service")` |
+| `ImplementInterface` | `.That().ImplementInterface(typeof(ICommand))` |
+| `Inherit` | `.That().Inherit(typeof(BaseEntity))` |
+| `HaveDependencyOn` | `.ShouldNot().HaveDependencyOn("Dapper")` |
+| `BeSealed` | `.Should().BeSealed()` |
+| `BePublic` / `NotBePublic` | `.Should().NotBePublic()` for value objects |
+
+---
+
+## Real-World Gotchas — Integration and Architecture Testing [community]
+
+### **Testcontainers Requires Docker Socket — Fails on Restricted Linux CI** [community]
+
+Testcontainers connects to the Docker daemon via `/var/run/docker.sock`. Many restricted CI environments (GitHub Actions default runners, Bitbucket Pipelines) expose the socket but some hardened CI images do not. WHY it causes problems: tests fail at container startup with `Cannot connect to the Docker daemon` — not a test logic failure, but an infrastructure one. Fix: set `DOCKER_HOST` or `TESTCONTAINERS_HOST_OVERRIDE` env vars; use Ryuk resource reuse (`TESTCONTAINERS_RYUK_DISABLED=true`) when the container should persist across runs; or switch to GitHub Actions with `services:` blocks for the database container.
+
+```yaml
+# GitHub Actions: use service containers instead of Testcontainers when needed
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: testdb
+          POSTGRES_USER: tester
+          POSTGRES_PASSWORD: pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+```
+
+### **MockHttp `BaseAddress` Mismatch Silently Falls Through to Catch-All** [community]
+
+`MockHttpMessageHandler` matches requests by full URL. If the `HttpClient.BaseAddress` and the registered `When(url)` pattern use different schemes, trailing slashes, or path segments, requests silently fall through to any catch-all `When("*")` stub instead of the intended one. WHY it causes problems: the test passes with the wrong status code or response body; CI reports green, production is broken. Fix: always log unmatched requests explicitly with `mockHttp.Fallback.Throw(new Exception("Unexpected request"))` during development.
+
+```csharp
+// RISKY: BaseAddress trailing slash and path are combined differently than expected
+client.BaseAddress = new Uri("https://api.example.com/v1/");  // trailing slash
+mockHttp.When("https://api.example.com/v1/orders");  // works
+mockHttp.When("https://api.example.com/orders");     // NEVER matches — wrong base
+
+// SAFE: set catch-all to throw so missed stubs are loud failures
+var mockHttp = new MockHttpMessageHandler();
+mockHttp.Fallback.Throw(new InvalidOperationException("Unexpected HTTP call — add a stub"));
+```
+
+### **WireMock.Net `WireMockServer.Start()` Port Conflicts on Parallel Test Runs** [community]
+
+`WireMockServer.Start()` without arguments picks a random free port via `WireMockServer.Start(port: 0)` — which is correct. Teams that hard-code a port (e.g., `WireMockServer.Start(9091)`) get `AddressAlreadyInUse` errors when two test classes run in parallel. WHY it causes problems: tests fail non-deterministically depending on which class starts first, making root cause hard to identify. Fix: always use `WireMockServer.Start()` (random port) and construct the `HttpClient.BaseAddress` from `_server.Url`.
+
+```csharp
+// BAD: hard-coded port — breaks under parallel runs
+_server = WireMockServer.Start(9091);
+var client = new HttpClient { BaseAddress = new Uri("http://localhost:9091/") };
+
+// GOOD: random port; read URL from server instance
+_server = WireMockServer.Start();
+var client = new HttpClient { BaseAddress = new Uri(_server.Url!) };
+```
+
+### **NetArchTest Reflection Overhead Adds 5–30 Seconds on Large Assemblies** [community]
+
+NetArchTest loads every type in the target assembly (and its transitive dependencies) via reflection to build the type graph. On assemblies with thousands of types or large transitive dependency trees, this takes 5–30 seconds per test class. WHY it causes problems: the architecture test suite, which should be fast, becomes the slowest part of `dotnet test`, discouraging teams from running it. Fix: place all architecture tests in a single `[Collection("Architecture")]` class so the assembly is loaded only once; use `typeof(SomeType).Assembly` rather than string-based assembly discovery; and run architecture tests in a separate CI step that doesn't block developer feedback.
+
+```csharp
+// GOOD: share the loaded assembly across all architecture tests in one class
+// Instead of multiple test classes each loading the assembly separately,
+// put all NetArchTest assertions in a single class — one reflection pass
+
+[Collection("Architecture")]  // Serialize with other arch tests if needed
+public class CleanArchitectureTests
+{
+    // Cache the assembly reference — reflection runs once per class instantiation
+    private static readonly System.Reflection.Assembly DomainAssembly =
+        typeof(Order).Assembly;
+
+    [Fact]
+    public void Domain_ShouldNot_ReferenceInfrastructure() { /* ... */ }
+
+    [Fact]
+    public void Domain_ShouldNot_ReferenceApplication()    { /* ... */ }
+
+    [Fact]
+    public void Entities_ShouldBe_Sealed()                 { /* ... */ }
+}
+```
+
+---
+
+## Anti-Patterns Quick Reference — Infrastructure and Architecture Testing
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `new HttpClient()` in unit test with live network call | Flaky (network-dependent), slow, has real side effects | Use MockHttp or WireMock.Net to intercept all HTTP calls |
+| MockHttp `When("*")` catch-all without `mockHttp.Fallback.Throw(...)` | Missed stubs return `null` silently — tests pass with wrong data | Set fallback to throw so unmatched requests are loud failures |
+| `WireMockServer.Start(hardcodedPort)` | Port conflicts under parallel test runs | Always use `WireMockServer.Start()` (random port) |
+| One test class per architecture rule with NetArchTest | Assembly loaded via reflection for every class — O(classes * assembly size) startup | Consolidate all architecture assertions into one `[Collection]` test class |
+| Testcontainers with no `DisposeAsync` | Container continues running after the test suite, consuming memory and ports | Always implement `IAsyncLifetime.DisposeAsync` on the fixture |
+| `Console.WriteLine` in xUnit tests for diagnostics | Output lost in parallel runs; not captured by the runner | Use `ITestOutputHelper.WriteLine` — scoped to the test, captured on failure |

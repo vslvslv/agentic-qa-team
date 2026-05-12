@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -15,6 +15,7 @@
 <!-- new (2026-05-12 iter 41): TypeScript 5.9 — new `tsc --init` defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) silently break test tsconfigs that extend the root tsconfig; `import defer` lazy module evaluation affects test setup performance; `--module node20` stable (replaces unstable `nodenext` for Node 20 environments); BREAKING: `ArrayBuffer` type hierarchy change — `Buffer`/`TypedArray` no longer assignable to `ArrayBuffer` in test files using Node.js buffer types; Zod/tRPC cache-instantiation optimisation reduces "excessive type instantiation" errors in large test suites using `expect.schemaMatching`; `verbatimModuleSyntax:true` as `tsc --init` default breaks test files that import type-only symbols without `import type`; community gotchas: TS 5.9 `ArrayBuffer` change breaks `Buffer` usage in integration test helpers (gotcha #45), TS 5.9 `verbatimModuleSyntax` default breaks non-type test imports (gotcha #46) -->
 <!-- new (2026-05-12 iter 42): Node.js 24.15.0 (Apr 2026 LTS) — worker ID exposed during concurrent test execution (debugging parallel integration tests), `require(esm)` stable, module compile cache stable; Node.js 25.9.0 (Apr 2026) — BREAKING: `MockModuleOptions.defaultExport` + `MockModuleOptions.namedExports` consolidated into single `MockModuleOptions.exports` object (automated codemod: `npx codemod @nodejs/mock-module-exports`), fake timer compatibility with `node:test` fixed; community gotcha: Node.js 25.9 `mock.module()` API consolidation silently breaks integration test stubs that used `namedExports` or `defaultExport` after upgrading Node (gotcha #47) -->
 <!-- new (2026-05-12 iter 43): Bun 1.3.x (2025) — `bun:test` adds `--parallel`/`--shard`/`--only-failures`/`--pass-with-no-tests`, `retry`+`repeats` options for flaky tests, `Symbol.dispose` for mock/spyOn automatic cleanup, global `vi` mock API without imports; MSW v2.14+ — WebSocket handler `ws.onUpgrade` for protocol upgrade interception, `finalize` cleanup API for handler resource management, `NetworkApi` TypeScript type exported; Pact-JS v16.0.0 (Oct 2025) — BREAKING: `PactV4`/`MatchersV3` exported as `Pact`/`Matchers` (old names become `PactV2`/`MatchersV2`), Node 20 minimum, GraphQL support for V3+V4; Pact-JS v16.3 — pending/comments/test-names on interactions; Pact-JS v16.4 — external interaction references; community gotcha #48: pact-js v16.0 silent API rename — TypeScript import `{ PactV3, MatchersV3 }` still resolves but `PactV3` is now an alias for the old V3 class while `Pact` is the new canonical name, causing confusion and inconsistent usage in codebases that mix old and new imports -->
+<!-- new (2026-05-12 iter 44): TypeScript 5.9 additional `tsc --init` strict defaults — `noUncheckedIndexedAccess:true`, `exactOptionalPropertyTypes:true`, `noUncheckedSideEffectImports:true`, `skipLibCheck:true` — silently break typed test fixtures and mock objects when inherited; `noUncheckedIndexedAccess` makes every `items[0]` in test fixtures type `T | undefined`, requiring null guards or `!`-assertions; `exactOptionalPropertyTypes` breaks test doubles where optional properties are assigned `undefined` explicitly; `noUncheckedSideEffectImports` blocks bare `import 'module'` in test setup files (vitest.setup.ts, jest.setup.ts); Bun 1.3.x additional: `--randomize`/`--seed` flags for order-dependency detection (analogous to Node.js 26 `--test-randomize`), `test.concurrent`/`test.serial` for within-file parallel/sequential control, `--concurrent`/`--max-concurrency` for file-level parallel execution, AI agent mode (CLAUDECODE=1/AGENT=1 env vars for minimal output suppressing passing tests — analogous to Vitest 4.1 agent reporter); community gotcha #49: TS 5.9 `noUncheckedIndexedAccess` default breaks typed test factory array access
 
 ---
 
@@ -3435,6 +3436,157 @@ After upgrading to pact-js v16, a monorepo with multiple consumer packages may h
 
 48. **Pact-JS v16 export rename silently mixes DSL versions in monorepo contract suites** [community] — After upgrading `@pact-foundation/pact` to v16.0.0, consumer packages that were not updated still import `{ PactV3, MatchersV3 }` (re-exported as compatibility aliases). Consumer packages that were updated import the new canonical `{ Pact, Matchers }`. Both forms compile without error and produce valid pacts — but `PactV3` and `Pact` are resolved differently internally after v16.0: `PactV3` routes through the V3-compatible path; `Pact` routes through the V4-default path. In a Pact Broker setup, interactions from `PactV3` consumers and interactions from `Pact` consumers may be versioned differently, causing provider verification to run against an unexpected DSL version for some consumers. Fix: treat `PactV3`/`MatchersV3` as deprecated immediately after upgrading to v16; run the codemods to replace all instances with `Pact`/`Matchers`; run provider verification against all consumers in the CI suite to confirm no DSL version mismatches. [official: github.com/pact-foundation/pact-js/releases/tag/v16.0.0 — migration guide]
 
+49. **TypeScript 5.9 `noUncheckedIndexedAccess` default breaks typed test factory array access** [community] — TypeScript 5.9's new `tsc --init` defaults include `noUncheckedIndexedAccess: true`. When a `tsconfig.test.json` inherits from a root `tsconfig.json` that was generated or refreshed with `tsc --init` on TS 5.9, every array index access in test files (`items[0]`, `results[i]`) now has type `T | undefined` rather than `T`. The failure mode is widespread in test fixtures: a line like `expect(results[0].id).toBe('ord_001')` produces a TypeScript error (`'results[0]' is possibly undefined`) even when the test has already asserted `results.length > 0`. This forces test authors to add redundant `!` non-null assertions or `at(0) ?? fail()` guards throughout test files. The three new strict defaults and their test-specific failure patterns are:
+
+  - **`noUncheckedIndexedAccess: true`**: Every `array[i]` and `record[key]` returns `T | undefined`. Test fixture lines that destructure or access response body arrays need `!` assertions or `toHaveLength`-guarded accesses. The fix is either to add `!` on known-non-null accesses (`expect(results[0]!.id).toBe(...)`) or use a typed helper (`const first = results.at(0); if (!first) throw new Error('empty results'); expect(first.id).toBe(...)`).
+
+  - **`exactOptionalPropertyTypes: true`**: An optional property `foo?: string` may NOT be set to `undefined` explicitly. Test doubles and factory objects that spread `{ ...base, optionalField: undefined }` to omit a field produce a TypeScript error (`Type 'undefined' is not assignable to type 'string'`). The fix is to omit the property entirely when building test doubles: `const { optionalField: _removed, ...rest } = fullObject`.
+
+  - **`noUncheckedSideEffectImports: true`**: Bare side-effect-only imports (`import 'reflect-metadata'`, `import './vitest.setup'`, `import 'source-map-support/register'`) produce a TS error: `TS7061: This import has side effects and is not allowed when 'noUncheckedSideEffectImports' is enabled`. These are common in NestJS test setups (`import 'reflect-metadata'`) and Vitest setup files. The fix is to add an explicit binding: `import {} from 'reflect-metadata'` (exports an empty object, making the import non-side-effect-only in TypeScript's eyes) or use a `// @ts-ignore` suppression on the single line as a transitional measure.
+
+```typescript
+// BEFORE TypeScript 5.9 tsc --init defaults — compiled without error
+// tests/integration/orders.integration.test.ts
+const results = await service.findAll(); // returns Order[]
+expect(results[0].id).toBeDefined();     // TS 5.9+: 'results[0]' is possibly 'undefined' (noUncheckedIndexedAccess)
+
+// AFTER — three patterns for noUncheckedIndexedAccess compliance
+// Pattern 1: non-null assertion (concise, appropriate when length is already asserted)
+expect(results).toHaveLength(3);
+expect(results[0]!.id).toBeDefined(); // '!' is safe here — toHaveLength guards it
+
+// Pattern 2: .at() with explicit guard (verbose but explicit)
+const first = results.at(0);
+if (!first) throw new Error('Expected at least one result');
+expect(first.id).toBeDefined();
+
+// Pattern 3: destructuring (idiomatic for the first element)
+const [firstOrder, ...rest] = results;
+expect(firstOrder).toBeDefined();       // TypeScript infers firstOrder as Order | undefined
+expect(firstOrder!.id).toBeDefined();   // '!' after explicit check above
+```
+
+```typescript
+// exactOptionalPropertyTypes: true — breaks test doubles that set optional fields to undefined
+interface OrderFilter {
+  status?: 'pending' | 'confirmed';
+  customerId?: string;
+}
+
+// BEFORE: clearing an optional field by setting it to undefined — error in TS 5.9
+const filter: OrderFilter = { status: 'pending', customerId: undefined }; // TS error TS2375
+
+// AFTER: omit the property entirely when it should not be set
+const filter: OrderFilter = { status: 'pending' }; // correct: customerId absent = not set
+
+// For test factories that spread and override, use Omit or rest-spread to remove:
+const baseFilter: OrderFilter = { status: 'pending', customerId: 'c1' };
+const { customerId: _, ...filterWithoutCustomer } = baseFilter; // removes the property
+```
+
+```typescript
+// noUncheckedSideEffectImports: true — breaks bare side-effect imports in test setup
+// vitest.setup.ts (before TS 5.9 tsc --init defaults)
+import 'reflect-metadata';               // TS 5.9+: TS7061 error with noUncheckedSideEffectImports
+
+// Fix 1: import with empty destructuring (makes it a "value import" not a "side-effect import")
+import {} from 'reflect-metadata';       // accepted: explicit intent
+
+// Fix 2: assign the namespace (if the module exports a namespace)
+import * as _reflectMetadata from 'reflect-metadata'; // accepted: named binding
+
+// Fix 3: disable noUncheckedSideEffectImports in tsconfig.test.json for NestJS projects
+// where reflect-metadata is required at every test file bootstrap
+// {
+//   "extends": "./tsconfig.json",
+//   "compilerOptions": {
+//     "noUncheckedSideEffectImports": false  // override for test-level setup files
+//   }
+// }
+```
+
+Run `tsc --noEmit` immediately after any `tsc --init` regeneration to discover all three failure patterns before they silently break CI. Teams that use Vitest (esbuild-based transpilation) without a separate `tsc --noEmit` step will not see these errors until they run the TypeScript compiler explicitly — Vitest silently ignores all three flags during test execution. [official: typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html — noUncheckedIndexedAccess, exactOptionalPropertyTypes, noUncheckedSideEffectImports in tsc --init defaults]
+
+---
+
+### Bun 1.3.x: Randomization, Concurrent Execution, and AI Agent Mode  [community]
+
+Bun 1.3.x (2025) added several test runner capabilities relevant to pyramid-level test organisation that complement the `--parallel`/`--shard` and `Symbol.dispose` features documented in the earlier Bun section.
+
+**`--randomize` and `--seed` flags — order-dependency detection at the unit level:**
+
+`bun test --randomize` runs test files and the tests within each file in a random order using a seeded pseudo-random algorithm. The seed is printed in the test summary. `bun test --seed=<N>` replays the exact order of a previous randomized run. This is the `bun:test` equivalent of Node.js 26.1's `--test-randomize`/`--test-random-seed` flags — both surface hidden shared state in unit test suites that only manifests when execution order changes.
+
+```bash
+# Detect order-dependent unit tests in Bun
+bun test --randomize src/**/*.unit.test.ts
+# Output: "Randomized seed: 1748123456" — use this to replay the same order
+
+# Replay a failed randomized run for diagnosis
+bun test --seed=1748123456 src/**/*.unit.test.ts
+```
+
+**`test.concurrent` and `test.serial` — within-file parallel control:**
+
+`bun:test` supports granular concurrency control at the individual test case level. Tests marked `test.concurrent` run in parallel with other `test.concurrent` tests within the same file. Tests marked `test.serial` always run sequentially even when `--concurrent` is enabled globally. This maps naturally to the pyramid: integration test cases that use shared DB connections should be `test.serial`; pure-logic unit test cases with no shared state can safely be `test.concurrent`.
+
+```typescript
+// src/orders/orders.service.unit.test.ts — bun:test concurrent + serial
+import { test, expect } from 'bun:test';
+import { calculateDiscount } from './discount.js';
+import type { DiscountInput } from './discount.js';
+
+// test.concurrent: pure-logic unit tests have no shared state — safe to run in parallel
+test.concurrent('applies 10% for standard members over $100', () => {
+  const input: DiscountInput = { total: 150, membershipTier: 'standard' };
+  expect(calculateDiscount(input)).toBe(15);
+});
+
+test.concurrent('applies no discount for orders under $100', () => {
+  const input: DiscountInput = { total: 80, membershipTier: 'standard' };
+  expect(calculateDiscount(input)).toBe(0);
+});
+
+// test.serial: integration tests that share a DB connection must run sequentially
+// to prevent transaction conflicts
+test.serial('integration: creates order and finds it', async () => {
+  // ... shared db state — must not overlap with other serial tests
+});
+```
+
+**`--concurrent` / `--max-concurrency` — file-level parallel execution:**
+
+`bun test --concurrent` runs all tests within a file in parallel (as if every test were `test.concurrent`). `--max-concurrency=N` limits the number of concurrently executing tests to prevent resource exhaustion. The default maximum is 20. For integration test files that each start their own testcontainer, do NOT use `--concurrent` — each container start-up compounds; use `--parallel` (file-level sharding) instead.
+
+```bash
+# Unit level: safe to run all tests concurrently within files
+bun test --concurrent src/**/*.unit.test.ts
+
+# Integration level: do NOT use --concurrent across files with shared resources
+# Use --parallel for file-level distribution and test.serial within each file
+bun test --parallel --shard=1/4 tests/integration/**/*.test.ts
+```
+
+**AI agent mode — `CLAUDECODE=1` / `AGENT=1` environment variables:**
+
+Bun 1.3.x detects AI coding agent environments and suppresses passing-test output automatically. When `CLAUDECODE=1`, `REPL_ID=1`, or `AGENT=1` is set, `bun test` displays only failures and the summary — identical in spirit to Vitest 4.1's agent reporter. This reduces token consumption when AI coding assistants (Claude Code, Copilot, Cursor) run tests as part of their agentic loop.
+
+```yaml
+# .github/workflows/test.yml — AI agent mode not needed in GitHub Actions
+# (GitHub Actions auto-detection is separate from the AI agent env var)
+- name: Run unit tests
+  run: bun test src/**/*.unit.test.ts
+  # No CLAUDECODE env var needed in CI — only for local AI coding assistant sessions
+```
+
+```bash
+# In a Claude Code session — enable minimal output for the agentic loop
+CLAUDECODE=1 bun test src/**/*.unit.test.ts
+# Output: only failures shown; passing tests suppressed; summary stats intact
+```
+
+The AI agent mode completes the bun/Vitest/Node.js coverage of this pattern: Vitest 4.1 auto-detects via `std-env` and enables the agent reporter; Node.js `node:test` has no built-in equivalent; `bun test` uses explicit environment variables. All three suppress passing test output for AI agent consumers. [official: bun.sh/docs/cli/test — AI Agent Integration section]
+
 ---
 
 ## Key Resources
@@ -3477,7 +3629,7 @@ After upgrading to pact-js v16, a monorepo with multiple consumer packages may h
 | Vitest 4.0 Release | Tool | https://vitest.dev/blog/vitest-4.html | Browser mode stable, toMatchScreenshot visual regression, expect.schemaMatching (Zod/Valibot), Playwright trace support |
 | Vitest 4.1 Release | Tool | https://vitest.dev/blog/vitest-4-1.html | Test tags + --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false, test.extend builder pattern |
 | TypeScript 5.8 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html | `--module node18` stable, `import with {type:'json'}` replaces assert form, granular return-expression branch checking, `--erasableSyntaxOnly` + Node.js type-stripping |
-| TypeScript 5.9 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | New `tsc --init` prescriptive defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`); `import defer` lazy module evaluation; `--module node20` stable; BREAKING: `ArrayBuffer` type hierarchy change breaks `Buffer` usage in test helpers; type instantiation cache for Zod/tRPC reduces test compilation errors |
+| TypeScript 5.9 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | New `tsc --init` prescriptive defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`, `noUncheckedIndexedAccess:true`, `exactOptionalPropertyTypes:true`, `noUncheckedSideEffectImports:true`, `skipLibCheck:true`); `import defer` lazy module evaluation; `--module node20` stable; BREAKING: `ArrayBuffer` type hierarchy change breaks `Buffer` usage in test helpers; type instantiation cache for Zod/tRPC reduces test compilation errors |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping; BREAKING: `types:[]`, `strict:true`, `module:esnext`, `rootDir:.` new defaults |
 | Vitest 5.0 Beta | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Next major version (beta May 2026): inline expect, sequential removal, .vitest/ directory restructure, V8 worker coverage — audit before upgrading |
 | Playwright Agents | Tool | https://playwright.dev/docs/test-agents | v1.56+: planner/generator/healer AI agents for e2e test creation; pyramid governance required to prevent e2e over-generation |
@@ -3493,7 +3645,9 @@ After upgrading to pact-js v16, a monorepo with multiple consumer packages may h
 | Node.js v24.15.0 LTS Release | Official | https://nodejs.org/en/blog/release/v24.15.0 | Worker ID exposed in concurrent `node:test` execution; `require(esm)` stable; module compile cache stable; `mock.module()` `exports` option consolidation back-port (Apr 2026) |
 | Node.js v25.9.0 Release | Official | https://nodejs.org/en/blog/release/v25.9.0 | BREAKING: `MockModuleOptions.exports` consolidates `defaultExport` + `namedExports` (codemod: `npx codemod @nodejs/mock-module-exports`); fake timer isolation fixed for concurrent `node:test`; CJS-from-ESM mock coverage fix |
 | Bun Test Runner | Tool | https://bun.sh/docs/cli/test | `bun:test` with `--parallel`, `--shard`, `--only-failures`, `retry`/`repeats` options, `Symbol.dispose` for auto mock cleanup, global `vi` API without imports |
-| Bun v1.3.x Changelog | Community | https://bun.sh/blog | v1.3.4 fake timers; v1.3.7 Symbol.dispose for mock/spy; v1.3.9 global vi API + --pass-with-no-tests; v1.3.13 --parallel/--shard/--only-failures |
+| Bun v1.3.x Changelog | Community | https://bun.sh/blog | v1.3.4 fake timers; v1.3.7 Symbol.dispose for mock/spy; v1.3.9 global vi API + --pass-with-no-tests; v1.3.12+ async stack traces; v1.3.13 --parallel/--shard/--only-failures + --randomize/--seed + --concurrent/--max-concurrency + test.concurrent/test.serial + AI agent mode (CLAUDECODE=1/AGENT=1) |
 | MSW v2.14.x Releases | Tool | https://github.com/mswjs/msw/releases | WebSocket `ws.onUpgrade` for upgrade interception (v2.14.0); `finalize` cleanup API for handler resource management (v2.14.4); `NetworkApi` TypeScript type exported |
 | Pact-JS v16.0.0 Release | Tool | https://github.com/pact-foundation/pact-js/releases/tag/v16.0.0 | BREAKING: `Pact`/`Matchers` are now canonical (previously `PactV4`/`MatchersV3`); old names become `PactV2`/`MatchersV2`; GraphQL contract testing support; Node 20 minimum |
 | Pact-JS Migration Guide 16.x | Tool | https://github.com/pact-foundation/pact-js/blob/master/MIGRATION.md | Step-by-step upgrade from v15 to v16; API rename codemod; DSL version compatibility notes |
+| TypeScript 5.9 Release Notes (full) | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | Complete list of new `tsc --init` defaults including `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUncheckedSideEffectImports`, `skipLibCheck` — all of which may silently break test tsconfigs that inherit the new defaults |
+| Bun Test Runner (full docs) | Tool | https://bun.sh/docs/cli/test | Complete `bun:test` CLI reference: `--randomize`/`--seed` for order-dependency detection, `--concurrent`/`--max-concurrency`, `test.concurrent`/`test.serial`, AI agent mode (CLAUDECODE=1/AGENT=1), `--rerun-each` for flakiness detection |

@@ -1,6 +1,6 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases); training-knowledge fallback for remaining gaps -->
+<!-- lang: TypeScript | topic: test-data | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases, playwright.dev/docs/release-notes#version-157, playwright.dev/docs/release-notes#version-159, playwright.dev/docs/release-notes#version-160); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
 <!-- iter-31: Neon DB copy-on-write branching for test isolation (neon.com/docs/guides/branching-test-queries, 2026-05-08); Testcontainers Cloud 8GB/session + Turbo mode (testcontainers.com/cloud/docs, 2026-05-08) -->
@@ -11,6 +11,7 @@
 <!-- iter-41: Playwright 1.48 page.routeWebSocket() E2E WebSocket test data interception; Playwright 1.49 multiple globalSetup via project dependencies for composable DB seeding; Playwright 1.50 test.step.skip() for data-dependent step guarding; Playwright 1.60 test.abort() for fixture precondition enforcement; MSW v2.14 finalize() API for WS handler cleanup; faker v10.4 locale expansions (Norwegian, Japanese) for locale-sensitive test data; community gotcha #29 (Playwright WebSocket routes linger across tests without explicit teardown); updated checklists; 6 new Key Resources (2026-05-12) -->
 <!-- iter-42: MSW v2.14.0 ws.onUpgrade() API for HTTP-upgrade-based WebSocket connections in Node.js; community gotcha #30 (ws.onUpgrade vs ws.link — upgrade handler applies globally, not per-link; not available in browser/service worker context); new Key Resource (2026-05-12) -->
 <!-- iter-43: MSW defineNetwork() RFC — unified network mock API separating sources from handlers; Playwright 1.52 failOnFlakyTests as factory isolation quality signal (community gotcha #31); Playwright 1.53 locator.describe() for fixture element annotation in traces; Playwright 1.56 page.requests() for asserting factory-driven request patterns; Playwright 1.56 LLM Test Agents applied to factory scaffolding; corrected testProject.workers attribution to v1.52 (not v1.57); updated Playwright checklist; 4 new Key Resources (2026-05-12) -->
+<!-- iter-44: Playwright 1.57 testConfig.webServer.wait (regex + named capture groups for dynamic port injection into test data fixtures); Playwright 1.60 locator.drop() for binary/clipboard test data delivery to dropzone elements; webSocketRoute.protocols() for subprotocol-aware WebSocket mock factories (dispatch different message factories per negotiated protocol); community gotcha #32 (locator.drop() needs explicit mimeType in file descriptor — omitting it silently drops the drop event); 3 new Key Resources (2026-05-12) -->
 <!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
@@ -9557,3 +9558,352 @@ When the `generator` agent processes this plan with the Playwright agent system 
 | Playwright 1.53 `locator.describe()` | Official | https://playwright.dev/docs/release-notes#version-153 | Annotate fixture-created element locators with semantic labels for Trace Viewer + HTML reports |
 | Playwright 1.56 `page.requests()` + agents | Official | https://playwright.dev/docs/release-notes#version-156 | `page.requests()` for post-interaction request history; `init-agents` for LLM-guided factory scaffolding |
 | MSW PR #2732 (`ws.onUpgrade` implementation) | Community | https://github.com/mswjs/msw/pull/2732 | Design rationale: why `ws.onUpgrade` is global (not per-link), default 101 behaviour, Node.js restriction |
+
+---
+
+## Playwright 1.57 `testConfig.webServer.wait` — Dynamic Port Injection for Test Data Servers  [community]
+
+Playwright 1.57 added a `wait` field to `testConfig.webServer` that accepts a regular expression with optional **named capture groups**. When the test server emits a matching line to stdout/stderr, Playwright extracts the named captures and injects them as environment variables into the test process — before any test or fixture runs.
+
+**Why it matters for test data:** Integration test suites often spin up a real application server (or a dedicated test-data server) on a dynamic port. Before 1.57, the only option was to write the port to a temp file during `globalSetup` and read it in fixtures — a brittle, multi-step dance. The `wait` pattern gives you a first-class way to inject the server's dynamic port (or any emitted value) into fixtures as an environment variable, keeping your test data setup declarative.
+
+```typescript
+// playwright.config.ts — dynamic port injection via webServer.wait (Playwright 1.57+)
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  webServer: {
+    command: 'node test-data-server.js',   // emits: "Test data server listening on port 54321"
+    // Named capture group 'port' is extracted and injected as PLAYWRIGHT_TEST_DATA_PORT
+    wait: /Test data server listening on port (?<port>\d+)/,
+    // No static 'port' or 'url' needed — Playwright waits for the regex match
+    reuseExistingServer: !process.env.CI,
+    timeout: 10_000,
+  },
+  use: {
+    // Fixtures can now read process.env.PLAYWRIGHT_TEST_DATA_PORT
+    baseURL: `http://localhost:${process.env.PLAYWRIGHT_TEST_DATA_PORT}`,
+  },
+});
+```
+
+```typescript
+// fixtures/test-data-fixtures.ts — read the injected dynamic port in a fixture
+import { test as base, expect } from '@playwright/test';
+
+interface TestDataFixtures {
+  testDataBaseUrl: string;
+}
+
+export const test = base.extend<TestDataFixtures>({
+  testDataBaseUrl: async ({}, use) => {
+    // process.env.PLAYWRIGHT_TEST_DATA_PORT is injected by the webServer.wait match
+    const port = process.env['PLAYWRIGHT_TEST_DATA_PORT'];
+    if (!port) {
+      test.abort('PLAYWRIGHT_TEST_DATA_PORT not set — webServer.wait may not have matched');
+    }
+    await use(`http://localhost:${port}`);
+  },
+});
+
+export { expect };
+```
+
+```typescript
+// test-data-server.js (CommonJS) — must emit the wait-matched line to stdout
+const http = require('http');
+const server = http.createServer((req, res) => {
+  // Serve factory-generated seed data as JSON — used in test fixtures via testDataBaseUrl
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ users: [], products: [] }));
+});
+server.listen(0, () => {
+  const { port } = server.address() as { port: number };
+  // This line matches the webServer.wait regex — Playwright injects port as env var
+  console.log(`Test data server listening on port ${port}`);
+});
+```
+
+**Multiple capture groups:** If your server emits multiple dynamic values (e.g., both a data server port and an auth service port), you can use multiple named groups in the same regex:
+
+```typescript
+// wait: /Data: (?<dataPort>\d+), Auth: (?<authPort>\d+)/
+// → injects PLAYWRIGHT_DATA_PORT and PLAYWRIGHT_AUTH_PORT
+```
+
+**Tradeoff vs `globalSetup`:** `testConfig.webServer.wait` only works when the server emits a stable, parseable line. If your server's startup sequence is more complex (database migrations, seed scripts), use a `globalSetup` project (see the "Playwright 1.49 Multiple `globalSetup`" section) and emit a "ready" sentinel from within the setup script.
+
+---
+
+## Playwright 1.60 `locator.drop()` — Binary and Clipboard Test Data Delivery  [community]
+
+Playwright 1.60 added `locator.drop()`, a dedicated API for simulating external drag-and-drop operations — specifically, dropping **files** or **clipboard data** onto a target element. This fills the test data gap for file-upload dropzone UIs, rich-text editors with paste support, and any component that relies on the HTML5 `DataTransfer` API.
+
+**Before 1.60:** Testing dropzones required either `page.dispatchEvent()` with a manually constructed `DataTransfer` object (verbose, TypeScript-unfriendly) or `page.setInputFiles()` (only works on `<input type="file">`, not arbitrary drop targets).
+
+**Why it matters for test data factories:** File contents in drop tests are test data. Factories can generate in-memory `Buffer` objects with specific content shapes (e.g., valid CSV, malformed JSON, oversized binary blobs) and deliver them to dropzones via `locator.drop()` without writing to disk.
+
+```typescript
+// fixtures/file-drop-fixtures.ts — factory-generated file test data via locator.drop()
+import { test as base } from '@playwright/test';
+import { faker } from '@faker-js/faker';
+
+interface FileDropFixtures {
+  dropFile: (
+    locator: import('@playwright/test').Locator,
+    options: {
+      name: string;
+      mimeType: string;         // REQUIRED: omitting silently prevents the drop event
+      content: string | Buffer;
+    }
+  ) => Promise<void>;
+}
+
+export const test = base.extend<FileDropFixtures>({
+  dropFile: async ({}, use) => {
+    await use(async (locator, { name, mimeType, content }) => {
+      const buffer =
+        typeof content === 'string' ? Buffer.from(content) : content;
+
+      // locator.drop() dispatches synthetic dragenter + dragover + drop events
+      await locator.drop({
+        files: { name, mimeType, buffer },
+      });
+    });
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// Example test: factory-generated CSV file dropped on a data-import dropzone
+import { test, expect } from './fixtures/file-drop-fixtures';
+import { faker } from '@faker-js/faker';
+
+function buildCsvContent(rows: number): string {
+  const header = 'id,name,email';
+  const dataRows = Array.from({ length: rows }, (_, i) =>
+    `${i + 1},${faker.person.fullName()},${faker.internet.email()}`
+  );
+  return [header, ...dataRows].join('\n');
+}
+
+test('import dropzone accepts a valid CSV with factory-generated rows', async ({ page, dropFile }) => {
+  await page.goto('/import');
+  const dropzone = page.getByTestId('csv-dropzone');
+
+  await dropFile(dropzone, {
+    name: 'users.csv',
+    mimeType: 'text/csv',          // must match — see gotcha #32
+    content: buildCsvContent(10),
+  });
+
+  await expect(page.getByText('10 records ready for import')).toBeVisible();
+});
+
+test('import dropzone rejects oversized file gracefully', async ({ page, dropFile }) => {
+  await page.goto('/import');
+  const dropzone = page.getByTestId('csv-dropzone');
+
+  // 6MB buffer — exceeds the 5MB limit enforced by the dropzone handler
+  const oversizedBuffer = Buffer.allocUnsafe(6 * 1024 * 1024);
+
+  await dropFile(dropzone, {
+    name: 'large-export.csv',
+    mimeType: 'text/csv',
+    content: oversizedBuffer,
+  });
+
+  await expect(page.getByRole('alert')).toContainText('File exceeds 5MB limit');
+});
+```
+
+```typescript
+// Clipboard data variant — drop plain text or HTML content into a rich-text editor
+test('rich-text editor accepts pasted HTML via drop', async ({ page }) => {
+  await page.goto('/editor');
+  const editor = page.getByRole('textbox', { name: 'Document body' });
+
+  await editor.drop({
+    data: {
+      'text/html': '<p><strong>Factory-generated</strong> content</p>',
+      'text/plain': 'Factory-generated content',
+    },
+  });
+
+  await expect(editor.locator('strong')).toHaveText('Factory-generated');
+});
+```
+
+**Tradeoff: `locator.drop()` vs `page.setInputFiles()` vs `locator.dispatchEvent()`:**
+
+| Method | Target | MIME needed | Binary `Buffer` | `DataTransfer` control |
+|--------|--------|------------|-----------------|------------------------|
+| `locator.drop({ files })` (1.60+) | Any dropzone | Yes (required) | Yes | Automatic |
+| `page.setInputFiles()` | `<input type="file">` only | No | Yes | None |
+| `locator.dispatchEvent('drop', dt)` | Any element | Manual | Manual | Full (verbose) |
+
+---
+
+## Playwright 1.60 `webSocketRoute.protocols()` — Subprotocol-Aware WebSocket Mock Factories  [community]
+
+Playwright 1.60 added `webSocketRoute.protocols()`, which returns the **WebSocket subprotocols requested by the page** (the `Sec-WebSocket-Protocol` header values). This enables writing protocol-aware WebSocket route handlers that dispatch different factory-generated message shapes depending on which subprotocol the client negotiated — matching the behaviour of real WebSocket servers that serve different wire formats per subprotocol.
+
+**Why it matters for test data:** Many production WebSocket APIs support multiple subprotocols (e.g., `json` vs `msgpack`, or `v1` vs `v2`). Without `protocols()`, your mock factory sends the same message format regardless of what the client requested — causing subtle test failures when the client negotiates a subprotocol that changes the wire format. With `protocols()`, you can branch the factory logic per negotiated protocol, exactly as a real server would.
+
+```typescript
+// fixtures/ws-protocol-fixtures.ts — subprotocol-aware WebSocket mock factory
+import { test as base } from '@playwright/test';
+import { faker } from '@faker-js/faker';
+
+// Factory types for each supported subprotocol
+interface JsonEvent {
+  type: string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+
+interface BinaryEvent {
+  eventId: number;
+  eventType: number;  // numeric enum for compact wire format
+  ts: number;         // Unix ms timestamp
+}
+
+function buildJsonEvent(overrides: Partial<JsonEvent> = {}): JsonEvent {
+  return {
+    type: faker.helpers.arrayElement(['created', 'updated', 'deleted']),
+    payload: { id: faker.string.uuid(), value: faker.number.int({ min: 1, max: 100 }) },
+    timestamp: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function buildBinaryEvent(overrides: Partial<BinaryEvent> = {}): BinaryEvent {
+  return {
+    eventId: faker.number.int({ min: 1, max: 65535 }),
+    eventType: faker.helpers.arrayElement([1, 2, 3]),
+    ts: Date.now(),
+    ...overrides,
+  };
+}
+
+function serializeBinaryEvent(event: BinaryEvent): Buffer {
+  // Pack eventId (2 bytes), eventType (1 byte), ts (8 bytes) = 11 bytes total
+  const buf = Buffer.allocUnsafe(11);
+  buf.writeUInt16BE(event.eventId, 0);
+  buf.writeUInt8(event.eventType, 2);
+  buf.writeBigInt64BE(BigInt(event.ts), 3);
+  return buf;
+}
+
+export const test = base.extend<{
+  mockEventStream: (url: string, eventCount?: number) => Promise<void>;
+}>({
+  mockEventStream: async ({ page }, use) => {
+    await use(async (url: string, eventCount = 3) => {
+      await page.routeWebSocket(url, (ws) => {
+        // Playwright 1.60: inspect the negotiated subprotocol(s)
+        const protocols: string[] = ws.protocols();
+        const useBinary = protocols.includes('events.binary.v1');
+
+        for (let i = 0; i < eventCount; i++) {
+          setTimeout(() => {
+            if (useBinary) {
+              const event = buildBinaryEvent();
+              ws.send(serializeBinaryEvent(event));   // Buffer → binary frame
+            } else {
+              // Default: JSON subprotocol (or no subprotocol negotiated)
+              const event = buildJsonEvent();
+              ws.send(JSON.stringify(event));          // string → text frame
+            }
+          }, i * 100);
+        }
+      });
+    });
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// Usage: test that dispatches factory events over the negotiated protocol
+import { test, expect } from './fixtures/ws-protocol-fixtures';
+
+test('event list renders factory events delivered over JSON subprotocol', async ({ page, mockEventStream }) => {
+  await mockEventStream('wss://events.example.com/stream');   // client negotiates default (JSON)
+  await page.goto('/events');
+  await expect(page.getByRole('listitem')).toHaveCount(3);
+});
+
+test('event list renders factory events delivered over binary subprotocol', async ({ page, mockEventStream }) => {
+  // The application's WebSocket client requests 'events.binary.v1' as its preferred protocol
+  await mockEventStream('wss://events.example.com/stream');
+  await page.goto('/events?protocol=binary');
+  await expect(page.getByRole('listitem')).toHaveCount(3);
+});
+```
+
+**Note on `protocols()` return value:** `webSocketRoute.protocols()` returns an array of subprotocol strings as sent by the client in `Sec-WebSocket-Protocol`. If the client did not request any subprotocol, the array is empty — your factory should fall back to a sensible default (typically the JSON wire format) in that case.
+
+**Tradeoff:** If your application always negotiates the same subprotocol, `protocols()` adds no value — omit the branch and keep the factory simple. Use `protocols()` only when testing code paths that behave differently per subprotocol, or when ensuring the mock factory stays aligned with the real server's multi-protocol contract.
+
+---
+
+32. **[community] `locator.drop()` silently swallows the drop event if `mimeType` is omitted from the file descriptor — the handler fires but `event.dataTransfer.files[0].type` is empty, causing type-gated dropzone logic to reject the file silently.**
+    Playwright 1.60's `locator.drop({ files: { name, buffer } })` accepts a file descriptor where `mimeType` is technically optional in TypeScript. However, most production dropzone implementations guard on `file.type` (e.g., rejecting files whose MIME type is not `text/csv` or `image/png`). When `mimeType` is omitted, the synthetic `File` object has `type: ''`, which means:
+    - A CSV import component sees `file.type === ''` → not `'text/csv'` → silently rejects
+    - The test sees no error thrown, no exception in the route handler — just a passing assertion that happens to be wrong (no import started)
+    - The bug is invisible until you inspect `event.dataTransfer.files[0].type` in a debug `page.evaluate()` call
+
+    ```typescript
+    // WRONG — mimeType omitted: drop fires, but file.type is '' in the handler
+    await dropzone.drop({
+      files: { name: 'data.csv', buffer: Buffer.from(csvContent) },  // no mimeType
+    });
+    // ✗ silently rejected by type-checking dropzone; test may still pass if assertion is weak
+
+    // CORRECT — always specify mimeType to match the file extension and component expectation
+    await dropzone.drop({
+      files: { name: 'data.csv', mimeType: 'text/csv', buffer: Buffer.from(csvContent) },
+    });
+    // ✓ file.type === 'text/csv'; component accepts and processes the file
+
+    // Factory helper — enforce mimeType at the type level to prevent omission
+    interface DropFileDescriptor {
+      name: string;
+      mimeType: string;  // required — do not use Playwright's optional type directly
+      content: string | Buffer;
+    }
+
+    // Map of common extensions to MIME types for factory convenience
+    const MIME_BY_EXT: Record<string, string> = {
+      csv: 'text/csv',
+      json: 'application/json',
+      pdf: 'application/pdf',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      txt: 'text/plain',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    };
+
+    function inferMimeType(filename: string): string {
+      const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+      const mime = MIME_BY_EXT[ext];
+      if (!mime) throw new Error(`No MIME type mapped for extension ".${ext}" — specify mimeType explicitly`);
+      return mime;
+    }
+    ```
+
+    **Root cause pattern:** `locator.drop()` mirrors browser behaviour where a `File` object can have an empty `type`. The Playwright API surface does not enforce `mimeType` because the browser doesn't either. But real dropzone handlers always read `file.type`. Your factory layer is the right place to enforce this invariant — not the test body.
+
+---
+
+## Key Resources (iter-44 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright 1.57 release notes | Official | https://playwright.dev/docs/release-notes#version-157 | `testConfig.webServer.wait` with regex named capture groups for dynamic port injection into test data fixtures |
+| Playwright 1.60 `locator.drop()` API | Official | https://playwright.dev/docs/api/class-locator#locator-drop | File and clipboard test data delivery to dropzone elements; `files` and `data` DataTransfer variants |
+| Playwright 1.60 release notes | Official | https://playwright.dev/docs/release-notes#version-160 | `locator.drop()`, `webSocketRoute.protocols()`, `tracing.startHar/stopHar` as async disposable, `test.abort()` |

@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1 -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -953,7 +953,7 @@ that extend test scripting without requiring npm bundling.
 | `k6-summary` | `jslib.k6.io/k6-summary/0.0.2/index.js` | `textSummary` + `jUnit` for handleSummary |
 | `papaparse` | `jslib.k6.io/papaparse/5.1.1/index.js` | CSV parsing with header support |
 | `httpx` | `jslib.k6.io/httpx/0.1.0/index.js` | HTTP session wrapper — reusable base URL, headers, auth |
-| `k6chaijs` | `jslib.k6.io/k6chaijs/4.3.4.3/index.js` | BDD-style assertions (`expect`, `chai`) |
+| `k6chaijs` | `jslib.k6.io/k6chaijs/4.5.0.1/index.js` | BDD-style assertions (`expect`, `chai`) |
 | `utils` | `jslib.k6.io/k6-utils/1.4.0/index.js` | `randomString()`, `uuidv4()`, `randomIntBetween()` |
 | `totp` | `jslib.k6.io/totp/1.0.0/index.js` | TOTP/MFA code generation from shared secret |
 | `http-instrumentation-tempo` | `jslib.k6.io/http-instrumentation-tempo/1.0.1/index.js` | Auto OTel trace context injection |
@@ -986,7 +986,7 @@ export default function (data) {
 
 ```javascript
 // k6chaijs — BDD-style assertions (useful for teams migrating from Jest/Mocha)
-import { describe, expect } from "https://jslib.k6.io/k6chaijs/4.3.4.3/index.js";
+import { describe, expect } from "https://jslib.k6.io/k6chaijs/4.5.0.1/index.js";
 import http from "k6/http";
 
 export default function () {
@@ -6162,7 +6162,7 @@ k6 cloud run k6/scripts/load.js
 k6 cloud run --stack my-stack k6/scripts/load.js
 
 # Set via environment variable to avoid repeating in every command
-export K6_CLOUD_STACK=my-stack
+export K6_CLOUD_STACK_ID=my-stack
 k6 cloud run k6/scripts/load.js
 k6 cloud run k6/scripts/soak.js
 
@@ -6170,11 +6170,11 @@ k6 cloud run k6/scripts/soak.js
 - name: Run cloud test
   env:
     K6_CLOUD_API_TOKEN: ${{ secrets.K6_CLOUD_API_TOKEN }}
-    K6_CLOUD_STACK: ${{ vars.K6_CLOUD_STACK }}
+    K6_CLOUD_STACK_ID: ${{ vars.K6_CLOUD_STACK_ID }}
   run: k6 cloud run --no-color k6/scripts/load.js
 ```
 
-> **[community]:** The `K6_CLOUD_STACK` environment variable is the cleanest migration path. Set it once in your CI environment (GitHub Actions vars, GitLab CI variables, or Jenkins credentials) and all `k6 cloud` commands in all pipelines pick it up automatically — no Jenkinsfile / workflow file changes needed per script.
+> **[community]:** The `K6_CLOUD_STACK_ID` environment variable is the cleanest migration path. Set it once in your CI environment (GitHub Actions vars, GitLab CI variables, or Jenkins credentials) and all `k6 cloud` commands in all pipelines pick it up automatically — no Jenkinsfile / workflow file changes needed per script.
 
 ### k6 Subcommand Extensions — Auto-Resolution (k6 v1.7.0+)  [community]
 
@@ -7036,7 +7036,84 @@ export default async function () {
 
 ---
 
-## Browser Module — Advanced Page APIs (k6 v1.4–v1.6)
+### `locator.locator()` — Hierarchical Scoping for Precise Element Targeting  [community]
+
+`locator.locator(selector, opts?)` creates a new Locator scoped to children of the parent
+locator's matched elements. Use it to reliably target elements inside repeating containers
+(tables, lists, cards) without relying on fragile nth-child CSS rules.
+
+```javascript
+// k6/scripts/browser-locator-scope.js
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    scope_demo: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 2,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export default async function () {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/shop`);
+
+    // Scope 1: find the "apple" product card, then its "Add to Cart" button
+    // without brittle CSS like "ul.products > li:nth-child(3) > button"
+    const appleCard = page.locator('[data-product="apple"]');
+    const addBtn    = appleCard.locator('button', { hasText: "Add to Cart" });
+    await addBtn.click();
+    check(await page.locator('[data-testid="cart-count"]').textContent(), {
+      "cart updated": (t) => parseInt(t) > 0,
+    });
+
+    // Scope 2: iterate each row in a table and assert per-row structure
+    const rows = page.locator("table.order-list tbody tr");
+    const allRows = await rows.all();
+    for (const row of allRows) {
+      // Each row's locator() is automatically scoped to that row's subtree
+      const statusCell = row.locator("td.status");
+      const status     = await statusCell.textContent();
+      check(status, { "row has status": (s) => s !== null && s.length > 0 });
+
+      const actionBtn = row.locator("button.action");
+      const btnCount  = await actionBtn.count();
+      // Not all rows have action buttons — check is conditional
+      if (btnCount > 0) {
+        check(await actionBtn.first().isEnabled(), {
+          "action button enabled": (enabled) => enabled,
+        });
+      }
+    }
+
+    // Scope 3: filter + locator() combo — find "Active" items and click their edit link
+    const activeItems = page.locator(".item").filter({ hasText: "Active" });
+    const firstActive = activeItems.first();
+    // Scope to the edit link WITHIN the first active item
+    const editLink = firstActive.locator('a[href^="/edit/"]');
+    const editCount = await editLink.count();
+    check(editCount, { "active item has edit link": (n) => n === 1 });
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** `locator.locator()` is the recommended pattern for tables, lists, and
+> any repeating structure. The scoped locator only searches within the parent's matched
+> DOM subtree — it will NOT accidentally match elements outside the container even if the
+> same selector exists elsewhere on the page. Prefer this over appending CSS descendant
+> combinators (`.item .button`) which can match unintended siblings when the DOM changes.
+
+---
+
+
 
 ### `page.waitForRequest()` — Intercept Outbound HTTP  [community]
 
@@ -9437,6 +9514,41 @@ export default async function () {
 
 ---
 
+## Additional Community Gotchas (Iteration 33)
+
+### 60. `k6 cloud login --stack` persists a default stack — subsequent commands inherit it silently  [community]
+
+**What:** The `k6 cloud login` command (v1.6.0+) accepts a `--stack my-stack-slug` flag that
+stores the stack slug in the local credentials file (`~/.config/k6/credentials.json`). All
+subsequent `k6 cloud` commands in that shell session **and all future sessions** inherit this
+default — even without setting `K6_CLOUD_STACK_ID` or passing `--stack` explicitly.
+
+**WHY:** The intent is developer convenience: log in once, run cloud tests without repeating
+`--stack` every time. But CI agents that run multiple pipeline types (e.g., staging and
+production) may inherit a stale default from a prior `k6 cloud login` call, silently targeting
+the wrong stack.
+
+**Fix:** In CI, always explicitly set `K6_CLOUD_STACK_ID` or pass `--stack` on every
+`k6 cloud run` command. Do not rely on the credentials file in shared CI agents; use a
+fresh login step per job:
+
+```bash
+# CI best practice — explicit stack on every cloud command, never rely on stored default
+k6 cloud login --token "$K6_CLOUD_API_TOKEN" --stack "$K6_CLOUD_STACK_ID"
+k6 cloud run --stack "$K6_CLOUD_STACK_ID" k6/scripts/load.js
+
+# To inspect or clear the stored default:
+cat ~/.config/k6/credentials.json           # check what default is stored
+k6 cloud login --token "$TOKEN" --stack ""  # clear the stored default (empty string)
+```
+
+> **[community]:** On self-hosted runners, if a prior job called `k6 cloud login --stack prod`,
+> the next job that calls only `k6 cloud run script.js` (no `--stack`) will quietly target
+> production. Always treat CI agents as potentially dirty — set `K6_CLOUD_STACK_ID` as a
+> CI environment variable and pass `--stack` explicitly rather than relying on login state.
+
+---
+
 ## Browser Module — `page.waitForResponse()` (k6 v1.3+)  [community]
 
 `page.waitForResponse(urlOrPredicate, options?)` waits for a network response matching
@@ -9602,6 +9714,7 @@ These APIs were added in k6 v1.3.0 through v1.6.0 and complement the main Key AP
 | `page.waitForResponse(urlOrFn, opts?)` | Wait for a network response matching URL/predicate | Assert SPA fetch responses after UI actions |
 | `locator.contentFrame()` | Get live `Frame` object for `<iframe>` element | Frame-level navigation, title, evaluate calls |
 | `locator.boundingBox()` | Get `{x,y,width,height}` of element, or `null` if hidden | Layout regression tests, overlap detection |
+| `locator.locator(sel, opts?)` | Scope a new Locator to children of the parent match | Hierarchical targeting in tables, lists, cards |
 | `frameLocator.getByRole(...)` | Semantic selector inside a frame scope (v1.3+) | ARIA-based element interaction inside iframes |
 | `frameLocator.locator(sel).contentFrame()` | Chain: scope to iframe, then get nested frame | Double-nested iframe interaction |
 | `page.waitForURL(url, opts?)` | Wait for page URL to match pattern after navigation | SPA routing assertions after click/submit |

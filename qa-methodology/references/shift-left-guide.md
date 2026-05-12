@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -2844,6 +2844,107 @@ export default defineConfig({
 > [community] **Lesson (Playwright CT adopters, 2024)**: The most common mistake with Playwright component tests is replicating E2E patterns (testing whole user flows) rather than component-level logic (testing one component in isolation). Component tests should answer: "does this button fire the right callback?" and "does this component render correctly for edge-case props?" The E2E test answers "does the whole checkout flow work?" Both are valuable at different levels.
 
 > [community] **Gotcha (Playwright CT + TypeScript strict mode)**: Playwright CT requires JSX/TSX files processed by Vite. If `tsconfig.json` has `"moduleResolution": "NodeNext"`, add a separate `tsconfig.playwright.json` with `"moduleResolution": "Bundler"` for Vite compatibility. Without this, Playwright CT fails to start with cryptic import resolution errors.
+
+### Native Accessibility Assertions (Playwright v1.44+) — Shift-Left A11y Gates
+
+Playwright v1.44 added three first-class ARIA assertion matchers — `toHaveAccessibleName()`, `toHaveAccessibleDescription()`, and `toHaveRole()` — that eliminate the need to inject axe-core for basic ARIA contract checks. Unlike the axe-core injection pattern (which requires a script tag and an async `page.evaluate` round-trip), these matchers use Playwright's built-in accessibility tree snapshot and auto-wait for the element to satisfy the assertion.
+
+```typescript
+// src/components/UserCard.spec.tsx — Playwright CT with native a11y assertions (v1.44+)
+import { test, expect } from '@playwright/experimental-ct-react';
+import { UserCard } from './UserCard.js';
+import type { User } from '../../shared/types.js';
+
+const mockUser: User = {
+  id: 'user_1',
+  name: 'Alice',
+  email: 'alice@example.com',
+  role: 'admin',
+  avatarUrl: null,
+};
+
+test.describe('UserCard — accessibility contract (Playwright v1.44+)', () => {
+  test('avatar image has a meaningful accessible name', async ({ mount }) => {
+    const component = await mount(<UserCard user={mockUser} />);
+    // toHaveAccessibleName uses the accessibility tree — tests alt text, aria-label,
+    // aria-labelledby, and title attributes in priority order (ARIA spec)
+    await expect(component.getByRole('img')).toHaveAccessibleName("Alice's avatar");
+  });
+
+  test('edit button has an accessible description', async ({ mount }) => {
+    const component = await mount(<UserCard user={mockUser} />);
+    // toHaveAccessibleDescription checks aria-describedby content
+    await expect(component.getByRole('button', { name: /edit/i })).toHaveAccessibleDescription(
+      /edit profile for Alice/i,
+    );
+  });
+
+  test('admin badge is a status role', async ({ mount }) => {
+    const component = await mount(<UserCard user={mockUser} />);
+    // toHaveRole asserts the computed ARIA role — catches role=button on a <div>,
+    // missing roles, and incorrect role overrides
+    await expect(component.getByText(/admin/i)).toHaveRole('status');
+  });
+
+  test('entire card is a landmark article', async ({ mount }) => {
+    const component = await mount(<UserCard user={mockUser} />);
+    await expect(component.locator('[data-testid="user-card"]')).toHaveRole('article');
+  });
+});
+```
+
+**WHY these are shift-left a11y gates**: Running a full axe-core scan after every UI change produces broad diagnostics that require triage. Native ARIA assertions are surgical — they encode the accessibility contract of each component as executable test cases, fail fast with a precise message ("expected role 'button' but was 'generic'"), and run inside the same Playwright process without a CDN script dependency. They integrate directly with Playwright's auto-retry and timeout logic, so transient rendering delays do not cause false failures.
+
+### `testConfig.tsconfig` — Uniform TypeScript Config for Playwright Tests (v1.45+)
+
+Before v1.45, Playwright resolved TypeScript configuration per test file using Node's module resolution, which could result in test files in different directories picking up different `tsconfig.json` files (or none at all). Playwright v1.45 introduced `testConfig.tsconfig` to explicitly pin a single TypeScript configuration file for all test files.
+
+```typescript
+// playwright.config.ts — pin a single tsconfig for all Playwright tests (v1.45+)
+import { defineConfig, devices } from '@playwright/test';
+import path from 'node:path';
+
+export default defineConfig({
+  testDir: './e2e',
+  // v1.45+: all test files use this tsconfig — ensures uniform strict mode enforcement
+  // and prevents test files in subdirectories from silently inheriting a weaker config
+  tsconfig: path.resolve(import.meta.dirname, 'tsconfig.playwright.json'),
+
+  use: {
+    baseURL: 'http://localhost:3000',
+    trace: 'on-first-retry',
+  },
+
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+  ],
+});
+```
+
+```jsonc
+// tsconfig.playwright.json — strict TypeScript config for all Playwright test files
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    // Playwright test files often use top-level await in async test blocks
+    "target": "ES2022",
+    "moduleResolution": "Bundler",
+    // Do not emit — Playwright handles transpilation via esbuild internally
+    "noEmit": true
+  },
+  "include": ["e2e/**/*.ts", "e2e/**/*.tsx", "playwright.config.ts"]
+}
+```
+
+**WHY this is a shift-left improvement**: Without `testConfig.tsconfig`, test files in nested directories could silently inherit a lenient (or absent) tsconfig, undermining strict mode enforcement. A test file that lives in `e2e/auth/` might resolve a different `tsconfig.json` than one in `e2e/`, producing inconsistent type checking across the test suite. Pinning a single config ensures all Playwright test files are checked against the same strict rules — any type error is caught by the PR's `tsc --noEmit` pass.
+
+> [community] **Lesson (Playwright v1.44-1.45 adopters, 2025)**: Teams migrating from axe-core injection to native `toHaveAccessibleName/Description/Role` assertions report 3–5× faster execution for accessibility-focused component tests — the CDN script injection added 400–800ms per test setup. The native matchers use Playwright's built-in AX tree and have zero network dependency. Use axe-core injection only for comprehensive WCAG audits (`results.violations`) where you want a full page scan; use native matchers for encoding per-component accessibility contracts.
+
+> [community] **Gotcha (testConfig.tsconfig + TypeScript version mismatch, 2025)**: `testConfig.tsconfig` resolves the tsconfig file at Playwright worker start time using the Node.js module resolution of the Playwright test runner — not the project's own `tsc` binary. If the project uses a locally installed TypeScript version that differs from the one Playwright bundles for its esbuild transform, `compilerOptions` properties introduced in the newer version (e.g., `"verbatimModuleSyntax"` from TS 5.0) may be silently ignored rather than producing an error. Pin `typescript` in `devDependencies` and verify with `npx tsc --version` vs. the TypeScript version reported in Playwright's changelog for the same version.
 
 ---
 

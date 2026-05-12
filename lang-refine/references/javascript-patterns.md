@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 52 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 53 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -5507,3 +5507,213 @@ test('product listing page completeness', async ({ page }) => {
 | Soft assertions on cascading preconditions | First-failure cascades fill the report with noise | Use hard assertions for preconditions; `expect.soft()` only for independent peer checks |
 | `vi.mock()` without `vi.clearAllMocks()` in `afterEach` | Mock call counts, implementations, and return values leak between tests | Call `vi.clearAllMocks()` (or configure `clearMocks: true` globally) in `afterEach` |
 | Mixing `vi.useFakeTimers()` (Vitest) and `page.clock` (Playwright) in the same test | Node.js fake timers affect the test runner process; browser clock affects the page — they are independent and do not synchronize | Use `page.clock` for browser timer control in E2E tests; use `vi.useFakeTimers()` for unit tests in Node.js |
+
+---
+
+## `node:sqlite` — Built-in Relational Database (Node.js 22.5+ / Stable in v23.4+)
+
+Node.js ships a synchronous SQLite client as `node:sqlite` — no npm package, no native addon compilation. It is the first built-in database API in Node.js core and is purpose-built for embedded use cases: caching, config storage, CLI tools, and server-side state that does not need a full database server.
+
+The API is deliberately **synchronous** (blocking): it is designed for scripts, startup paths, and worker threads where async overhead is undesirable. For high-concurrency servers, move SQLite calls to a `worker_thread`.
+
+```javascript
+import { DatabaseSync } from 'node:sqlite';
+
+// ── Create / open a database ─────────────────────────────────────────
+const db = new DatabaseSync(':memory:');      // in-memory (tests, scratch work)
+const db2 = new DatabaseSync('./data.db');   // persistent file
+
+// ── DDL: create tables ───────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE users (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name  TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL
+  ) STRICT
+`);
+
+// ── DML: prepared statements — prepare once, run many times ──────────
+const insertUser = db.prepare('INSERT INTO users (name, email) VALUES (?, ?)');
+insertUser.run('Alice', 'alice@example.com');
+insertUser.run('Bob',   'bob@example.com');
+
+// ── Queries ──────────────────────────────────────────────────────────
+const findAll  = db.prepare('SELECT * FROM users ORDER BY id');
+const findById = db.prepare('SELECT * FROM users WHERE id = ?');
+
+findAll.all();          // [{ id: 1, name: 'Alice', ... }, { id: 2, name: 'Bob', ... }]
+findById.get(1);        // { id: 1, name: 'Alice', email: 'alice@example.com' }
+findById.get(999);      // undefined — not found
+
+// run() returns { changes, lastInsertRowid }
+const result = insertUser.run('Carol', 'carol@example.com');
+console.log(result.lastInsertRowid); // 3n — BigInt (rowids are BigInt in node:sqlite)
+
+// ── Iterate — lazy row-by-row (Node.js 23.4+) ────────────────────────
+for (const row of findAll.iterate()) {
+  console.log(row.name); // 'Alice', 'Bob', 'Carol'
+}
+
+// ── Transactions — group multiple writes atomically ───────────────────
+const addUserTx = db.transaction((name, email) => {
+  insertUser.run(name, email);
+  const auditStmt = db.prepare('INSERT INTO audit_log (action) VALUES (?)');
+  auditStmt.run(`added user ${name}`);
+});
+
+addUserTx('David', 'david@example.com'); // Both inserts or neither
+
+// ── Named parameters ──────────────────────────────────────────────────
+const findByEmail = db.prepare('SELECT * FROM users WHERE email = :email');
+findByEmail.get({ email: 'alice@example.com' }); // { id: 1, name: 'Alice', ... }
+
+// ── Big integers: enable readBigInts for 64-bit safe reads ───────────
+const bigDb = new DatabaseSync(':memory:', { readBigInts: true });
+// INTEGER columns returned as BigInt — prevents silent precision loss
+// for values > Number.MAX_SAFE_INTEGER (e.g., Twitter-style snowflake IDs)
+
+// ── SQLTagStore: tagged-template API (Node.js 24.9+) ─────────────────
+// Replaces manual .prepare() + .run()/.get()/.all() chains
+// Caches compiled statements in an LRU; ${} binds parameters (not string-interpolates)
+const sql = db.createTagStore();
+const user = sql.get`SELECT * FROM users WHERE id = ${1}`;
+sql.run`INSERT INTO users (name, email) VALUES (${'Eve'}, ${'eve@example.com'})`;
+const all = sql.all`SELECT * FROM users WHERE name LIKE ${'A%'}`;
+```
+
+**Key rules:**
+- All methods are **synchronous** — they block the event loop. Run SQLite in a `worker_thread` for server-side hot paths.
+- `readBigInts: true` is required for tables that store 64-bit integers above `Number.MAX_SAFE_INTEGER`; otherwise Node.js throws `ERR_OUT_OF_RANGE` on overflow rows.
+- `db.transaction(fn)` wraps the function body in `BEGIN` / `COMMIT` and rolls back on throw — use it for any multi-statement write.
+- Foreign key constraints are **enabled by default** in Node.js 24.4+. Pass `{ enableForeignKeyConstraints: false }` only for legacy schemas that predate FK support.
+- The `backup()` function is the one async method — it returns a Promise.
+
+**When to use vs. a full RDBMS:**
+
+| Use case | `node:sqlite` | PostgreSQL / MySQL |
+|---|---|---|
+| CLI tools, config store, local cache | ✅ | ❌ overkill |
+| Serverless Lambda / edge worker local state | ✅ | ❌ |
+| High-concurrency HTTP API (10k+ req/s) | ❌ blocks event loop | ✅ |
+| Multi-process shared writes | ❌ | ✅ |
+| Complex queries, full-text search, geospatial | ⚠️ SQLite extensions | ✅ |
+
+---
+
+## Node.js Native TypeScript Type Stripping (Stable in Node.js 22.18+ / 24.12+)
+
+Node.js can run `.ts` files directly — no `tsc`, `ts-node`, or `tsx` needed — by stripping TypeScript type annotations at load time. The feature became **enabled by default** in Node.js 22.18.0 and 23.6.0, and reached **stability level 2** in Node.js 24.12.0 and 25.2.0.
+
+Node.js performs **type erasure only**: it replaces type syntax with whitespace (preserving line numbers for stack traces) but performs zero type checking. It is not a TypeScript compiler — it is a runtime that understands which syntax to ignore.
+
+```typescript
+// ── Run a .ts file directly (Node.js 22.18+ / 23.6+ — no flags needed) ──
+// node server.ts
+
+// ── Type annotations are stripped at load time ────────────────────────
+function greet(name: string): string {
+  return `Hello, ${name}!`;
+}
+console.log(greet('World')); // Works — type annotation stripped, not compiled
+
+// ── Interfaces and type aliases ────────────────────────────────────────
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+async function getUser(id: number): Promise<User | null> {
+  const res = await fetch(`/api/users/${id}`);
+  if (!res.ok) return null;
+  return res.json() as User;
+}
+
+// ── Generic functions ──────────────────────────────────────────────────
+function identity<T>(value: T): T {
+  return value;
+}
+
+// ── 'type' imports: REQUIRED syntax ───────────────────────────────────
+// Type-only imports MUST use 'import type' or 'import { type X }'
+// Without 'type', Node.js tries to import the value at runtime → runtime error
+import type { RequestHandler } from 'express';          // ✅ erased at runtime
+import { type RouteParams } from './routes.ts';          // ✅ inline type keyword
+// import { RequestHandler } from 'express';             // ❌ will fail — no runtime value
+
+// ── File extensions: REQUIRED in imports ──────────────────────────────
+import { createServer } from './server.ts';  // ✅ .ts extension required
+// import { createServer } from './server';  // ❌ Node.js won't resolve without extension
+
+// ── .ts entry point from package.json ────────────────────────────────
+// {
+//   "scripts": {
+//     "start": "node src/index.ts",
+//     "dev":   "node --watch src/index.ts"
+//   }
+// }
+```
+
+**What is NOT supported (requires `tsc` or `tsx`):**
+
+```typescript
+// ❌ enum — produces runtime code, not just type syntax
+enum Direction { Up, Down, Left, Right }
+
+// ❌ namespace with runtime code
+namespace MyApp {
+  export function init() { /* ... */ }
+}
+
+// ❌ Parameter properties (constructor shorthand)
+class User {
+  constructor(public name: string, private age: number) {} // ❌
+}
+
+// ❌ Legacy decorators with emitDecoratorMetadata
+// (Stage 3 decorators are JS native; experimentalDecorators is TS-only)
+
+// ❌ tsconfig.json path aliases (e.g., @/* → src/*)
+// Use Node.js subpath imports in package.json instead:
+// "imports": { "#utils/*": "./src/utils/*.ts" }
+```
+
+**Tooling comparison:**
+
+| Approach | Type checking | `enum` support | `tsconfig` paths | Speed |
+|---|---|---|---|---|
+| `node --strip-types` (native) | ❌ (none) | ❌ | ❌ | ⚡ fastest |
+| `tsx` (esbuild-based) | ❌ (erase only) | ✅ | ⚠️ partial | ⚡ fast |
+| `ts-node` | ✅ optional | ✅ | ✅ | 🐢 slower |
+| `tsc` + `node` | ✅ full | ✅ | ✅ | 🐢 build step |
+
+**Recommended workflow:**
+- Use `node src/index.ts` for **running** — fast, no build step, no type checking.
+- Use `tsc --noEmit` in CI for **type checking** — separate pass, catches real type errors.
+- Use `tsx` when you need `enum`, namespace, or decorator support without a compile step.
+- Keep `type` keyword on all type-only imports to guarantee correct behavior across all tools.
+
+---
+
+## Additional Community Pitfalls (2026 — Node.js Platform)
+
+**72. `node:sqlite` `DatabaseSync` Blocking the Event Loop** [community] — All `node:sqlite` methods (`exec`, `prepare`, `run`, `get`, `all`, `iterate`) are synchronous and block the V8 event loop. WHY it causes problems: placing a SQLite query inside an HTTP request handler on the main thread serialises all concurrent requests — the server handles one request at a time, producing O(n) latency degradation under load. Fix: run `node:sqlite` operations in a `worker_thread` (or use a worker pool like `Piscina`) for any server-side hot path; keep the main thread free for event handling.
+
+**73. `node:sqlite` Integer Overflow Without `readBigInts`** [community] — By default, `node:sqlite` returns SQLite INTEGER columns as JavaScript `number`. When an INTEGER value exceeds `Number.MAX_SAFE_INTEGER` (2^53 − 1), Node.js throws `ERR_OUT_OF_RANGE` instead of silently truncating. WHY it causes problems: a table that uses `AUTOINCREMENT` and accumulates >9 quadrillion rows (extremely rare), OR that stores imported 64-bit IDs (Twitter snowflakes, database BIGINTs from PostgreSQL migrations), throws at runtime the first time a large ID is read. Fix: open the database with `{ readBigInts: true }` when any INTEGER column may exceed `Number.MAX_SAFE_INTEGER`; handle the resulting `BigInt` values in serialisation (see gotcha #30).
+
+**74. Node.js Type Stripping Does Not Check Types** [community] — Running `node file.ts` strips type annotations but performs zero type checking. WHY it causes problems: developers new to the feature assume type errors are caught at runtime — they are not. A function typed as `(n: number) => void` called with a string will fail silently or produce a runtime error at the point the value is misused, not at the call site. Fix: always run `tsc --noEmit` (or a linter with typescript-eslint) as a separate CI step; treat `node --strip-types` as a convenience for running, not as a type-safety mechanism.
+
+**75. Missing `.ts` Extension in ESM Imports When Using Native Type Stripping** [community] — Node.js ESM resolution requires explicit file extensions in `import` statements. When using native TypeScript support, the extension must be `.ts` — not `.js`. WHY it causes problems: developers migrating from `tsc` output conventionally import `'./module.js'` (pointing to the compiled output), but with native stripping there is no compiled output — `'./module.js'` fails with `ERR_MODULE_NOT_FOUND`. Fix: use `.ts` extensions consistently in all imports when running TypeScript natively; automate with an ESLint rule (`@typescript-eslint/consistent-type-imports` + `import/extensions`).
+
+---
+
+## Additional Anti-Patterns (2026 — Node.js Platform, continued)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `node:sqlite` queries on the main thread in HTTP handlers | Synchronous — blocks event loop; all concurrent requests stall | Run in `worker_thread` or a worker pool (`Piscina`) for server-side hot paths |
+| `node:sqlite` without `readBigInts` when storing 64-bit IDs | `ERR_OUT_OF_RANGE` at runtime when values exceed `Number.MAX_SAFE_INTEGER` | Open with `{ readBigInts: true }`; handle `BigInt` values in JSON serialization |
+| Using string template literals instead of `db.prepare()` or `SQLTagStore` | SQL injection — `${userId}` interpolates into the query string, not as a bound parameter | Use `db.prepare('SELECT * FROM t WHERE id = ?').get(id)` or `sql.get\`... ${id}\`` |
+| Assuming `node file.ts` performs type checking | Type stripping erases annotations; type errors surface at runtime, not at load time | Run `tsc --noEmit` separately in CI for type checking |
+| Importing `.js` extensions in TypeScript files when using native stripping | `./module.js` resolves to the compiled output — but with native stripping there is no compiled output | Use `.ts` extensions: `import './module.ts'` |
+| Using `enum` or `namespace` with Node.js native type stripping | These TypeScript features generate runtime code — Node.js strips them but does not compile them | Use `const` objects instead of `enum`; refactor `namespace` to ESM modules; or use `tsx` |

@@ -1,9 +1,10 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1585 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1634 (WebFetch 2026-05-12 iteration 29) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
 <!-- new in iteration 28: matchingBranch consumer version selector (parallel feature branch development, TypeScript pattern), extended ConsumerVersionSelector reference table (consumer, environment, deployed, released, matchingBranch, all 12 properties), PactFlow AI Code Review feature (August 2025 beta — automated pact quality analysis, distinct from MCP Server), pact-protobuf-plugin v0.7.0 (October 2025 — proto descriptor caching + nested message fix, upgrade guide), community lessons 58-61 (matchingBranch requires providerVersionBranch, consumer selector for scoping, AI Code Review semantic vs type gaps, descriptor cache is per-process) -->
+<!-- new in iteration 29: pact-js v16.0.2 state handler graceful error handling (PR #1585, Oct 2025 — state handler throws now surface at ERROR log level instead of HTTP 500), pact-js v16.0.4 mixed HTTP + async message provider verification fix (PR #1634, Dec 2025 — transports config now sent when no custom transports defined), updated Pact Specification Version Reference table with v16.0.1–v16.0.4 rows, community lessons 62-63 (state handler error diagnosis, mixed pact type provider verification) -->
 <!-- new in iteration 27: CORRECTON — addInteractionReference section replaced with accurate .reference(group, name, value) traceability annotation API (issue #1762, v16.4.0); previous section incorrectly described it as an interaction-reuse mechanism with a fabricated InteractionObject API; table entry and v16 API list updated to match actual function signature and purpose -->
 <!-- new in iteration 25: The Bug Catcher Rule (formal principle for interaction inclusion), BDD-style scenario sentence pattern, V4 statusCode class matching (success/clientError/serverError), mTLS client certificate workaround for VerifierV3, ConsumerVersionSelector fallbackBranch TypeScript type gap, status code range matching feature request #1600, community lessons 50-53 (5 reasons contract testing fails, BDD-style naming prevents duplicate interactions, status code class matching avoids unnecessary provider states, mTLS/client-cert provider verification) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
@@ -2403,6 +2404,9 @@ Understanding which Pact specification version your pact files use affects compa
 | Pact V3 | pact-js v9–v12 | Provider states with params, `MatchersV3`, message pacts | Still widely used; stable |
 | Pact V4 | pact-js v13–v15 | Plugin architecture, auto-port, gRPC, Protobuf | Previously `PactV4`/`MatchersV3` |
 | Pact V4 | pact-js v16.0 | Same spec + renamed default exports; Node ≥ 20; `addAsynchronousInteraction` | `Pact`/`Matchers` are now the V4 aliases; v13-style `PactV4` still works via the versioned export |
+| Pact V4 | pact-js v16.0.1 | Bug fix: verifier proxy root path routing fix; ramda dependency updated to v0.32.0 | Patch — no API changes |
+| Pact V4 | pact-js v16.0.2 | State handler errors now surface at `ERROR` log level with console output instead of returning HTTP 500 to core engine (PR #1585, issue #631) | **Upgrade to this version before debugging state handler failures** |
+| Pact V4 | pact-js v16.0.4 | Fix: provider can now verify a single pact file containing both HTTP and async message interactions simultaneously (PR #1634, issue #1633) | Required for providers that serve both REST and event-driven consumers using a single `VerifierV3` call |
 | Pact V4 | pact-js v16.1 | `withMatchingRules` on HTTP/async/sync interactions | Allows raw matching rule DSL for edge cases not covered by fluent matcher API |
 | Pact V4 | pact-js v16.2 | `withMatchingRules` extended to async message and synchronous message interactions | Full matching rule support across all interaction types |
 | Pact V4 | pact-js v16.3 | `.pending()`, `.withComment()`, `.withTestName()` per-interaction metadata | Per-interaction advisory-only flag; comments and test names visible in Broker UI |
@@ -5132,5 +5136,186 @@ The `pact-plugin.json` manifest `version` field must match between consumer and 
 60. **[community] PactFlow AI Code Review flags over-specification issues that the TypeScript compiler cannot catch.** A consumer pact that contains `string('CONFIRMED')` instead of `like('CONFIRMED')` for an enum field that the consumer renders in a switch statement will typecheck correctly — TypeScript sees only the interface type `string`. AI Code Review identifies this as a potential over-specification issue because `string('CONFIRMED')` in Pact V3/V4 asserts both type and example value; if the provider renames the enum value, verification fails. The correct choice depends on whether the consumer's code path branches on the exact value: `equal('CONFIRMED')` if the switch statement requires the exact value, `like('CONFIRMED')` if the consumer renders it without branching. AI Code Review surfaces the question; the developer provides the answer. This highlights a gap the TypeScript type system cannot fill: the distinction between "this is the shape" and "this exact value drives consumer behaviour" is semantic, not syntactic.
 
 61. **[community] pact-protobuf-plugin v0.7.0 descriptor cache is per-plugin-process, not per-test-file.** Teams that run gRPC consumer tests in parallel across multiple pact-js processes (multiple Jest projects, multiple Nx packages) may not see the full caching benefit of v0.7.0 — each process spawns its own plugin instance with its own cache. The cache is most effective for provider verification (single process, many interactions) and for consumer test files that register many interactions in a single `executeTest()` call. For monorepo setups with multiple packages, the speedup is proportional to the number of interactions per package's verification run, not the total across all packages.
+
+---
+
+### pact-js v16.0.2 — State Handler Error Surfacing (TypeScript)
+
+Prior to v16.0.2, when a state handler threw an error (e.g., a database constraint violation, a connection timeout, or a failed assertion in setup code), pact-js propagated an HTTP 500 back to the core verification engine. The test output showed a generic "provider state setup failed" error, hiding the actual exception. This made debugging state handler failures very difficult — the real cause (e.g., "unique constraint on column sku") was swallowed.
+
+**What changed in v16.0.2 (October 2025, PR #1585, issue #631):** State handler errors are now caught, logged at `ERROR` level with the full stack trace to the console, and the provider state setup is marked as failed with a clear message. The HTTP 500 propagation is suppressed — instead, the error appears directly in the test runner output alongside the failing interaction.
+
+**Before (pact-js < v16.0.2 behavior):**
+
+```
+Error: Provider state setup failed: POST http://127.0.0.1:60123/_pactSetup — 500 Internal Server Error
+  at VerifierV3.verifyProvider (...)
+```
+
+(No indication of what the state handler actually threw.)
+
+**After (pact-js ≥ v16.0.2 behavior):**
+
+```
+[ERROR] State handler 'SKU ABC-123 exists with 10 units in stock' failed:
+  UniqueConstraintError: Unique constraint failed on field: sku
+    at prisma.inventoryItem.create (prisma/client.js:...)
+    at stateHandlers[...] (inventory-service.provider.pact.spec.ts:45:7)
+```
+
+**Diagnosis pattern for state handler failures (pact-js ≥ v16.0.2):**
+
+```typescript
+// inventory-service.provider.pact.spec.ts
+// With v16.0.2+: if a state handler throws, the error appears in console output
+// alongside the failing interaction — no separate debugging step needed.
+import { VerifierV3, VerifierOptions } from '@pact-foundation/pact';
+import { db } from '../src/db';
+
+const stateHandlers: NonNullable<VerifierOptions['stateHandlers']> = {
+  'SKU ABC-123 exists with 10 units in stock': async (): Promise<void> => {
+    // In v16.0.2+: if this throws, the error message + stack trace appears in
+    // the test output at ERROR level — not buried as a generic HTTP 500.
+    await db.seed({ sku: 'ABC-123', available: 10, warehouseId: 'WH-001' });
+  },
+};
+
+// To enable detailed state handler error output, set logLevel: 'error' or above.
+// The default 'warn' level in v16.0.2+ still surfaces state handler errors.
+const verifier = new VerifierV3({
+  provider: 'InventoryService',
+  providerBaseUrl: process.env.PROVIDER_URL ?? 'http://localhost:3001',
+  pactBrokerUrl: process.env.PACT_BROKER_URL,
+  pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+  consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }],
+  stateHandlers,
+  logLevel: 'error',   // ensure state handler errors are emitted (default in v16.0.2+)
+  publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+  providerVersion: process.env.GIT_COMMIT,
+  providerVersionBranch: process.env.GIT_BRANCH,
+});
+```
+
+**Key points:**
+- Upgrade to pact-js ≥ v16.0.2 before debugging state handler failures — earlier versions hide the real exception
+- The fix applies to both `stateHandlers` (function-based) and HTTP-endpoint-based state setup (the `/_pactSetup` endpoint pattern from gotcha #39)
+- State handler errors no longer cause the entire verification run to abort — the affected interaction is marked as failed with a clear error message; remaining interactions continue running
+- If you are on pact-js < v16.0.2 and need to diagnose a state handler failure, temporarily add a `try/catch` that logs the error explicitly before re-throwing
+
+---
+
+### pact-js v16.0.4 — Mixed HTTP + Async Message Provider Verification (TypeScript)
+
+Before v16.0.4, a provider that served both REST HTTP endpoints and async message interactions (e.g., a service that exposes a REST API and also publishes Kafka events) could not verify pacts from both types of consumers in a single `VerifierV3` call. The transports configuration was silently omitted when no custom transports were defined, causing the message verification transport to be skipped. Consumer teams that published message pacts alongside HTTP pacts saw those message pacts always pass (no interactions executed) without any error.
+
+**What changed in v16.0.4 (December 2025, PR #1634, issue #1633):** The default transports configuration is now always sent to the Pact core engine, even when no user-defined transports are provided. This enables providers to verify both HTTP pacts (from HTTP consumers) and async message pacts (from message consumers) in the same verification run.
+
+**Combined HTTP + message provider verification pattern (pact-js ≥ v16.0.4):**
+
+```typescript
+// order-service.mixed.provider.pact.spec.ts
+// Verifies both HTTP pacts (from CheckoutService) and async message pacts
+// (from NotificationService) in a single VerifierV3 call.
+// Requires pact-js >= v16.0.4 for correct transports initialization.
+import { VerifierV3, VerifierOptions } from '@pact-foundation/pact';
+import { createServer } from 'http';
+import { AddressInfo } from 'net';
+import { app } from '../src/app';
+import { db } from '../src/db';
+
+// Message provider function — called by the verifier to generate the message
+// that the consumer's pact expects to receive.
+// This is the provider-side analog of the consumer's `handleOrderCreatedEvent`.
+async function generateOrderCreatedEvent(): Promise<{
+  orderId: string;
+  customerId: string;
+  totalAmount: number;
+  createdAt: string;
+}> {
+  const order = await db.getLatestTestOrder();
+  return {
+    orderId: order.id,
+    customerId: order.customerId,
+    totalAmount: order.total,
+    createdAt: order.createdAt.toISOString(),
+  };
+}
+
+describe('OrderService provider verification (HTTP + async message pacts)', () => {
+  let serverUrl: string;
+  let closeServer: () => Promise<void>;
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const server = createServer(app);
+      server.listen(0, '127.0.0.1', () => {
+        const { port } = server.address() as AddressInfo;
+        serverUrl = `http://127.0.0.1:${port}`;
+        closeServer = () =>
+          new Promise<void>((res, rej) => server.close((err) => (err ? rej(err) : res())));
+        resolve();
+      });
+      server.on('error', reject);
+    });
+  });
+
+  afterAll(async () => {
+    await closeServer();
+  });
+
+  it('satisfies HTTP pacts from CheckoutService and message pacts from NotificationService', async () => {
+    const stateHandlers: NonNullable<VerifierOptions['stateHandlers']> = {
+      // HTTP pact provider state — seeds data for REST interactions
+      'an order ORD-123 exists': async (): Promise<void> => {
+        await db.seedOrder({ id: 'ORD-123', status: 'PENDING', total: 99.99 });
+      },
+      // Message pact provider state — seeds data for the message generation function
+      'an order has just been placed': async (): Promise<void> => {
+        await db.seedOrder({ id: 'ORD-LATEST', customerId: 'CUST-001', total: 49.99 });
+      },
+    };
+
+    const verifier = new VerifierV3({
+      provider: 'OrderService',
+      providerBaseUrl: serverUrl,
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: [{ mainBranch: true }, { deployedOrReleased: true }],
+      stateHandlers,
+
+      // messageProviders: map provider state names (from message pact's `given()`) to
+      // functions that generate the message body. Called instead of the HTTP server
+      // for async message interactions.
+      // Required for mixed HTTP + message verification (v16.0.4+).
+      messageProviders: {
+        'an order has just been placed': generateOrderCreatedEvent,
+      },
+
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+    });
+
+    // Single verifyProvider() call handles both HTTP pacts and async message pacts.
+    // Requires pact-js >= v16.0.4 — earlier versions silently skip message pacts.
+    await verifier.verifyProvider();
+  });
+});
+```
+
+**Key points:**
+- `messageProviders` is the provider-side counterpart to `MessageConsumerPact` — it maps provider state names to functions that generate the message body the consumer expects
+- In pact-js ≥ v16.0.4, a single `verifyProvider()` call verifies both HTTP interactions and message interactions from a pact that mixes both types — no separate verification runs needed
+- If your provider has separate HTTP pact files (from HTTP consumers) and message pact files (from message consumers), both are fetched from the Broker by the `consumerVersionSelectors` and verified in the same run
+- **Upgrading from < v16.0.4:** existing `messageProviders` configurations that were silently skipping message pacts will now actually execute — if a `messageProviders` entry is missing for a registered message pact provider state, verification will fail with a clear "no message provider found" error rather than silently passing
+- The `providerBaseUrl` is required even when verifying only message pacts — the verifier uses it for state handler setup requests
+
+---
+
+### Additional Community Production Lessons [community]
+
+62. **[community] pact-js < v16.0.2 hides state handler exceptions behind a generic HTTP 500 error, making state failures nearly impossible to diagnose without adding explicit try/catch logging.** Before v16.0.2, a state handler that threw (e.g., a Prisma `UniqueConstraintError` from a non-idempotent `insert` on a second verification run) produced only "provider state setup failed: 500 Internal Server Error" in the test output — the actual exception was swallowed by the internal state setup HTTP proxy. Teams spent hours diagnosing provider verification failures that were actually caused by non-idempotent state handlers writing duplicate rows. The fix: **upgrade to pact-js ≥ v16.0.2** immediately if you are on an earlier version and experiencing unexplained state handler failures. As a second measure, make all state handlers idempotent (Prisma `upsert` / Drizzle `onConflictDoUpdate` — see the ORM patterns section) so they are safe to call multiple times without throwing.
+
+63. **[community] pact-js < v16.0.4 silently skips async message pacts when a provider serves both HTTP and message consumers.** A provider with a REST API (HTTP pacts from CheckoutService) and a Kafka event emitter (message pacts from NotificationService) runs `verifyProvider()` and sees all tests pass — but NotificationService's message pacts were never actually executed. The root cause: the transports configuration was not sent when no custom transports were provided, causing the message transport to be absent from the verification run. The symptom is deceptive: message consumer pacts appear in the Broker as "verified (0 interactions)" rather than failing. **Diagnosis:** check the verification output for the total interaction count — if it equals the HTTP interaction count only (and you know there are message pacts), the transport is missing. **Fix:** upgrade to pact-js ≥ v16.0.4 and add `messageProviders: { '<state name>': generateMessageFn }` to `VerifierV3` options for each message pact provider state. After the upgrade, previously-silent message pact failures will surface as hard verification failures until `messageProviders` is correctly populated.
 
 ---

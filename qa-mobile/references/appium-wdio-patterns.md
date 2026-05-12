@@ -1,5 +1,10 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- iter 33 additions: mobile:startXCTestScreenRecording/stopXCTestScreenRecording/getXCTestScreenRecordingInfo
+     (native Apple XCTest API vs MJPEG comparison table + Xcode 15+/iOS 17+ requirements + real-device security flag
+     + no-op safety pattern + 3 gotchas),
+     appium:adbListenAllNetwork (UIAutomator2 v6.7+ ADB multi-interface binding + security gotcha
+     + ADB restart gotcha + multi-emulator teardown gotcha) -->
 <!-- iter 32 additions: XCUITest v11 migration table updated (waitForQuiescence + simpleIsVisibleCheck removals),
      ignoredWebviewBundleIds (filter webview context detection + 3 gotchas),
      iosSyslogFile (syslog capture to file + 3 gotchas),
@@ -13785,6 +13790,99 @@ npx appium driver run xcuitest download-wda \
 
 ---
 
+## `mobile:startXCTestScreenRecording` — Native Apple XCTest Screen Capture  [community]
+
+XCUITest driver exposes three commands that use **Apple's native XCTest screen recording API** (Xcode 15+ / iOS 17+), distinct from the MJPEG/ffmpeg-based `mobile:startScreenRecording`. The XCTest method records directly through the OS render pipeline — zero ffmpeg dependency, lower CPU overhead, and full-quality output matching Apple's own screen capture.
+
+| Command | Description |
+|---|---|
+| `mobile:startXCTestScreenRecording` | Start native XCTest recording; no-op if already running |
+| `mobile:getXCTestScreenRecordingInfo` | Retrieve metadata of the active recording session |
+| `mobile:stopXCTestScreenRecording` | Stop and retrieve the recorded MP4 (base64 or remote upload) |
+
+### Requirements
+
+- **Xcode 15+ / iOS 17+** on simulators (no extra flag needed)
+- **iOS 18+ real devices**: requires `appium-ios-remotexpc >= 0.44.0` AND the `xctest_screen_record` security flag on the Appium server:
+  ```bash
+  appium --allow-insecure xctest_screen_record
+  ```
+
+### TypeScript usage
+
+```typescript
+interface XCTestRecordingInfo {
+  uuid: string;      // unique recording identifier
+  fps: number;       // actual frames per second
+  codec: number;     // 0 = h264
+  startedAt: number; // Unix timestamp (float seconds)
+}
+
+describe('XCTest native screen recording', () => {
+  let recordingInfo: XCTestRecordingInfo;
+
+  beforeEach(async () => {
+    recordingInfo = await driver.execute('mobile: startXCTestScreenRecording', {
+      fps: 30,  // 1–60; default 24
+    }) as XCTestRecordingInfo;
+    console.log('Recording started, uuid:', recordingInfo.uuid);
+  });
+
+  afterEach(async function () {
+    // Check if a recording is actually active before stopping
+    const info = await driver.execute(
+      'mobile: getXCTestScreenRecordingInfo'
+    ) as XCTestRecordingInfo | null;
+
+    if (info === null) return; // no active recording (e.g. session crashed)
+
+    const b64 = await driver.execute('mobile: stopXCTestScreenRecording', {
+      // optional: upload to remote storage instead of returning base64
+      // remotePath: 'http://ci-artifacts/upload',
+      // user: process.env.ARTIFACT_USER,
+      // pass: process.env.ARTIFACT_PASS,
+    }) as string;
+
+    if (this.currentTest?.state === 'failed' && b64.length > 0) {
+      const dir = 'test-artifacts/xctest-videos';
+      await import('node:fs/promises').then(fs =>
+        fs.mkdir(dir, { recursive: true })
+      );
+      const name = `${this.currentTest.title.replace(/\W+/g, '_')}.mp4`;
+      await import('node:fs/promises').then(fs =>
+        fs.writeFile(`${dir}/${name}`, Buffer.from(b64, 'base64'))
+      );
+    }
+  });
+
+  it('records a purchase flow', async () => {
+    await $('~buyNowButton').tap();
+    await $('~confirmationScreen').waitForDisplayed({ timeout: 8000 });
+  });
+});
+```
+
+### `mobile:startXCTestScreenRecording` vs `mobile:startScreenRecording`
+
+| | `startXCTestScreenRecording` | `startScreenRecording` |
+|---|---|---|
+| Backend | Apple XCTest API | MJPEG stream + ffmpeg |
+| Requires ffmpeg | No | Yes (must be on `PATH`) |
+| Simulator support | Xcode 15+ / iOS 17+ | All versions |
+| Real device | iOS 18+ (security flag) | All versions |
+| CPU overhead | Low (OS-level) | High (ffmpeg encoding) |
+| Simultaneous recordings | No | No |
+| Behavior if already running | No-op (safe) | Silently restarts (data loss) |
+| Output | Base64 MP4 or remote | Base64 MP4 or remote |
+
+**[community] `mobile:startXCTestScreenRecording` silently no-ops if called while a recording is already active — use `getXCTestScreenRecordingInfo` to detect this:** WHY: Unlike `mobile:startScreenRecording` which resets the buffer, the XCTest variant ignores the duplicate start call. This means a missing `stopXCTestScreenRecording` from a previous (crashed) test leaves a ghost recording that silently absorbs new `start` calls. Fix: in `beforeEach`, call `getXCTestScreenRecordingInfo` first; if non-null, call `stopXCTestScreenRecording` to drain the stale recording before starting a new one.
+
+**[community] On iOS 18+ real devices, omitting the `xctest_screen_record` Appium server security flag produces a silent empty base64 string — not an error:** WHY: The XCTest recording API requires an entitlement that Appium gates behind `allowInsecure`. Without the flag, the driver silently skips recording rather than throwing, so `stopXCTestScreenRecording` returns an empty string. Fix: add `xctest_screen_record` to `allowInsecure` in your Appium service config for real-device CI pipelines; add a post-stop assertion `expect(b64.length).toBeGreaterThan(0)` to catch silent failures.
+
+**[community] `fps` values above 30 produce noticeably larger files on iOS 17 simulators — the XCTest encoder does not apply hardware acceleration on all simulator hosts:** WHY: The Xcode simulator rendering pipeline depends on the Mac host GPU. On CI machines with no discrete GPU, the XCTest recorder falls back to software encoding, making 60fps recording 3–5x slower to encode than 30fps. Fix: default to `fps: 24` or `fps: 30` in CI capability overrides; reserve higher frame rates for local developer runs where GPU acceleration is available.
+
+---
+
 ## UIAutomator2 v7 New Commands (Android)
 
 UIAutomator2 v7 (2025-2026) introduced several new Android-specific `mobile:` commands. All are invoked via `driver.execute('mobile: <command>', args)`.
@@ -13914,6 +14012,51 @@ await driver.execute('mobile: pressKey', {
   source: 1024,      // InputDevice.SOURCE_WIRED_HEADSET
 });
 ```
+
+---
+
+## `appium:adbListenAllNetwork` — ADB Multi-Interface Binding (UIAutomator2 v6.7+)  [community]
+
+Added in UIAutomator2 driver v6.7.0, this capability passes the `-a` flag to the ADB server at session startup, instructing ADB to listen on all available network interfaces instead of only `localhost` (`127.0.0.1`). This is essential in distributed CI architectures where the Appium server and the ADB daemon run on different hosts.
+
+```typescript
+// wdio.conf.ts — distributed CI / container-based device farm
+export const config: Options.Testrunner = {
+  capabilities: [{
+    platformName: 'Android',
+    'appium:automationName': 'UiAutomator2',
+    'appium:deviceName': 'emulator-5554',
+    'appium:app': './app/release/app.apk',
+    // Allow ADB to bind on all interfaces so the CI orchestrator
+    // (separate container) can reach this emulator's ADB port
+    'appium:adbListenAllNetwork': true,
+  }],
+};
+```
+
+The capability activates the `uiautomator2:adb_listen_all_network` Appium security flag, so the Appium server must be started with it in the allowlist:
+
+```bash
+# In @wdio/appium-service config or standalone:
+appium --allow-insecure uiautomator2:adb_listen_all_network
+```
+
+```typescript
+// wdio.conf.ts — enabling via @wdio/appium-service
+services: [['appium', {
+  appiumArgs: {
+    port: 4723,
+    'base-path': '/',
+    'allow-insecure': 'uiautomator2:adb_listen_all_network',
+  },
+}]],
+```
+
+**[community] `appium:adbListenAllNetwork: true` exposes ADB on `0.0.0.0` — never use it in shared or production network environments:** WHY: ADB has no authentication; any process that can reach the open port gains full shell access to the connected device. Fix: use this capability only on isolated CI networks (VPC, Docker bridge networks, or dedicated test VLANs); add a firewall rule that restricts ADB port access (default 5037) to known CI host IPs only.
+
+**[community] Without the Appium `allowInsecure` flag, setting `appium:adbListenAllNetwork: true` throws `AppiumError: Forbidden` at session creation — not at the ADB level:** WHY: UIAutomator2 driver gates the ADB restart through the Appium security middleware before any ADB command is executed. Fix: verify the flag is in your server's `allow-insecure` list before debugging connection issues; `appium server --allow-insecure uiautomator2:adb_listen_all_network` is the minimal valid invocation.
+
+**[community] `appium:adbListenAllNetwork` restarts the ADB server — all existing ADB connections to other devices drop during that restart:** WHY: The `-a` flag requires `adb kill-server && adb -a nodaemon server &` which tears down and recreates the ADB daemon. On a CI runner hosting multiple emulators, starting one session with this flag will momentarily disconnect all other active sessions. Fix: use this capability only in isolated single-emulator CI pipelines; in multi-emulator setups, configure a dedicated ADB server instance per emulator using `ANDROID_ADB_SERVER_PORT` and `ANDROID_SERIAL` environment variables instead.
 
 ---
 
@@ -15434,32 +15577,27 @@ declare namespace WebdriverIO {
 
 ---
 
-## Source: Iteration Log (Run 2026-05-12, Iteration 32)
+## Source: Iteration Log (Run 2026-05-12, Iteration 33)
 
-<!-- lang: TypeScript | sources: official docs + community | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
-<!-- Additions this run (iter 32):
-     - XCUITest v11 migration table updated: added waitForQuiescence removal + simpleIsVisibleCheck removal (2 missing entries)
-     - appium:waitForQuiescence section updated with v11 removal notice callout
-     - appium:ignoredWebviewBundleIds (XCUITest v10.24): filter webview contexts, SafariViewService exclusion, env-var helper + 3 gotchas
-     - appium:iosSyslogFile (XCUITest v9.7, long-stable): syslog capture, CI artifact upload pattern, directory prep hook + 3 gotchas
-     - snapshotMaxChildren + enforceCustomSnapshots (XCUITest v10.26/v10.12): XML hierarchy tuning, per-test toggle + 3 gotchas
-     - appium:pageLoadStrategy for Safari/WebView (XCUITest v7.18): normal/eager/none table, SPA gotcha + 3 gotchas
-     - appium:sendKeyStrategy for React inputs (XCUITest v7.13): oneByOne vs grouped, per-suite toggle + 3 gotchas
-     - placeholderValue explicit XML attribute (XCUITest v10+/iOS 18+): XPath targeting, Android parity note + 2 gotchas
-     - mobile:pressButton tvOS extended buttons (XCUITest v10.25): full tvOS button table, cross-platform helper + 2 gotchas
-     - Appium 3.4 getGlobalPrivacyControl/setGlobalPrivacyControl: GPC endpoints, WebView-only gotcha, TypeScript augmentation + 2 gotchas
+<!-- lang: TypeScript | sources: official docs + community | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 33):
+     - mobile:startXCTestScreenRecording / mobile:stopXCTestScreenRecording / mobile:getXCTestScreenRecordingInfo:
+       native Apple XCTest screen capture API (Xcode 15+/iOS 17+ simulators; iOS 18+ real device with xctest_screen_record flag),
+       comparison table vs MJPEG/ffmpeg mobile:startScreenRecording, no-op-if-running safety pattern,
+       TypeScript XCTestRecordingInfo interface, 3 gotchas (ghost recording detection, silent empty on real device, fps/GPU overhead)
+     - appium:adbListenAllNetwork (UIAutomator2 v6.7.0): ADB -a flag for distributed CI,
+       uiautomator2:adb_listen_all_network security allowlist pattern, 3 gotchas
+       (0.0.0.0 exposure risk, Forbidden without allowInsecure flag, ADB server restart drops all emulator connections)
 -->
-<!-- Total community pitfalls: 400+ tagged [community] instances -->
-<!-- Total sections: 253+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
-<!-- Sources (iter 32):
-     github.com/appium/appium-xcuitest-driver/releases (v10.24 ignoredWebviewBundleIds, v10.25 pressButton tvOS,
-       v10.26 snapshotMaxChildren, v11.0.0 removals including waitForQuiescence + simpleIsVisibleCheck),
-     raw.githubusercontent.com/appium/appium-xcuitest-driver/master/CHANGELOG.md (v7.13 sendKeyStrategy, v7.18 pageLoadStrategy,
-       v9.7 iosSyslogFile, v10.12 enforceCustomSnapshots, v11.0.0 full removal list),
-     github.com/appium/appium/issues/22237 (Appium 3.4.0 getGlobalPrivacyControl/setGlobalPrivacyControl + storage access endpoints),
-     globalprivacycontrol.org (GPC spec reference),
-     github.com/appium/appium/blob/master/packages/appium/CHANGELOG.md (3.4.0 "add 3 WebDriver extension endpoints") -->
-<!-- Score delta: 0 (maintained 100/100) — iter 32 adds 9 new sections/updates: corrects v11 migration table (2 missing removals),
-     adds v11 removal notice to waitForQuiescence section, adds 8 new sections covering ignoredWebviewBundleIds,
-     iosSyslogFile, snapshotMaxChildren/enforceCustomSnapshots, pageLoadStrategy, sendKeyStrategy, placeholderValue,
-     tvOS pressButton, and Appium 3.4 GPC endpoints, bringing total community signal to 400+ -->
+<!-- Total community pitfalls: 406+ tagged [community] instances -->
+<!-- Total sections: 255+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources (iter 33):
+     raw.githubusercontent.com/appium/appium-xcuitest-driver/master/docs/reference/execute-methods.md
+       (mobile:startXCTestScreenRecording, mobile:stopXCTestScreenRecording, mobile:getXCTestScreenRecordingInfo params),
+     github.com/appium/appium-xcuitest-driver/releases/tag/v11.1.0 (XCTest recording wrappers PR #2825),
+     raw.githubusercontent.com/appium/appium-uiautomator2-driver/master/README.md
+       (appium:adbListenAllNetwork, uiautomator2:adb_listen_all_network security flag, v6.7.0 release),
+     github.com/appium/appium-uiautomator2-driver/blob/master/CHANGELOG.md (v6.7.0: adbListenAllNetwork) -->
+<!-- Score delta: 0 (maintained 100/100) — iter 33 adds 2 new sections covering 6 genuine gaps:
+     XCTest native screen recording API (3 commands + comparison table + 3 gotchas),
+     ADB multi-interface binding capability (+ 3 gotchas) -->

@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -23,6 +23,8 @@
      github.com/vitest-dev/vitest/releases (re-fetched 2026-05-12: v4.1.6 latest stable; v5.0.0-beta.2 worker_threads coverage; @fast-check/vitest beforeEach/afterEach Vitest 4.1+ integration) |
      github.com/dubzzz/fast-check/releases (fetched 2026-05-12: fast-check v4.8.0 chainUntil; @fast-check/vitest dedicated Vitest integration with fc.test, beforeEach/afterEach support) |
      nodejs.org/blog/release/v24.0.0 (fetched 2026-05-12: Node 24 --experimental-strip-types still RC; test runner auto-awaits subtests; Node 24 global setup/teardown hooks) |
+     jestjs.io/docs/configuration (fetched 2026-05-12: Jest 30 defineConfig/mergeConfig helpers v30.3+; jest.config.mts v30.4+; global coverageThreshold applies only to unmatched files; Babel .mts/.cts coverage v30.4+) |
+     github.com/jestjs/jest/blob/main/CHANGELOG.md (fetched 2026-05-12: Jest 30.3 defineConfig/mergeConfig; Jest 30.4 jest.config.mts, Babel .mts/.cts coverage, global threshold unmatched-files fix, projects coverage accuracy fix) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -250,10 +252,12 @@ when the overall aggregate looks fine. A single file with complex business logic
 at 40 % drags down the average but may not breach a global threshold.
 
 ```typescript
-// jest.config.ts
-import type { Config } from 'jest';
+// jest.config.ts — Jest 30.3+: use defineConfig for type-safe configuration
+// Jest 30.3 added defineConfig and mergeConfig helpers; 30.4 added jest.config.mts support.
+// Using defineConfig is now preferred over `import type { Config } from 'jest'`.
+import { defineConfig } from 'jest';
 
-const config: Config = {
+export default defineConfig({
   preset: 'ts-jest',
   testEnvironment: 'node',
   collectCoverageFrom: [
@@ -271,6 +275,10 @@ const config: Config = {
       branches: 75,
       functions: 80,
       statements: 80,
+      // Jest 30.4+ behaviour: the global threshold is applied ONLY to files NOT matched
+      // by any path or glob pattern below. If all files match a pattern, the global
+      // falls back to applying against all covered files. This differs from Vitest,
+      // where the global applies to ALL files simultaneously (see Pattern 31 / G50).
     },
     // Ratchet critical payment module higher — per-directory override:
     './src/payments/': {
@@ -290,9 +298,7 @@ const config: Config = {
     //   statements: -50,  // allow up to 50 uncovered statements (not %)
     // },
   },
-};
-
-export default config;
+});
 ```
 
 ### Pattern 2 — Vitest coverage with per-file thresholds (TypeScript)
@@ -3753,6 +3759,176 @@ while `html` outputs to a directory tree under `reportsDirectory/index.html`.
 | `lcov` | `coverage/lcov.info` | Codecov, Coveralls, GitHub Actions |
 | `json-summary` | `coverage/coverage-summary.json` | Programmatic threshold checks (Pattern 17) |
 
+### G54 — Jest 30.3+ `defineConfig`/`mergeConfig` helpers and `jest.config.mts`: type-safe config without manual type imports  [community]
+
+Jest 30.3.0 introduced `defineConfig` and `mergeConfig` as named exports from `jest`. Jest 30.4.0
+added `jest.config.mts` as a natively supported configuration file format (alongside `jest.config.ts`,
+`.mts`, `.cts`, `.mjs`, `.cjs`, `.js`, and `.json`). Both changes are invisible at runtime but
+have meaningful effects on TypeScript coverage configurations.
+
+**WHY it matters**: Before Jest 30.3, the only way to get type checking on a `jest.config.ts`
+file was `import type { Config } from 'jest'`, then explicitly annotating the exported object.
+This required the annotation to be manually maintained and could be forgotten on copy-paste.
+`defineConfig` wraps the config in a type-safe call that IDE tooling infers automatically — the
+same pattern used by Vitest and Stryker. `mergeConfig` enables layered configurations (base
++ test-environment override) without manual spread-and-lose patterns that break TypeScript narrowing.
+
+```typescript
+// jest.config.ts — Jest 30.3+: defineConfig + mergeConfig (replaces `import type { Config }`)
+import { defineConfig, mergeConfig } from 'jest';
+
+// Base configuration shared across all test environments:
+const baseConfig = defineConfig({
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/**/index.ts',
+    '!src/**/__mocks__/**',
+  ],
+  coverageProvider: 'v8',
+  coverageReporters: ['text-summary', 'lcov', 'json-summary'],
+});
+
+// Environment-specific override — mergeConfig deep-merges without losing TypeScript types:
+export default mergeConfig(baseConfig, defineConfig({
+  coverageThreshold: {
+    global: {
+      lines: 80,
+      branches: 75,
+      functions: 80,
+      statements: 80,
+    },
+    './src/payments/': { lines: 95, branches: 90, functions: 95, statements: 95 },
+    './src/auth/':     { lines: 90, branches: 85 },
+  },
+}));
+```
+
+```typescript
+// jest.config.mts — Jest 30.4+: ESM TypeScript config (alternative to jest.config.ts)
+// Use when your project uses "type": "module" in package.json and ESM-native imports.
+// The .mts extension signals to Node that this is ESM TypeScript (not CommonJS TypeScript).
+// Jest 30.4+ discovers jest.config.mts automatically — no extra setup required.
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  preset: 'ts-jest/presets/default-esm',
+  testEnvironment: 'node',
+  extensionsToTreatAsEsm: ['.ts'],
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts'],
+  coverageProvider: 'v8',
+  coverageReporters: ['text', 'html', 'lcov'],
+  coverageThreshold: {
+    global: { lines: 80, branches: 75, functions: 80, statements: 80 },
+  },
+});
+```
+
+**Migrating from `import type { Config }`**: the `defineConfig` form is a drop-in replacement.
+No runtime behaviour changes — it is purely a type-safe wrapper. Pattern 1 in this guide has
+been updated to the `defineConfig` form.
+
+**`mergeConfig` key behaviour**: unlike a simple `{ ...baseConfig, ...override }` spread,
+`mergeConfig` performs a **deep merge** of array and object fields. `collectCoverageFrom`
+arrays are concatenated rather than replaced; `coverageThreshold` objects are merged. This
+means partial overrides work correctly — a child config that only sets `global` thresholds
+does not accidentally remove per-path thresholds defined in the base.
+
+### G55 — Jest 30.4+ coverage changes: global threshold applies only to unmatched files; Babel now covers `.mts`/`.cts`  [community]
+
+Jest 30.4.0 (May 2025) shipped two coverage changes that affect TypeScript projects but are
+not prominently documented in migration guides.
+
+**1. Global `coverageThreshold` now applies only to files NOT matched by any path/glob pattern.**
+
+Before 30.4.0, the `global` key in `coverageThreshold` applied to the aggregate of all covered
+files, including those matched by per-path or per-glob patterns. The per-path entries were
+evaluated independently, but the `global` entry was computed over everything. After 30.4.0,
+the `global` key applies only to the aggregate of files that do not match any named pattern.
+If all files match a pattern, `global` falls back to applying against all covered files.
+
+This is a **subtle behaviour change**, not a breaking change — but it can cause previously
+passing threshold checks to fail (or previously failing checks to pass) without any config
+change, if a 30.4.0 upgrade coincides with a coverage run.
+
+```typescript
+// jest.config.ts — Jest 30.4+ threshold semantics (illustrative)
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  coverageThreshold: {
+    // After Jest 30.4: 'global' applies to all files NOT matched by the patterns below.
+    // Files in src/payments/ are evaluated against the payments pattern — they do NOT
+    // count toward this global aggregate. This means the global number is computed from
+    // src/utils/, src/models/, src/controllers/, etc. — everything outside payments & auth.
+    global: {
+      lines: 80,
+      branches: 75,
+      functions: 80,
+      statements: 80,
+    },
+    // These files are evaluated by their own thresholds, NOT included in global above:
+    './src/payments/': { lines: 95, branches: 90, functions: 95, statements: 95 },
+    './src/auth/':     { lines: 90, branches: 85, functions: 90, statements: 90 },
+    //
+    // Contrast with Vitest (Pattern 31 / G50): Vitest evaluates matching files against
+    // BOTH their pattern threshold AND the global threshold simultaneously.
+    // Jest 30.4+: pattern-matched files are excluded from the global calculation.
+  },
+});
+```
+
+**Jest vs Vitest global threshold semantics (updated for Jest 30.4+):**
+
+| Behaviour | Jest 30.4+ | Vitest 4.x |
+|-----------|------------|------------|
+| Global threshold scope | Files NOT matched by any pattern | ALL files (including pattern-matched) |
+| Per-pattern evaluation | Independent (not double-counted against global) | Pattern AND global both apply |
+| Risk of double-enforcement | None — patterns and global are mutually exclusive | Present — pattern files face both gates |
+| Risk of coverage gap in global | High if critical modules all have patterns — global may be computed from only low-risk files | Lower — global always includes everything |
+
+**2. Jest 30.4+ Babel coverage now collects from `.mts` and `.cts` TypeScript variant files.**
+
+The Babel coverage transformer in Jest 30.4.0 gained support for `.mts` (ESM TypeScript) and
+`.cts` (CJS TypeScript) file extensions. Before this fix, TypeScript source files with these
+extensions were silently excluded from coverage collection when using `coverageProvider: 'babel'`
+— they were executed by tests but not instrumented. **WHY it matters**: modern TypeScript
+projects that use `.mts` for ESM-only modules (common in Node 22+ libraries and when
+`"type": "module"` is set) were experiencing invisible coverage gaps. After Jest 30.4.0,
+`.mts` and `.cts` files are instrumented by the Babel provider without any additional config.
+
+```typescript
+// jest.config.ts — Jest 30.4+: Babel now covers .mts and .cts automatically
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  // Both .ts and .mts files are now covered by Babel provider in Jest 30.4+.
+  // Before 30.4: only .ts files were instrumented; .mts files were silently excluded.
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    'src/**/*.mts',   // ESM-only TypeScript modules
+    'src/**/*.cts',   // CJS-only TypeScript modules (rare, but valid)
+    '!src/**/*.d.ts',
+    '!src/**/*.d.mts',
+    '!src/**/*.d.cts',
+    '!src/**/index.ts',
+  ],
+  coverageProvider: 'babel',  // v8 also works; Babel fix is specifically for .mts/.cts
+  coverageThreshold: {
+    global: { lines: 80, branches: 75, functions: 80, statements: 80 },
+  },
+});
+```
+
+**Action**: if your Jest TypeScript project uses `.mts` or `.cts` files and you were on Jest
+30.3.x or earlier, add those extensions to `collectCoverageFrom` after upgrading to 30.4.0.
+Coverage numbers may change (these files were previously invisible — they will now appear in
+the report, possibly at lower coverage if their branches were never directly tested).
+
 ---
 
 ## Key Resources
@@ -3780,7 +3956,8 @@ while `html` outputs to a directory tree under `reportsDirectory/index.html`.
 | Node.js built-in test runner | Official | https://nodejs.org/api/test.html | Native Node test runner with --experimental-test-coverage, programmatic thresholds via run() |
 | c8 — V8 coverage CLI (bcoe) | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage wrapper for any Node test runner including ESM TypeScript |
 | Meta ACH: Mutation-Guided LLM Test Generation | Research | https://arxiv.org/abs/2501.12862 | arXiv:2501.12862 — selective mutant generation + LLM synthesis; 73 % engineer acceptance at Meta scale |
-| Jest 30 configuration docs | Official | https://jestjs.io/docs/configuration | Jest 30 (Oct 2025) reference; negative thresholds, moduleFileExtensions optimisation |
+| Jest 30 configuration docs | Official | https://jestjs.io/docs/configuration | Jest 30 (Oct 2025) reference; negative thresholds, moduleFileExtensions optimisation; defineConfig/mergeConfig helpers (v30.3+); jest.config.mts support (v30.4+) |
+| Jest 30 changelog | Official | https://github.com/jestjs/jest/blob/main/CHANGELOG.md | Jest 30.3 defineConfig/mergeConfig; Jest 30.4 jest.config.mts, Babel .mts/.cts coverage, global threshold applies only to unmatched-pattern files (see G54, G55) |
 | Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks (v7 default changed to true), coverageAnalysis, timeoutFactor, concurrency, testFiles, typescriptChecker, ignorers, allowEmpty, incremental.force |
 | Stryker Dashboard | Official | https://dashboard.stryker-mutator.io/ | Track mutation scores over time, generate badges, integrate with CI |
 | Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+/v4, percentage-based concurrency, testFiles option (9.5.1); v9.6.1 Vitest 4.1 hitcount fix |
