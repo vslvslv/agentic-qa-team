@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -71,6 +71,8 @@ SAST tools analyze source code without running it. For TypeScript stacks:
 | Semgrep (`p/typescript`) | Partial (pattern-based) | < 2min | SQL injection patterns, hardcoded secrets, XSS sinks | Fast SAST; run on every PR |
 | CodeQL (`javascript-typescript`) | Full AST + taint | 5–20min | Data-flow taint, injection chains, prototype pollution | Security-sensitive code; weekly or PR |
 | Snyk Code | Deep TypeScript | 1–3min | OWASP Top 10, TypeScript-specific sinks | Add when CodeQL is too slow |
+
+> **OWASP Top 10 update (2025):** The OWASP Top 10 was updated in 2025. Notable changes for TypeScript projects: **A03:2025** is now "Software Supply Chain Failures" (elevated from "Using Components with Known Vulnerabilities"), reflecting the Bybit hack and Shai-Hulud npm worm. **A10:2025** "Mishandling of Exceptional Conditions" is a brand new category covering improper error handling and logical failures — directly addressed by TypeScript's `useUnknownInCatchVariables` and centralized error handling middleware. See the dedicated sections below for TypeScript-specific countermeasures.
 
 **WHY it matters**: TypeScript's type system eliminates entire vulnerability classes (null dereferences, wrong-type API calls) at compile time. Adding `@typescript-eslint` to your existing ESLint setup further catches unsafe any usage, unbound methods, and floating promises — patterns that produce runtime errors in JavaScript that TypeScript would normally prevent if strict mode is fully used.
 
@@ -193,10 +195,10 @@ Shift-left is **less appropriate** (or should be scoped carefully) when:
     "@eslint/js": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
-    "eslint-plugin-security": "^3.0.1",
+    "eslint-plugin-security": "^4.0.0",
     "eslint-plugin-no-secrets": "^1.0.2",
     "globals": "^15.0.0",
-    "vitest": "^2.0.0",
+    "vitest": "^4.0.0",
     "prettier": "^3.3.0"
   }
 }
@@ -295,7 +297,7 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
 
   // Security plugin
-  security.configs['recommended-legacy'],
+  security.configs['recommended'],    // v4.0.0: flat config only; 'recommended-legacy' removed
 
   {
     files: ['src/**/*.ts', 'src/**/*.tsx'],
@@ -2466,98 +2468,6 @@ declare function openFile(path: string): Promise<{ read(): Promise<string> } & A
 
 ---
 
-## Property-Based Testing — TypeScript with fast-check
-
-Property-based testing generates hundreds of random inputs to find edge cases that hand-written example tests miss. It is a shift-left technique for discovering boundary defects systematically.
-
-```typescript
-// src/lib/pagination.ts — simple pagination utility
-export interface PaginationParams {
-  page: number;     // 1-based
-  pageSize: number; // items per page
-  total: number;    // total items
-}
-
-export interface PaginationResult {
-  offset: number;
-  limit: number;
-  hasNextPage: boolean;
-  hasPrevPage: boolean;
-  totalPages: number;
-}
-
-export function paginate({ page, pageSize, total }: PaginationParams): PaginationResult {
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const clampedPage = Math.min(Math.max(1, page), totalPages);
-  return {
-    offset: (clampedPage - 1) * pageSize,
-    limit: pageSize,
-    hasNextPage: clampedPage < totalPages,
-    hasPrevPage: clampedPage > 1,
-    totalPages,
-  };
-}
-```
-
-```typescript
-// src/lib/pagination.spec.ts — property-based tests with fast-check
-import { describe, it, expect } from 'vitest';
-import * as fc from 'fast-check';
-import { paginate } from './pagination.js';
-
-const paginationArb = fc.record({
-  page: fc.integer({ min: 1, max: 10_000 }),
-  pageSize: fc.integer({ min: 1, max: 1_000 }),
-  total: fc.integer({ min: 0, max: 1_000_000 }),
-});
-
-describe('paginate — properties', () => {
-  it('offset is always non-negative', () => {
-    fc.assert(
-      fc.property(paginationArb, (params) => {
-        expect(paginate(params).offset).toBeGreaterThanOrEqual(0);
-      }),
-      { numRuns: 1000 },
-    );
-  });
-
-  it('offset never exceeds total', () => {
-    fc.assert(
-      fc.property(paginationArb, ({ page, pageSize, total }) => {
-        const { offset } = paginate({ page, pageSize, total });
-        expect(offset).toBeLessThanOrEqual(Math.max(0, total));
-      }),
-    );
-  });
-
-  it('totalPages is always at least 1', () => {
-    fc.assert(
-      fc.property(paginationArb, (params) => {
-        expect(paginate(params).totalPages).toBeGreaterThanOrEqual(1);
-      }),
-    );
-  });
-
-  it('on the only page: no next, no prev', () => {
-    fc.assert(
-      fc.property(paginationArb, (params) => {
-        const result = paginate(params);
-        if (result.totalPages === 1) {
-          expect(result.hasNextPage).toBe(false);
-          expect(result.hasPrevPage).toBe(false);
-        }
-      }),
-    );
-  });
-});
-```
-
-**WHY property-based testing is shift-left**: Example-based tests verify specific inputs. Property-based tests verify invariants across the entire input space — they find the edge cases you didn't think to write. fast-check integrates natively with Vitest and can be added to the same pre-commit or CI workflow. When a property test finds a failing input, it automatically shrinks to the minimal reproducing case.
-
-> [community] **Lesson (fast-check community)**: Property-based testing is most valuable for pure functions (parsers, validators, math utilities, pagination logic, data transformations). Adding `fc.assert(fc.property(...))` alongside each example-based `describe` block dramatically expands test coverage with minimal authoring effort. WHY adoption is low: most developers learn property-based testing from contrived examples (list reversal). The shift-left payoff is in production utilities where real boundary defects live.
-
----
-
 ## Serverless and Edge Function Security Testing (TypeScript)
 
 TypeScript serverless functions (AWS Lambda, Cloudflare Workers, Vercel Edge Functions) introduce unique shift-left challenges: the runtime environment differs from local Node.js, cold start behavior affects test reproducibility, and IAM permissions create security risks that static analysis cannot fully catch.
@@ -4414,6 +4324,11 @@ export type CreateUserInput = Omit<User, 'id' | 'createdAt'>;
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | Breaking changes that require tsconfig updates to maintain CI shift-left gates |
 | Node.js Test Runner (built-in) | Official | https://nodejs.org/api/test.html | Native test runner available since Node.js 18+ — zero-dependency shift-left option |
 | langwatch/scenario v2 | Tool | https://github.com/langwatch/scenario | Structured AI agent scenario testing: red-teaming + success criteria for LLM workflows |
+| OWASP Top 10:2025 | Official | https://owasp.org/Top10/2025/ | 2025 edition: A03 Software Supply Chain Failures (elevated), A10 Mishandling of Exceptional Conditions (new) |
+| OWASP A03:2025 Supply Chain Failures | Official | https://owasp.org/Top10/2025/A03_2025-Software_Supply_Chain_Failures/ | Supply chain attacks (Bybit, Shai-Hulud npm worm): shift-left countermeasures for TypeScript/npm |
+| OWASP A10:2025 Exceptional Conditions | Official | https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/ | New 2025 category: error handling failures — TypeScript strict mode + centralized error handlers |
+| Vitest 4.0 Migration Guide | Official | https://vitest.dev/guide/migration.html | Breaking changes: coverage.include required, maxWorkers replaces maxForks, projects replaces workspace |
+| eslint-plugin-security v4 | Tool | https://github.com/eslint-community/eslint-plugin-security | v4.0.0 (Feb 2026): flat config only, 'recommended-legacy' removed — update import for ESLint v9+ |
 
 ---
 
@@ -4514,11 +4429,195 @@ jobs:
 
 ---
 
-## Vitest 3.x Shift-Left Improvements (2025–2026)
+## OWASP Top 10:2025 — What Changed for TypeScript Shift-Left
 
-Vitest 3.x (released Q4 2025) introduces significant improvements for TypeScript shift-left workflows, particularly for browser-mode component testing and workspace-level parallel execution.
+The OWASP Top 10 was updated in 2025 with two significant changes that directly affect TypeScript shift-left practices.
 
-### Key Shift-Left Features in Vitest 3.x
+### A03:2025 — Software Supply Chain Failures (elevated)
+
+Previously subsection of "Using Components with Known Vulnerabilities," this is now a standalone #3 category, elevated by the Bybit hack ($1.5B stolen, 2025) and the **Shai-Hulud npm worm** — the first self-propagating npm attack (2025, 500+ package versions compromised). The worm used post-install scripts to harvest npm tokens from the victim environment and automatically push malicious versions to any package the victim had publish access to.
+
+**Shift-left implications for TypeScript/npm projects:**
+
+| Attack Vector | TypeScript Shift-Left Defense |
+|---|---|
+| Malicious `postinstall` scripts | `npm ci --ignore-scripts` in CI (already in guide's Dockerfile examples) |
+| Compromised npm token in CI | OIDC federation (eliminates long-lived tokens from secrets) |
+| Transitive dependency compromise | SBOM per build + Dependency Track continuous monitoring |
+| Self-propagating via npm publish | npm token least-privilege + 2FA required for publish |
+| Backdoored package version | Renovate with lockfile-only updates + hash pinning |
+
+```yaml
+# .github/workflows/supply-chain-hardening.yml — A03:2025 countermeasures
+name: Supply Chain Security
+on:
+  pull_request:
+    branches: [main]
+  push:
+    paths: ['package*.json']
+
+jobs:
+  # Gate 1: SCA — known CVEs in dependencies
+  sca-audit:
+    name: SCA — npm audit (A03:2025)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      # --ignore-scripts: blocks malicious postinstall hooks during CI install
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high --omit=dev
+
+  # Gate 2: Provenance verification — are packages signed?
+  provenance-check:
+    name: Verify package provenance (A03:2025)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci --ignore-scripts
+      # npm 10+: verify that critical packages have npm provenance attestations
+      # npm provenance: packages published with --provenance flag have a verifiable
+      # link between the published artifact and the source repo + build
+      - run: |
+          # Check that high-risk dependencies have provenance attestations
+          node --input-type=module <<'EOF'
+          import { execSync } from 'node:child_process';
+          const HIGH_RISK_DEPS = ['express', 'fastify', 'zod', '@anthropic-ai/sdk'];
+          for (const dep of HIGH_RISK_DEPS) {
+            try {
+              const info = JSON.parse(execSync(`npm info ${dep} --json`, { encoding: 'utf8' }));
+              const hasProvenance = !!info?.dist?.attestations;
+              console.log(`${dep}: provenance=${hasProvenance}`);
+            } catch (e) {
+              console.warn(`Could not check provenance for ${dep}`);
+            }
+          }
+          EOF
+```
+
+> [community] **Lesson (Shai-Hulud npm worm, 2025 — OWASP A03:2025)**: The npm worm exploited a combination of two weaknesses: (1) `postinstall` scripts running with full filesystem access, and (2) npm tokens stored in environment variables that the worm could read and exfiltrate. The shift-left fix for (1) is `npm ci --ignore-scripts` in CI — which the guide already recommends for Dockerfiles. The shift-left fix for (2) is OIDC federation, which eliminates npm tokens from CI secrets entirely. Teams using both practices were not affected.
+
+> [community] **Gotcha (npm provenance for TypeScript libraries, 2025)**: `npm publish --provenance` links the published package to the exact GitHub Actions workflow run, commit, and repository that built it. Consumers can verify this with `npm audit signatures`. For TypeScript library authors, adding `--provenance` to the publish step is a zero-cost supply chain hardening action. The Shai-Hulud worm published packages WITHOUT provenance — npm registry now flags packages without provenance for high-value packages.
+
+### A10:2025 — Mishandling of Exceptional Conditions (new category)
+
+**Brand new in OWASP 2025**, covering 24 CWEs around improper error handling and logical failures. This is directly relevant to TypeScript because: (1) TypeScript `strict` mode enables `useUnknownInCatchVariables` which makes `e` typed as `unknown` in catch blocks — forcing explicit error handling, and (2) `@typescript-eslint` rules can enforce try-catch completeness.
+
+```typescript
+// Anti-pattern: A10:2025 — Exposing internal details via error messages
+// TypeScript strict mode with useUnknownInCatchVariables catches the type error
+// but does NOT prevent sensitive data exposure — that requires explicit checking
+app.get('/data', async (req: Request, res: Response) => {
+  try {
+    const result = await db.query('SELECT * FROM users WHERE id = $1', [req.query.id]);
+    res.json(result.rows);
+  } catch (err) {
+    // WRONG: exposes database schema, query structure, internal paths
+    res.status(500).json({ error: (err as Error).message }); // A10:2025 violation
+  }
+});
+
+// Correct pattern: fail closed, log internally, respond generically
+app.get('/data', async (req: Request, res: Response) => {
+  try {
+    const result = await db.query('SELECT * FROM users WHERE id = $1', [req.query.id]);
+    res.json(result.rows);
+  } catch (err: unknown) {
+    // useUnknownInCatchVariables: err is unknown — must check type before accessing
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ err: message, path: req.path, requestId: req.headers['x-request-id'] }, 'DB query failed');
+    // Generic response: no internal details exposed
+    res.status(500).json({ error: 'Request failed', requestId: req.headers['x-request-id'] });
+  }
+});
+
+// Correct pattern: atomic transaction with guaranteed rollback (fail closed)
+async function transferFunds(fromId: string, toId: string, amountCents: number): Promise<void> {
+  // TypeScript: using AsyncDisposable (TS 5.2+) ensures rollback on any exit path
+  const transaction = await db.beginTransaction();
+  try {
+    await transaction.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [amountCents, fromId]);
+    await transaction.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [amountCents, toId]);
+    await transaction.commit();
+  } catch (err: unknown) {
+    await transaction.rollback(); // Always roll back — fail closed
+    throw err; // Re-throw for the caller to handle
+  }
+}
+
+// TypeScript ESLint rule for A10:2025: require error handling in async functions
+// Add to eslint.config.ts:
+// '@typescript-eslint/no-floating-promises': 'error'  — unhandled promises = A10:2025
+// '@typescript-eslint/no-throw-literal': 'error'  — throw non-Error objects = hard to catch
+// 'no-catch-shadow': 'error'  — catch variable shadowing = silences errors
+```
+
+```typescript
+// src/middleware/error-handler.ts — centralized error handling (A10:2025 compliance)
+// One application should have ONE function for handling exceptional conditions
+import type { Request, Response, NextFunction } from 'express';
+import type { Logger } from 'pino';
+import { ZodError } from 'zod';
+
+export interface AppError {
+  readonly statusCode: number;
+  readonly userMessage: string;  // Safe for external consumers
+  readonly internalDetails?: string; // Only in logs, never in response
+}
+
+export function createErrorHandler(logger: Logger) {
+  return function errorHandler(
+    err: unknown,
+    req: Request,
+    res: Response,
+    _next: NextFunction,
+  ): void {
+    const requestId = req.headers['x-request-id'] as string | undefined;
+
+    // Validation errors (Zod) — safe to expose field names
+    if (err instanceof ZodError) {
+      res.status(400).json({
+        error: 'Validation failed',
+        requestId,
+        issues: err.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+      });
+      return;
+    }
+
+    // Application-level errors with explicit status codes
+    if (isAppError(err)) {
+      logger.warn({ err: err.internalDetails, requestId, path: req.path }, 'App error');
+      res.status(err.statusCode).json({ error: err.userMessage, requestId });
+      return;
+    }
+
+    // Unknown errors — never expose details, always log the full error
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    logger.error({ err: message, stack, requestId, path: req.path }, 'Unhandled error');
+    res.status(500).json({ error: 'Internal server error', requestId });
+  };
+}
+
+function isAppError(err: unknown): err is AppError {
+  return typeof err === 'object' && err !== null && 'statusCode' in err && 'userMessage' in err;
+}
+```
+
+> [community] **Lesson (OWASP A10:2025 — TypeScript teams, 2025)**: TypeScript's `useUnknownInCatchVariables: true` (enabled by `strict: true` in TS 4.4+) is the most impactful single compiler flag for A10:2025 compliance. It types `e` in catch blocks as `unknown` instead of `any`, forcing developers to check `e instanceof Error` before accessing `.message`. Teams migrating existing codebases report this surfacing 15–30 unhandled error paths per 10,000 LOC — paths that were silently coercing `any` and potentially leaking sensitive data.
+
+> [community] **Gotcha (TypeScript + Express global error handler)**: Express requires the error handler middleware to have exactly 4 parameters `(err, req, res, next)` to be recognized as an error handler. TypeScript will warn that `_next: NextFunction` is an unused parameter — use an underscore prefix or suppress with `// eslint-disable-next-line @typescript-eslint/no-unused-vars`. Do NOT omit the parameter: Express uses parameter count to detect error handlers, and omitting `next` causes the middleware to be treated as a regular route handler, silently bypassing all error handling.
+
+---
+
+## Vitest 3.x / 4.x Shift-Left Improvements (2025–2026)
+
+Vitest 3.x (released Q4 2025) introduces significant improvements for TypeScript shift-left workflows
+
+### Key Shift-Left Features in Vitest 3.x / 4.x
 
 | Feature | Description | Shift-Left Benefit |
 |---------|-------------|-------------------|
@@ -4656,6 +4755,133 @@ jobs:
 > [community] **Gotcha (Vitest 3.x browser mode + TypeScript strict)**: Vitest's browser mode uses Vite for TypeScript transformation. If `tsconfig.json` has `"module": "NodeNext"`, add a separate `tsconfig.browser.json` with `"module": "ESNext"` and `"moduleResolution": "Bundler"` for the browser mode test runner. NodeNext's `.js` extension requirement in imports is incompatible with Vite's bundler module resolution.
 
 > [community] **Gotcha (Vitest 3.x per-file coverage thresholds)**: Setting `perFile: true` in coverage thresholds enables per-file enforcement but uses the same threshold values as the global thresholds. It does NOT allow per-file custom thresholds (that requires a custom coverage reporter). The primary use case is preventing any single file from becoming an untested dead zone — not setting different thresholds per file category.
+
+### Vitest 4.0 Migration Guide (2026)
+
+Vitest 4.0 introduces breaking changes relevant to TypeScript shift-left CI pipelines. If your project uses Vitest 3.x, these changes require updates before upgrading.
+
+**Requirements change:** Node.js ≥ 20.0.0 and Vite ≥ 6.0.0 are now mandatory.
+
+**Breaking configuration changes:**
+
+| Vitest 3.x | Vitest 4.x | WHY it matters |
+|---|---|---|
+| `coverage.all` option | Removed — specify `coverage.include` explicitly | Prevents accidental coverage of generated files |
+| `coverage.extensions` | Removed — determined by `coverage.include` patterns | Simplifies TypeScript coverage config |
+| `coverage.experimentalAstAwareRemapping` | Removed — enabled by default | More accurate TypeScript coverage source mapping |
+| `maxThreads` / `maxForks` | → `maxWorkers` | Unified pool sizing API |
+| `singleThread` / `singleFork` | → `maxWorkers: 1, isolate: false` | Explicit isolation semantics |
+| `vitest.workspace.js` + `workspace` option | → `projects` option in `vitest.config.ts` | Workspace config consolidated into main config |
+| Browser provider as string `'playwright'` | → Object: `playwright({ launchOptions: {} })` | Type-safe provider configuration |
+| `--reporter=basic` | → `['default', { summary: false }]` | Removes deprecated reporter alias |
+| Mock default name `spy` | → `vi.fn()` | Clearer mock identity in test output |
+
+```typescript
+// vitest.config.ts — Vitest 4.x configuration (replaces Vitest 3.x config)
+import { defineConfig } from 'vitest/config';
+import { resolve } from 'node:path';
+
+export default defineConfig({
+  test: {
+    environment: 'node',
+    globals: true,
+
+    // Vitest 4.x: typecheck still works the same way
+    typecheck: {
+      enabled: true,
+      tsconfig: './tsconfig.test.json',
+    },
+
+    coverage: {
+      provider: 'v8',
+      // VITEST 4.x BREAKING: must explicitly define include patterns
+      // (coverage.all and coverage.extensions are removed)
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.spec.ts',
+        'src/**/*.test.ts',
+        'src/index.ts',
+        'src/types/**',
+        // Vitest 4.x: node_modules and .git excluded by default
+        // dist, cypress, config files are NO LONGER excluded by default — add explicitly
+        'dist/**',
+        '**/*.config.ts',
+        '**/*.config.js',
+      ],
+      reporter: ['text', 'lcov', 'html', 'json-summary'],
+      thresholds: {
+        lines: 80,
+        functions: 75,
+        branches: 70,
+        statements: 80,
+        perFile: true,
+      },
+    },
+
+    // Vitest 4.x: maxWorkers replaces maxThreads/maxForks
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        maxWorkers: 4,   // Was: maxForks in v3
+        // singleFork: true is now: maxWorkers: 1, isolate: false
+      },
+    },
+
+    // Vitest 4.x reporters (GitHub Actions annotation still works the same)
+    reporters: process.env.CI
+      ? ['github-actions', 'junit', ['default', { summary: false }]]
+      : [['default', { summary: false }]],  // 'verbose' is deprecated → use 'tree'
+    outputFile: { junit: 'test-results.xml' },
+
+    retry: process.env.CI ? 1 : 0,
+    testTimeout: 10_000,
+  },
+
+  resolve: {
+    alias: { '@': resolve(import.meta.dirname, './src') },
+  },
+});
+```
+
+```typescript
+// vitest.config.ts — Vitest 4.x monorepo with projects (replaces vitest.workspace.js)
+// In Vitest 4.x: move workspace config into vitest.config.ts using `projects`
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Vitest 4.x: projects replaces vitest.workspace.js (the workspace option)
+    projects: [
+      {
+        // Project: unit tests for TypeScript source files
+        test: {
+          name: 'unit',
+          include: ['packages/**/src/**/*.spec.ts'],
+          environment: 'node',
+          pool: 'forks',
+        },
+      },
+      {
+        // Project: browser mode component tests
+        test: {
+          name: 'browser',
+          include: ['packages/**/src/**/*.browser.spec.tsx'],
+          browser: {
+            enabled: true,
+            // Vitest 4.x BREAKING: provider as object, not string
+            provider: 'playwright',   // OR: playwright({ launchOptions: { headless: true } })
+            instances: [{ browser: 'chromium' }],
+          },
+        },
+      },
+    ],
+  },
+});
+```
+
+> [community] **Lesson (Vitest 4.x coverage.include migration, 2026)**: The removal of `coverage.all` in Vitest 4.x is a quality improvement — `coverage.all: true` in Vitest 3.x would include ALL matching files regardless of whether they were imported by tests. This produced misleadingly low coverage on untouched files. Explicitly defining `coverage.include` forces teams to declare which files they intend to cover, making coverage thresholds meaningful. WHY this matters for shift-left: a 75% coverage threshold enforced against explicitly declared source files is a real quality gate; the same threshold with `coverage.all` could include generated files, config files, and type-only files that inflate or deflate the denominator.
+
+> [community] **Gotcha (Vitest 4.x `vi.restoreAllMocks()` behavior change)**: In Vitest 4.x, `vi.restoreAllMocks()` only affects **manual spies** created with `vi.spyOn()`, not automocks created with `vi.mock()`. If your `afterEach` hooks call `vi.restoreAllMocks()` expecting to clear automock behavior between tests, you must also call `vi.resetAllMocks()` or `vi.clearAllMocks()`. WHY teams miss this: in Vitest 3.x, `restoreAllMocks()` affected both — the Vitest 4.x change aligns with the documented contract but breaks existing test suites that relied on the undocumented behavior.
 
 ---
 

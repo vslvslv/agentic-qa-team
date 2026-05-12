@@ -1,6 +1,14 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 29 (2026-05-12): added TypeScript 5.9 — Type Argument Inference Fixes (type variable leak fix,
+       may surface new errors on upgrade); added TypeScript 5.9 Expandable Hovers (VS Code preview feature)
+       and Configurable Hover Length (js/ts.hover.maximumLength); added TypeScript 6.0 —
+       --moduleResolution bundler + --module commonjs migration path as upgrade bridge from deprecated node
+       resolution; added community pitfall: isolatedModules vs isolatedDeclarations confusion; added community
+       pitfall: tsconfig glob changes invalidating incremental build cache — sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html and
+       github.com/microsoft/TypeScript/wiki/Performance
      Iter 28 (2026-05-12): added --explainFiles and --traceResolution to Performance Diagnostics;
        added disableReferencedProjectLoad + disableSolutionSearching editor performance flags;
        added module Foo {} → namespace Foo {} TS 6.0 syntax breaking change with note on declare module;
@@ -3564,3 +3572,168 @@ counter.increment();
 | `Lowercase<S>` | String | Lowercase string literal | 4.1 |
 | `Capitalize<S>` | String | Capitalize first character | 4.1 |
 | `Uncapitalize<S>` | String | Uncapitalize first character | 4.1 |
+
+---
+
+## TypeScript 5.9 — Type Argument Inference Fixes
+
+TypeScript 5.9 corrects a class of bugs where type variables could "leak" across inference boundaries, causing the compiler to infer an unexpectedly broad type. This is a correctness improvement — previously suppressed errors may now surface in existing code.
+
+**What changed:** When TypeScript infers type arguments during a generic function call, it previously allowed early-bound type variables to escape into inferences for other parameters. The fix constrains each type variable to its declared scope, meaning some code that previously compiled silently now produces errors.
+
+```typescript
+// Example pattern that may produce new errors after upgrading to 5.9
+// (simplified illustration of the category of fix)
+
+declare function pair<A, B>(a: A, b: B): [A, B];
+
+// Before 5.9: TypeScript may infer A = string from context, then "leak" it
+// to B's inference position in chained calls
+// After 5.9: each type variable inferred independently — explicit annotation required
+
+// Fix: add explicit type arguments when 5.9 reports a new type mismatch
+declare function transform<T, U>(
+  value: T,
+  fn: (t: T) => U
+): U;
+
+// If 5.9 surfaces a new error here, provide explicit type arguments:
+const result = transform<string, number>('hello', s => s.length); // explicit — safe
+```
+
+**Upgrade path:** When upgrading to TypeScript 5.9, run `tsc --noEmit` and inspect any new errors around generic function calls. The fix is almost always to add explicit type arguments to the call site rather than changing logic. These are genuine type errors that were silently permitted before — they represent real correctness improvements.
+
+[community] **Pitfall:** Teams that upgrade TypeScript minor versions without a `tsc --noEmit` step in CI miss inference-tightening changes. TypeScript 5.x "minor" releases can introduce new errors in previously-clean code when the compiler's inference becomes more correct. Always run a dedicated type-check step (`"typecheck": "tsc --noEmit"`) as a separate CI job — never rely on "it builds with esbuild" as a proxy for type correctness.
+
+---
+
+## TypeScript 5.9 — Editor Tooling Improvements
+
+### Expandable Hovers (Preview)
+
+TypeScript 5.9 introduces interactive hover tooltips in VS Code that allow you to expand and collapse type information inline, without navigating to a type definition. This is especially useful for complex generic return types and utility type compositions.
+
+**Behaviour:**
+- Hovering over a value shows the standard compact type
+- A `+` button expands the type inline to show all members  
+- A `-` button collapses it back
+- Particularly useful for inspecting `Partial<User & Settings>` without a "go to definition"
+
+**Status:** This is a **preview** feature as of TypeScript 5.9. It is available in VS Code with the TypeScript 5.9 language service but behaviour may change before stabilisation. Provide feedback via the [TypeScript GitHub issue tracker](https://github.com/microsoft/TypeScript/issues).
+
+### Configurable Maximum Hover Length
+
+TypeScript 5.9 also adds a VS Code setting to control hover tooltip truncation:
+
+```json
+// VS Code settings.json
+{
+  "js/ts.hover.maximumLength": 500
+}
+```
+
+The default hover length was substantially increased in 5.9, preventing important type information from being cut off in complex types. If you still see truncated hovers on very large types (e.g., deeply inlined record types), increase this setting. Setting it to `0` disables truncation entirely — useful temporarily for debugging type shapes, but can make hovers unwieldy.
+
+[community] **Pitfall:** Teams debugging complex type errors often open the `.d.ts` file to inspect types because hover tooltips were truncated. With TypeScript 5.9's longer default and the configurable limit, "go to definition" is now a last resort rather than a first step. Configure `js/ts.hover.maximumLength` early in your team's VS Code settings (committed to `.vscode/settings.json`) so everyone sees complete type information from the start.
+
+---
+
+## TypeScript 6.0 — `--moduleResolution bundler` + `--module commonjs` Migration Path
+
+TypeScript 6.0 allows the previously-rejected combination of `--moduleResolution bundler` with `--module commonjs`. This provides a clean incremental upgrade path for projects migrating away from the deprecated `--moduleResolution node` (now renamed `node10`) without requiring a full ESM conversion.
+
+```json
+// Migration step 1: swap deprecated node resolution for bundler resolution
+// while keeping CommonJS output — no application code changes needed
+{
+  "compilerOptions": {
+    "module": "commonjs",            // unchanged: still emits CommonJS
+    "moduleResolution": "bundler",   // new: replaces deprecated "node" / "node10"
+    "target": "ES2020"
+  }
+}
+
+// Migration step 2 (later): move to ESM output when ready
+{
+  "compilerOptions": {
+    "module": "nodenext",            // ESM output
+    "moduleResolution": "nodenext"   // consistent pair
+  }
+}
+```
+
+**Why this matters:** `moduleResolution: "node"` (now `"node10"`) is deprecated in TypeScript 6.0 and removed in TypeScript 7.0. It silently resolves paths in ways that bundlers (Webpack, Rollup, esbuild) do not replicate — leading to `Cannot find module` errors at runtime that TypeScript never caught. The `bundler` resolution strategy matches how modern bundlers actually resolve modules. Previously, `module: commonjs` and `moduleResolution: bundler` were an incompatible pair; TypeScript 6.0 lifts this restriction to lower the migration cost.
+
+[community] **Pitfall:** Many teams running CJS builds with `"moduleResolution": "node"` will hit deprecation warnings when upgrading to TypeScript 6.0. The temptation is to suppress with `"ignoreDeprecations": "6.0"` and move on. This defers a real problem — TypeScript 7.0 removes the option entirely. Use the two-step migration above: first swap to `bundler` with `commonjs` output, run your full test suite to verify no resolution regressions, then plan the ESM transition separately.
+
+---
+
+## Community Pitfall: `isolatedModules` vs `isolatedDeclarations` — Different Flags, Different Purposes
+
+[community] **Pitfall:** Teams frequently confuse `isolatedModules` and `isolatedDeclarations`, enabling the wrong flag for their use case — or enabling both under the impression they compound.
+
+| Flag | What it does | Who it's for | Performance impact |
+|------|-------------|--------------|-------------------|
+| `isolatedModules: true` | Errors on patterns unsafe for single-file transpilation (e.g., `const enum`, `export = x`, ambient modules without `declare`) | Teams using Babel, esbuild, or SWC to transpile TypeScript without running `tsc` | None — only validates, no emit change |
+| `isolatedDeclarations: true` | Requires explicit return type annotations on all exported functions so that `.d.ts` files can be emitted in parallel without cross-file inference | Monorepos using tools like Rollup, Vite, or Rspack to generate `.d.ts` files in parallel | Enforces annotation discipline; enables parallel builds |
+
+```typescript
+// isolatedModules: catches patterns Babel/esbuild cannot handle
+// ❌ Error under isolatedModules: const enum requires full TypeScript compilation
+const enum Direction { Up, Down }
+
+// isolatedDeclarations: requires explicit return types for exports
+// ❌ Error under isolatedDeclarations: inferred return type prevents parallel .d.ts emit
+export function compute(x: string) {
+  return x.length * 2;  // Error: needs explicit ': number'
+}
+// ✅ Correct
+export function compute(x: string): number {
+  return x.length * 2;
+}
+```
+
+**Rule of thumb:**
+- Use `isolatedModules: true` if any file in your repo is transpiled by a non-TypeScript tool
+- Use `isolatedDeclarations: true` if you have a monorepo that needs fast parallel `.d.ts` generation
+- You may need **both** in a large monorepo using Vite (which uses esbuild for dev, Rollup for prod): `isolatedModules` ensures Vite's esbuild can transpile safely; `isolatedDeclarations` enables parallel type declaration emit
+
+---
+
+## Community Pitfall: `tsconfig.json` Glob Changes Invalidate Incremental Cache
+
+[community] **Pitfall:** Developers treat `.tsbuildinfo` as a persistent acceleration — once set up, always fast. In reality, any change to `tsconfig.json` that affects the file set invalidates the entire cache. Common cache-busting changes include:
+
+- Adding or removing entries in `include`/`exclude`
+- Changing `rootDir`, `outDir`, or `baseUrl`
+- Adding a new `paths` entry
+- Upgrading TypeScript itself (different compiler version = full rebuild)
+- Changing `target` or `module` (affects output shape)
+
+```bash
+# Diagnose a cache miss — tsc reports why the cache was invalidated
+npx tsc --extendedDiagnostics --noEmit 2>&1 | grep -i "build info"
+
+# Common output when cache is invalidated:
+# Project '.../tsconfig.json' is out of date because output '.tsbuildinfo' is older than input 'tsconfig.json'
+# → Full rebuild triggered
+
+# Manual cache clear (safe — forces fresh build):
+rm .tsbuildinfo
+# Or for project references:
+find . -name "*.tsbuildinfo" -not -path "*/node_modules/*" -delete
+```
+
+**Best practice for CI:** Never rely on incremental cache across CI runs without a cache key that includes both the `tsconfig.json` hash AND the TypeScript version. Use your CI cache system's key feature:
+
+```yaml
+# GitHub Actions example
+- uses: actions/cache@v4
+  with:
+    path: .tsbuildinfo
+    key: tsbuildinfo-${{ hashFiles('tsconfig.json', 'package.json') }}-${{ runner.os }}
+    restore-keys: |
+      tsbuildinfo-
+```
+
+Without the content-based key, a stale `.tsbuildinfo` from a previous branch causes spurious type errors or false clean builds — both worse than a full rebuild.

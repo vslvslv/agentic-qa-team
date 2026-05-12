@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath) -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.60 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.60 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50) -->
 
 ---
 
@@ -1196,6 +1196,11 @@ npx playwright test --grep-invert @flaky --retries=2
 | `locator.all()` before content loads | Snapshots empty DOM; `for...of` body never runs; test passes vacuously | Always `await expect(locator).toHaveCount(n)` before calling `.all()` |
 | `toHaveCSS('color', '#2563eb')` | Browsers compute colors as `rgb(...)`; hex never matches | Use `rgb(37, 99, 235)` or a regex with `toHaveCSS()` |
 | `locator.fill()` on autocomplete / masked inputs | Sets value atomically without firing individual key events; autocomplete never triggers | Use `locator.pressSequentially()` for inputs that need keystroke events |
+| `page.route()` for popup's first request | `page.route()` doesn't intercept the first navigation request of a popup (new page) — fires too late | Use `context.route()` for rules that must apply to all pages including new popups |
+| `addLocatorHandler` without re-hover after handler | Handler moves mouse to dismiss overlay; subsequent `hover()` acts on wrong position | Re-hover the target element explicitly after any action following a handler invocation |
+| `toMatchAriaSnapshot` after v1.56 upgrade without updating snapshots | v1.56 adds placeholder text to input ARIA representations — pre-upgrade snapshots fail | Run `--update-snapshots=changed` after upgrading to v1.56+ |
+| `context.clearCookies()` without filter | Removes ALL cookies including third-party analytics/widget cookies | Pass `domain` or `name` filter to target only the cookies you want to clear |
+| Checking `context.isClosed()` is absent in fixture teardown | Calling `.close()` on an already-disposed context throws misleading "Target closed" errors | Add `if (!context.isClosed())` guard in worker-scoped teardown fixtures |
 
 ---
 
@@ -1211,6 +1216,8 @@ npx playwright test --grep-invert @flaky --retries=2
 | `page.waitForLoadState('networkidle')` | Wait until network settles | Static pages only — avoid on polling apps |
 | `page.waitForResponse(url)` | Wait for a specific HTTP response | After UI actions that trigger API calls |
 | `context.setStorageState({ path })` | Reset all storage state in-place (v1.59+) | Role-switching tests without new context |
+| `context.clearCookies({ name, domain, path })` | Remove filtered subset of cookies (v1.43+) | Logout testing without clearing all cookies |
+| `context.isClosed()` | Returns true after context is disposed (v1.59+) | Safe fixture teardown guards |
 | `page.clearConsoleMessages()` | Clear accumulated console logs (v1.59+) | Reset log state mid-test |
 | `page.clearPageErrors()` | Clear accumulated page errors (v1.59+) | Reset error state mid-test |
 | `page.consoleMessages({ filter })` | Retrieve stored console log history (v1.59+) | Post-action console error assertions |
@@ -1218,6 +1225,7 @@ npx playwright test --grep-invert @flaky --retries=2
 | `page.requests({ filter })` | Retrieve stored network request history (v1.59+) | Verify API calls without event listeners |
 | `page.addLocatorHandler(locator, fn)` | Auto-dismiss overlays before actionability checks | Cookie banners, popups, modals |
 | `page.removeLocatorHandler(locator)` | Remove a previously added overlay handler | Cleanup after targeted page sections |
+| `consoleMessage.timestamp()` | Unix ms when message was created (v1.59+) | Correlate console events with actions; timing diagnostics |
 
 ### Locators
 
@@ -1255,6 +1263,11 @@ npx playwright test --grep-invert @flaky --retries=2
 | `expect(locator).toMatchAriaSnapshot()` | ARIA accessibility tree snapshot (v1.49+) | Accessibility structure regression |
 | `expect(locator).toContainClass(cls)` | Assert single class present (v1.52+) | Class presence without full-class match |
 | `expect(locator).toHaveAccessibleErrorMessage(msg)` | Validate aria-errormessage (v1.52+) | Form validation accessibility |
+| `expect(locator).toHaveAccessibleName(text)` | Assert computed accessible name (v1.44+) | Icon buttons, unlabeled controls |
+| `expect(locator).toHaveAccessibleDescription(text)` | Assert aria-describedby text (v1.44+) | Help text, tooltip wiring |
+| `expect(locator).toHaveRole(role)` | Assert ARIA role string (v1.44+) | Custom ARIA widgets, design system compliance |
+| `expect(locator).toBeChecked({ indeterminate })` | Assert indeterminate checkbox state (v1.50+) | Tri-state checkboxes |
+| `expect(locator).toBeAttached()` | Assert element connected to DOM (v1.33+) | Check element exists without visibility requirement |
 | `expect.soft(locator)` | Non-blocking assertion; collects errors | Multi-field validation |
 | `expect.configure({ timeout, soft })` | Scoped expect instance with custom settings | Block-level timeout/soft mode |
 | `expect.poll(fn)` | Poll async function until assertion passes | External state / API polling |
@@ -6323,3 +6336,551 @@ Quick reference for all v1.60 additions not covered in earlier sections.
 | `reporter.onError(err, workerInfo)` | Worker-attributed error reporting | Identify which worker crashed in CI |
 | `testInfoError.errorContext` | Structured diagnostic at failure point | Rich failure reports in custom reporters |
 | `{testFileBaseName}` snapshot token | Flat snapshot directory naming | Easier visual regression baseline management |
+
+---
+
+## Accessibility Assertions (v1.44+)
+
+Three built-in locator assertions test accessible names, roles, and descriptions without requiring `@axe-core/playwright`. They complement `toMatchAriaSnapshot()` for specific-element checks rather than structural trees.
+
+### `toHaveAccessibleName` and `toHaveAccessibleDescription`
+
+```typescript
+// toHaveAccessibleName — verifies aria-label, aria-labelledby, or associated <label>
+test('icon buttons have accessible labels', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  // Verify icon-only button has an accessible name for screen readers
+  await expect(page.getByTestId('delete-btn')).toHaveAccessibleName('Delete record');
+
+  // Regex matching — useful when name includes dynamic content
+  await expect(page.getByTestId('edit-btn')).toHaveAccessibleName(/Edit row \d+/);
+
+  // Case-insensitive matching
+  await expect(page.getByTestId('close-btn')).toHaveAccessibleName('close dialog', { ignoreCase: true });
+});
+
+// toHaveAccessibleDescription — verifies aria-describedby or aria-description tooltip text
+test('form fields have help text accessible descriptions', async ({ page }) => {
+  await page.goto('/signup');
+
+  // Verify aria-describedby tooltip is wired correctly
+  await expect(page.getByLabel('Password')).toHaveAccessibleDescription(
+    'Must be at least 8 characters, include a number and a symbol'
+  );
+});
+```
+
+### `toHaveRole`
+
+```typescript
+// toHaveRole — verifies ARIA role matches exactly
+// NOTE: role matching is a string comparison — it does NOT account for ARIA role inheritance
+test('custom components have correct semantic roles', async ({ page }) => {
+  await page.goto('/components/modal');
+
+  await page.getByRole('button', { name: 'Open modal' }).click();
+
+  // Custom overlay element must have role="dialog" for screen reader navigation
+  const overlay = page.getByTestId('modal-overlay');
+  await expect(overlay).toHaveRole('dialog');
+  await expect(overlay).toHaveAccessibleName('Confirm action');
+
+  // Verify a custom toggle has role="checkbox" not just looks like one
+  const toggle = page.getByTestId('feature-toggle');
+  await expect(toggle).toHaveRole('checkbox');
+  await expect(toggle).toHaveAccessibleName('Enable notifications');
+});
+```
+
+### `toBeChecked({ indeterminate: true })` — Indeterminate Checkbox State (v1.50+)
+
+```typescript
+// Assert an indeterminate checkbox state (tri-state: checked / unchecked / indeterminate)
+test('select-all checkbox shows indeterminate when some items are checked', async ({ page }) => {
+  await page.goto('/tasks');
+
+  // Check only some items
+  await page.getByRole('row').nth(1).getByRole('checkbox').check();
+  await page.getByRole('row').nth(2).getByRole('checkbox').check();
+
+  // The "select all" header checkbox should be indeterminate
+  const selectAll = page.getByRole('columnheader').getByRole('checkbox');
+  await expect(selectAll).toBeChecked({ indeterminate: true });
+
+  // Check all items — indeterminate should resolve to fully checked
+  await selectAll.click();
+  await expect(selectAll).toBeChecked();
+  await expect(selectAll).not.toBeChecked({ indeterminate: true });
+});
+```
+
+> `toHaveAccessibleName`, `toHaveRole`, and `toHaveAccessibleDescription` assert on the *computed* accessible properties — the same values a screen reader exposes — not on HTML attributes directly. A `<div aria-role="button">` has accessible role `button`; a visually hidden `<label>` still contributes to accessible name. [community]
+
+> Use `toHaveRole()` in component tests to verify that your custom ARIA widget has the correct semantic role, especially after design-system upgrades that may swap underlying HTML elements. [community]
+
+---
+
+### `--test-list` and `--test-list-invert` — Precise CI Test Selection (v1.56+)
+
+Run a specific set of tests from a file rather than relying on `--grep` regex. Ideal for CI pipelines that use external test management systems to determine which tests should run for a given change.
+
+```bash
+# Create a test list file (same format as --list output)
+# tests-to-run.txt:
+# [chromium] › e2e/specs/checkout.spec.ts › checkout › completes payment
+# [chromium] › e2e/specs/auth.spec.ts › login › shows error on bad credentials
+# e2e/specs/users.spec.ts › CRUD › creates admin user
+
+# Run only the listed tests
+npx playwright test --test-list=tests-to-run.txt
+
+# Skip the listed tests — run everything EXCEPT these
+npx playwright test --test-list-invert=tests-to-skip.txt
+```
+
+**Test list file format:**
+
+```
+# Lines starting with # are comments
+# Empty lines are ignored
+
+# Fully qualified (project + file + suite + test):
+[chromium] › e2e/specs/checkout.spec.ts:42:5 › checkout › completes payment
+
+# File-only (runs all tests in this file):
+e2e/specs/auth.spec.ts
+
+# Suite-level:
+e2e/specs/users.spec.ts › User management
+
+# Cross-project (runs in all matching projects):
+e2e/specs/smoke.spec.ts › Smoke › homepage loads
+```
+
+**Integration with test management systems (e.g., Jira, TestRail):**
+
+```bash
+# Step 1: Generate a full test list
+npx playwright test --list --reporter=json | jq -r '.suites[].specs[].tests[].title' > all-tests.txt
+
+# Step 2: External system produces "tests-to-run.txt" based on changed code
+# (test impact analysis, test selection AI, or manual curation)
+
+# Step 3: Run selected tests
+npx playwright test --test-list=tests-to-run.txt --project=chromium
+```
+
+> `--test-list` is strictly safer than `--grep` when test titles contain regex metacharacters (`[`, `.`, `*`) — grep patterns silently match more tests than expected, while `--test-list` matches exact titles. [community]
+
+> `--test-list-invert` is the idiomatic way to exclude a known-broken subset from a nightly run without adding `test.skip()` calls to source code — no test-file modifications required. [community]
+
+---
+
+### `context.clearCookies()` with Filtering Options (v1.43+)
+
+Remove a subset of cookies from a browser context without clearing all of them. Useful for testing cookie expiry, logout flows, and session switching without creating a new context.
+
+```typescript
+// Clear a specific cookie by name
+test('logout removes auth cookie', async ({ context, page }) => {
+  await page.goto('/dashboard');
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+
+  // Remove only the session cookie
+  await context.clearCookies({ name: 'session_id' });
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/login/);  // redirected to login
+});
+
+// Clear cookies for a specific domain (avoids clearing third-party widget cookies)
+test('clears only first-party auth cookies', async ({ context, page }) => {
+  await page.goto('/profile');
+  await context.clearCookies({ domain: 'your-app.com' });
+  // Cookies for widget.cdn.com and analytics.example.com are preserved
+});
+
+// Combine filters: name AND domain
+test('removes session cookie from specific subdomain', async ({ context }) => {
+  await context.clearCookies({ name: 'auth_token', domain: 'api.your-app.com' });
+});
+
+// Path-scoped cookie removal
+test('clears admin-only cookies', async ({ context }) => {
+  await context.clearCookies({ path: '/admin' });
+});
+
+// Regex filter — remove all cookies whose domain matches a pattern
+test('clears all staging cookies', async ({ context }) => {
+  await context.clearCookies({ domain: /staging\./ });
+});
+```
+
+> `clearCookies()` with no arguments removes ALL cookies including third-party ones. When testing logout in apps that also use analytics or chat widget cookies, always pass a `domain` or `name` filter to avoid unintended side effects on other in-test cookies. [community]
+
+---
+
+### `step.skip()` and `step.attach()` Inside `test.step()` Body (v1.51+)
+
+Steps receive a `TestStepInfo` object that provides `skip()` and `attach()` — making steps conditionally skippable and able to attach artifacts without test-level `testInfo` access.
+
+```typescript
+// step.skip() — conditionally bypass a step without failing the test
+test('checkout flow with optional promo step', async ({ page, isMobile }) => {
+  await test.step('navigate to checkout', async () => {
+    await page.goto('/checkout');
+  });
+
+  await test.step('enter promo code', async (step) => {
+    // Mobile layout doesn't show promo code until expanded
+    if (isMobile) {
+      step.skip('Promo code input hidden on mobile — expand tested separately');
+      return;
+    }
+    await page.getByLabel('Promo code').fill('SAVE10');
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await expect(page.getByText('10% discount applied')).toBeVisible();
+  });
+
+  await test.step('complete purchase', async () => {
+    await page.getByRole('button', { name: 'Place order' }).click();
+    await expect(page.getByText('Order confirmed')).toBeVisible();
+  });
+});
+
+// step.attach() — save per-step artifacts visible in HTML report
+test('validates complex form with step-level screenshots', async ({ page }) => {
+  await test.step('fill personal info', async (step) => {
+    await page.getByLabel('Name').fill('Alice Smith');
+    await page.getByLabel('Email').fill('alice@example.com');
+
+    // Attach screenshot at this step — visible as a nested attachment in HTML report
+    await step.attach('personal-info-filled', {
+      body:        await page.screenshot(),
+      contentType: 'image/png',
+    });
+  });
+
+  await test.step('fill payment', async (step) => {
+    const frame = page.frameLocator('iframe[title="Payment"]');
+    await frame.getByLabel('Card number').fill('4111111111111111');
+
+    await step.attach('payment-filled', {
+      body:        await page.screenshot(),
+      contentType: 'image/png',
+    });
+  });
+});
+```
+
+**`test.step.skip()` — standalone step skip (without accessing the step object):**
+
+```typescript
+// Skip an entire named step without using the step parameter pattern
+test('feature behind flag', async ({ page }) => {
+  await test.step('verify feature A', async () => {
+    if (!process.env.FEATURE_A_ENABLED) {
+      test.step.skip();  // standalone call — no step param needed
+      return;
+    }
+    await page.goto('/feature-a');
+    await expect(page.getByText('Feature A')).toBeVisible();
+  });
+});
+```
+
+> `step.attach()` binds attachments to the specific step rather than the whole test — in the HTML report, attachments appear nested under the step where they were created, making long tests with many steps much easier to navigate. [community]
+
+> `step.skip()` inside the step body is the idiomatic pattern when the condition depends on data only available inside the step (e.g., an API response). `test.step.skip()` (standalone) is for conditions known before the step runs. [community]
+
+---
+
+### `consoleMessage.timestamp()` — Precise Log Timing (v1.59+)
+
+`consoleMessage.timestamp()` returns the Unix timestamp (milliseconds) when the console message was created. Use it to correlate console events with test actions or to detect log flooding.
+
+```typescript
+// Measure time between page load and first console error
+test('detects early console errors', async ({ page }) => {
+  const messages: Array<{ type: string; text: string; ts: number }> = [];
+  const testStart = Date.now();
+
+  page.on('console', msg => {
+    messages.push({
+      type: msg.type(),
+      text: msg.text(),
+      ts:   msg.timestamp(),
+    });
+  });
+
+  await page.goto('/app');
+  await expect(page.getByRole('main')).toBeVisible();
+
+  const errors = messages.filter(m => m.type === 'error');
+  if (errors.length > 0) {
+    const offsets = errors.map(e => `${e.text} (+${e.ts - testStart}ms after test start)`);
+    throw new Error(`Console errors found:\n${offsets.join('\n')}`);
+  }
+});
+
+// Post-facto inspection with timestamps using page.consoleMessages()
+test('no errors after user action', async ({ page }) => {
+  await page.goto('/editor');
+  const beforeAction = Date.now();
+
+  await page.getByRole('button', { name: 'Save' }).click();
+
+  const messages = await page.consoleMessages({ filter: 'since-navigation' });
+  const errorsAfterSave = messages.filter(
+    m => m.type() === 'error' && m.timestamp() > beforeAction
+  );
+
+  expect(
+    errorsAfterSave.map(m => m.text()),
+    'Console errors appeared after Save action'
+  ).toHaveLength(0);
+});
+```
+
+> `consoleMessage.timestamp()` is essential for diagnosing race conditions where a console error appears briefly and then the component recovers — without timestamps you cannot tell if the error preceded or followed the triggering action. [community]
+
+---
+
+### `context.isClosed()` — Defensive Fixture and Teardown Checks (v1.59+)
+
+`context.isClosed()` returns `true` after the browser context has been disposed. Use it in long-lived fixtures, custom reporters, and `afterEach` hooks that might run after a worker crash closes the context.
+
+```typescript
+// Safe teardown that checks context before cleanup
+// e2e/fixtures/safe-teardown.ts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend<{}, { testContext: void }>({
+  testContext: [async ({ browser }, use, workerInfo) => {
+    const context = await browser.newContext();
+    const page    = await context.newPage();
+
+    await use();
+
+    // Guard against double-close when worker crashes
+    if (!context.isClosed()) {
+      // Capture final state before tearing down
+      await page.screenshot({ path: `test-results/final-state-worker-${workerInfo.workerIndex}.png` });
+      await context.close();
+    }
+  }, { scope: 'worker', auto: true }],
+});
+
+// In route handlers — guard against context disposal mid-test
+test('resilient route handler', async ({ page, context }) => {
+  await page.route('**/api/**', async route => {
+    // Context might close if test times out while route is pending
+    if (context.isClosed()) {
+      return;  // silently drop — no error needed
+    }
+    try {
+      const real = await route.fetch();
+      await route.fulfill({ response: real });
+    } catch {
+      // Context disposed mid-fetch — expected on timeout/abort
+    }
+  });
+
+  await page.goto('/data');
+  await expect(page.getByRole('table')).toBeVisible();
+});
+```
+
+> `context.isClosed()` is the idiomatic guard in fixtures that run cleanup after a test timeout. Without it, calling `context.close()` on an already-closed context throws "Target page, context or browser has been closed" — a confusing error that masks the original timeout failure. [community]
+
+---
+
+### `page.route()` Does Not Intercept the First Request of a Popup [community]
+
+**What:** A test that registers `page.route()` handlers before a popup opens finds that the popup's first navigation request (e.g., the initial `GET /`) is not intercepted — the handler fires correctly for subsequent requests within the popup.
+
+**WHY:** Playwright attaches route handlers to the *page* object. When a popup opens, it creates a new page object instantaneously. The first request fires before Playwright has a chance to attach the current page's route handlers to the new popup page.
+
+**Fix:** Register routes on the *browser context* (`context.route()`) instead of the page. Context-level routes apply to all pages in the context, including popups, before their first request fires.
+
+```typescript
+// WRONG — page.route() misses the popup's first request
+test('wrong pattern for popup auth', async ({ page }) => {
+  await page.route('**/api/auth', route =>
+    route.fulfill({ status: 200, body: '{"token":"test"}' })
+  );
+  // ↑ This handler WON'T fire for the popup's own auth request on first load
+
+  const [popup] = await Promise.all([
+    page.waitForEvent('popup'),
+    page.getByRole('link', { name: 'Open OAuth' }).click(),
+  ]);
+  // popup's first GET may succeed or fail depending on real server state
+});
+
+// CORRECT — context.route() covers all pages including popups
+test('correct pattern for popup auth', async ({ page, context }) => {
+  await context.route('**/api/auth', route =>
+    route.fulfill({ status: 200, body: '{"token":"test"}' })
+  );
+  // ↑ context-level handler fires before popup's first request
+
+  const [popup] = await Promise.all([
+    page.waitForEvent('popup'),
+    page.getByRole('link', { name: 'Open OAuth' }).click(),
+  ]);
+  await expect(popup).toHaveURL(/success/);
+});
+```
+
+---
+
+### 29. `addLocatorHandler` alters mouse position and focused element mid-test [community]
+
+**What:** A locator handler registered via `page.addLocatorHandler()` fires mid-action and moves the mouse to dismiss an overlay. After the handler completes, the test's subsequent `hover()` or `click()` targets the wrong element because the mouse position changed.
+
+**WHY:** The handler runs inside Playwright's action pipeline — it fires before an actionability check and performs its own mouse movements. These side effects persist: the focused element changes, the cursor is now at the "Accept cookies" button position, and any hover-dependent UI (tooltips, dropdowns) that was open before the handler fired is now closed.
+
+**Fix:** If mouse position stability is critical (e.g., testing a dropdown opened by hover), either:
+- Use `{ noWaitAfter: true }` on the handler so Playwright doesn't wait for stability after clicking
+- Explicitly re-hover the target element after your action instead of assuming the handler left things clean
+- Register the overlay handler only for sections of the test where the overlay might appear, then remove it with `page.removeLocatorHandler()`
+
+```typescript
+test('tooltip persists after cookie banner dismissed', async ({ page }) => {
+  await page.addLocatorHandler(
+    page.getByRole('dialog', { name: /cookie/i }),
+    async () => {
+      await page.getByRole('button', { name: /accept/i }).click();
+      // After dismissal, mouse is at the Accept button — not on the tooltip target
+    },
+    { noWaitAfter: true }  // don't wait for DOM to settle before continuing
+  );
+
+  const triggerElement = page.getByTestId('info-icon');
+  await triggerElement.hover();  // this might trigger cookie banner dismissal mid-hover
+
+  // Re-hover explicitly — don't assume mouse is still on triggerElement
+  await triggerElement.hover();
+  await expect(page.getByRole('tooltip')).toBeVisible();
+});
+```
+
+---
+
+### 30. `toMatchAriaSnapshot` includes input `placeholder` attributes in ARIA tree (v1.56+) [community]
+
+**What:** After upgrading to Playwright 1.56+, `toMatchAriaSnapshot()` tests fail with unexpected content in `<input>` and `<textarea>` elements — specifically, snapshots now include `placeholder` text as part of the element's ARIA representation.
+
+**WHY:** Playwright 1.56 updated the ARIA snapshot rendering engine to include `placeholder` attributes as part of the accessible node description for inputs. Pre-v1.56 snapshots that matched `- textbox` (no attributes) now match `- textbox "Search…" [placeholder]` instead, causing snapshot mismatches.
+
+**Fix:** Update snapshots with `--update-snapshots=changed` after upgrading to v1.56+. For future-proofing, use regex patterns in ARIA assertions to tolerate optional placeholder text:
+
+```typescript
+// BEFORE v1.56 — snapshot file contained:
+// - textbox
+
+// AFTER v1.56 — snapshot now includes placeholder:
+// - textbox "Enter search term" [placeholder]
+
+// Fix option 1: regenerate snapshot
+// npx playwright test --update-snapshots=changed e2e/specs/search.spec.ts
+
+// Fix option 2: use inline regex pattern that tolerates the placeholder
+test('search input is accessible', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('search')).toMatchAriaSnapshot(`
+    - search:
+      - textbox /search/i
+  `);
+  // Regex in ARIA snapshot: matches any textbox whose accessible name contains "search"
+  // regardless of whether placeholder is included in the snapshot representation
+});
+```
+
+> This is a silent snapshot upgrade gotcha: running `--update-snapshots=changed` resolves it correctly, but teams that blindly ran `--update-snapshots` (update all) in v1.56 unexpectedly regenerated baselines for every form field test in their suite. Use `changed` mode to limit the blast radius. [community]
+
+---
+
+### HTML Reporter: Speedboard Tab (v1.57+)
+
+The HTML reporter now includes a **Speedboard** tab that shows all tests sorted by execution duration — slowest at the top. It is visible in both single-run reports and merged multi-shard reports.
+
+Use it to:
+- Identify slow tests that should move to a dedicated `slow` project with extended timeout
+- Detect test regressions: a test that was 500ms is now 5s is a signal of added waits or polling
+- Prioritize optimization work: the top 10 slowest tests often account for 30–40% of suite runtime
+
+```bash
+# Generate report and open Speedboard
+npx playwright test
+# Open playwright-report/index.html → "Speedboard" tab
+
+# For merged shard reports:
+npx playwright merge-reports --reporter html ./all-blob-reports
+# Open merged playwright-report/index.html → "Speedboard" tab
+```
+
+```typescript
+// playwright.config.ts — ensure HTML reporter is configured for local and CI merge
+export default defineConfig({
+  reporter: process.env.CI
+    ? [['blob']]                                // shards; merge later
+    : [['html', { open: 'on-failure' }]],       // local: opens on failure
+});
+```
+
+> The Speedboard is most valuable at 200+ tests where long-tail slow tests are invisible in alphabetical test lists. Sort by duration quarterly and tag the 5 slowest tests with `@slow` to run them with dedicated settings. [community]
+
+---
+
+## Additional Key APIs (Iterations 25–26)
+
+### Accessibility Assertions (v1.44–v1.50)
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `expect(locator).toHaveAccessibleName(text)` | Assert computed accessible name (ARIA label) | Icon buttons, unlabeled controls that rely on aria-label |
+| `expect(locator).toHaveAccessibleDescription(text)` | Assert aria-describedby or aria-description content | Help text, tooltip wiring |
+| `expect(locator).toHaveRole(role)` | Assert ARIA role string exactly | Custom ARIA widgets, design system compliance |
+| `expect(locator).toBeChecked({ indeterminate: true })` | Assert indeterminate checkbox state (v1.50+) | Tri-state checkboxes, select-all with partial selection |
+
+### Context Management
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `context.clearCookies({ name, domain, path })` | Remove subset of cookies (v1.43+) | Logout testing without clearing all cookies |
+| `context.isClosed()` | Returns `true` after context is disposed (v1.59+) | Safe fixture teardown guards; route handler cleanup |
+
+### Test Steps
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `test.step(name, fn, { timeout, box })` | Named step with optional timeout and boxing | Structured test narrative; POM method wrapping |
+| `step.skip(reason?)` (inside body) | Skip step conditionally from within | Data-dependent step bypass |
+| `test.step.skip()` (standalone) | Skip step when condition is known before body runs | Feature-flag-gated steps |
+| `step.attach(name, opts)` | Attach artifact scoped to this step (v1.51+) | Per-step screenshots; per-step API response capture |
+
+### Console Inspection
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `consoleMessage.timestamp()` | Unix ms when message was created (v1.59+) | Correlate console events with test actions; timing diagnostics |
+| `page.consoleMessages({ filter })` | Retrieve stored console history (v1.56+) | Post-action console audit without event listeners |
+
+### CLI Flags
+
+| Flag | What it does | When to use it |
+|------|-------------|----------------|
+| `--test-list <file>` | Run only tests listed in the file (v1.56+) | CI test selection from external test management |
+| `--test-list-invert <file>` | Skip tests listed in the file (v1.56+) | Exclude broken tests without modifying source |
+
+---
+
+### Breaking Changes Reference Update (v1.56)
+
+| Version | Change | Migration |
+|---------|--------|-----------|
+| v1.56 | `browserContext.on('backgroundpage')` event **deprecated**; `browserContext.backgroundPages()` returns empty list | Remove background page monitoring; use service worker events instead |
+| v1.56 | ARIA snapshot rendering now includes `input` placeholder text | Update snapshots with `--update-snapshots=changed` after upgrading |

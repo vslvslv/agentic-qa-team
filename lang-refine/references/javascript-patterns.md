@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 44 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3237,6 +3237,247 @@ class AdminDto extends CreateUserDto {
 
 ---
 
+## ES2025 / ES2026 Additions
+
+### RegExp Inline Modifiers — Per-Group Flag Control (ES2025 / Baseline September 2025)
+
+RegExp inline modifiers (`(?flags:pattern)`) let you enable or disable the `i`, `m`, or `s` flags for a specific part of a pattern without applying them globally. This solves the longstanding problem of needing case-insensitive matching in one part of a pattern but case-sensitive matching in another.
+
+```javascript
+// ── Selective case-insensitivity ─────────────────────────────────────
+// Match a keyword case-sensitively but the identifier case-insensitively
+const pattern = /(?:var|let|const) (?i:myVar)\b/;
+pattern.test('let myVar');   // true  — keyword lowercase, identifier any case
+pattern.test('let MYVAR');   // true  — identifier matched case-insensitively
+pattern.test('Let myVar');   // false — keyword must be lowercase
+
+// ── Practical: date parser accepting multiple formats ─────────────────
+// ISO: 2026-05-12 or US: 05/12/2026 — year captured either way
+const DATE = /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})|(?<month>\d{2})\/(?<day>\d{2})\/(?<year>\d{4})/;
+// (Note: duplicate named groups require ES2025 — covered in next section)
+
+// ── dotAll in one group only ──────────────────────────────────────────
+// Match a header block strictly (. doesn't cross lines) then
+// match the body loosely (. crosses lines via s modifier)
+const MARKDOWN = /^# (?<title>[^\n]+)\n(?s:(?<body>.+))$/m;
+const text = `# Title\nbody line 1\nbody line 2`;
+const m = text.match(MARKDOWN);
+// m.groups.title = 'Title'
+// m.groups.body  = 'body line 1\nbody line 2'
+
+// ── Disabling a globally-set flag in one subgroup ─────────────────────
+// Pattern has the global 's' (dotAll) flag but one group should NOT match newlines
+const STRICT = /(?-s:^HEADER$).*/s;
+```
+
+**Supported flags in modifiers:** `i` (case-insensitive), `m` (multiline), `s` (dotAll). The `g`, `y`, `d`, `u`, `v` flags cannot be used inline.
+
+**Syntax rules:**
+- `(?i:...)` — enable flag(s)
+- `(?-i:...)` — disable flag(s)
+- `(?i-m:...)` — enable `i`, disable `m`
+- Only the *bounded* form (pattern inside the group) is supported; `(?i)pattern` is a syntax error in JS.
+
+### Duplicate Named Capture Groups — Same Name in Regex Alternatives (ES2025)
+
+ES2025 relaxes the restriction on duplicate named capturing groups when they appear in separate alternatives of a disjunction. Before ES2025, reusing a group name in the same pattern was always a `SyntaxError`. Now, if only one alternative can match, two branches may share a name — unifying the result under a single `.groups.name` key.
+
+```javascript
+// Before ES2025 — you had to use different names and merge them at runtime
+const OLD = /(?<yearFirst>\d{4})-\d{2}-\d{2}|\d{2}-\d{2}-(?<yearLast>\d{4})/;
+const m1 = '2026-05-12'.match(OLD);
+const year1 = m1.groups.yearFirst ?? m1.groups.yearLast; // manual merge
+
+// ES2025 — same group name in each alternative
+const NEW = /(?<year>\d{4})-\d{2}-\d{2}|\d{2}-\d{2}-(?<year>\d{4})/;
+const m2 = '2026-05-12'.match(NEW);
+m2.groups.year; // '2026' — unified, no manual merge needed
+
+const m3 = '12-05-2026'.match(NEW);
+m3.groups.year; // '2026' — from the second alternative
+
+// Practical: flexible date-of-birth parsing (multiple regional formats)
+const DOB = /(?<year>\d{4})[-/](?<month>\d{2})[-/](?<day>\d{2})|(?<day>\d{2})[-/](?<month>\d{2})[-/](?<year>\d{4})/;
+function parseDOB(input) {
+  const { year, month, day } = input.match(DOB)?.groups ?? {};
+  if (!year) throw new Error(`Unrecognised date: ${input}`);
+  return new Date(`${year}-${month}-${day}`);
+}
+parseDOB('2000-01-15'); // ISO
+parseDOB('15/01/2000'); // UK day-first
+
+// ── Gotcha: unmatched groups are still present (as undefined) ─────────
+const m4 = /(?<ab>ab)|(?<cd>cd)/.exec('cd');
+m4.groups;
+// { ab: undefined, cd: 'cd' } — both keys present; only matched one is non-undefined
+// Check: m4.groups.ab !== undefined, not just truthiness (empty string would be falsy)
+```
+
+**Rule:** both duplicate group names must appear in alternatives separated by `|` — they cannot be in the same sequential branch. The spec guarantees only one can match for any input.
+
+### Map.getOrInsert / Map.getOrInsertComputed — Upsert Pattern (ES2026 / Baseline February 2026)
+
+`Map.prototype.getOrInsert(key, defaultValue)` returns the existing value for `key`, or inserts `defaultValue` and returns it. `getOrInsertComputed(key, callbackFn)` is the lazy variant — `callbackFn` is called only when the key is absent, avoiding unnecessary computation for expensive defaults.
+
+```javascript
+// ── Problem: the multimap pattern (pre-ES2026) ────────────────────────
+const map = new Map();
+
+// Old way — verbose; requires two lookups + branch
+function addToGroup(map, key, value) {
+  if (!map.has(key)) {
+    map.set(key, []);
+  }
+  map.get(key).push(value);
+}
+
+// ── New way: getOrInsert ──────────────────────────────────────────────
+function addToGroupNew(map, key, value) {
+  map.getOrInsert(key, []).push(value);
+  // Single atomic operation: get existing array, or create and store a new one
+}
+
+const groups = new Map();
+addToGroupNew(groups, 'frontend', 'Alice');
+addToGroupNew(groups, 'backend',  'Bob');
+addToGroupNew(groups, 'frontend', 'Carol');
+// Map { 'frontend' => ['Alice', 'Carol'], 'backend' => ['Bob'] }
+
+// ── getOrInsertComputed — only compute if key is missing ──────────────
+const cache = new Map();
+
+// Expensive computation only runs on cache miss
+function cachedQuery(id) {
+  return cache.getOrInsertComputed(id, (key) => {
+    console.log(`Cache miss for ${key}`);
+    return fetchExpensiveData(key); // hypothetical
+  });
+}
+
+// ── Default configuration / option merging ───────────────────────────
+const options = new Map(Object.entries(userConfig));
+options.getOrInsert('theme',    'light');  // set only if absent
+options.getOrInsert('fontSize', 14);
+options.getOrInsert('lang',     'en-US');
+
+// ── Counting occurrences — classic use case ──────────────────────────
+const wordCount = new Map();
+for (const word of text.split(/\s+/)) {
+  wordCount.getOrInsert(word, 0);          // ensure key exists with 0
+  wordCount.set(word, wordCount.get(word) + 1);
+}
+// Or with a counter object and getOrInsertComputed:
+const counters = new Map();
+const inc = (key) => {
+  const counter = counters.getOrInsertComputed(key, () => ({ count: 0 }));
+  counter.count++;
+};
+```
+
+**Why `getOrInsert` beats `map.get(key) ?? defaultValue`:** `??` always evaluates `defaultValue` eagerly; it also doesn't store the default back into the map, requiring a manual `map.set()`. `getOrInsert` is a single atomic read-or-write with one lookup.
+
+**Availability:** Baseline February 2026 — Chrome 131, Firefox 134, Safari 18.2, Node.js 24. Polyfill: `map.prototype.getorinsert` on npm (es-shims).
+
+### JSON.parse with Source Text Access — Lossless Number Parsing (ES2025)
+
+The `reviver` function in `JSON.parse` now receives a third `context` parameter with a `source` property: the raw JSON source string for the value being revived. This solves the longstanding problem of JavaScript silently losing precision when parsing JSON numbers that exceed `Number.MAX_SAFE_INTEGER` (2^53 − 1).
+
+```javascript
+// ── The problem: JSON.parse silently corrupts large numbers ───────────
+const json = '{"tweetId": 1800000000000000001}';
+JSON.parse(json).tweetId; // 1800000000000000000 — wrong! precision lost
+
+// ── ES2025 solution: read the raw source before JS converts it ────────
+const parsed = JSON.parse(json, (key, value, context) => {
+  // context.source is the raw JSON text for this value (only for primitives)
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    return BigInt(context.source); // parse raw text as BigInt instead
+  }
+  return value;
+});
+parsed.tweetId; // 1800000000000000001n — exact! No precision lost
+
+// ── Parse ALL numbers as BigInt (for financial/ID-heavy APIs) ────────
+function parseJSONExact(jsonString) {
+  return JSON.parse(jsonString, (key, value, context) => {
+    if (typeof value === 'number' && context?.source !== undefined) {
+      const src = context.source;
+      // Use BigInt for integers, keep Number for floats
+      if (/^-?\d+$/.test(src)) return BigInt(src);
+    }
+    return value;
+  });
+}
+parseJSONExact('{"id": 9999999999999999999, "score": 98.6}');
+// { id: 9999999999999999999n, score: 98.6 }
+
+// ── Use case: Decimal string preservation ────────────────────────────
+// Financial APIs often send money as strings to avoid float issues,
+// but some send raw numbers. With context.source, you can detect overflow:
+function safeMoneyReviver(key, value, context) {
+  if (key.endsWith('Amount') || key.endsWith('Price')) {
+    if (context?.source && !context.source.includes('.')) {
+      return BigInt(context.source); // integer money value — use BigInt
+    }
+    // Float money value — warn and use a decimal library
+  }
+  return value;
+}
+
+// ── context is only passed for primitives, not objects/arrays ─────────
+JSON.parse('{"a": 1}', (key, value, context) => {
+  if (key === '') console.log(context); // undefined — root object has no source
+  if (key === 'a') console.log(context.source); // '1'
+  return value;
+});
+```
+
+**When `context` is provided:** only when reviving a primitive value (number, string, boolean, null). Arrays and objects don't get `context` — their primitives do.
+
+---
+
+## Additional Language Idioms (2026)
+
+### `node:` Protocol Prefix for Built-in Imports [community]
+
+Since Node.js 14.18+ / 16+, you can prefix built-in module specifiers with `node:`. This is now the **recommended pattern** and is enforced by many linters. It makes it unambiguous that the import is a Node.js built-in (not an npm package with the same name) and provides a stable path forward as the Node.js module system evolves.
+
+```javascript
+// ❌ Old style — ambiguous; a malicious npm package named 'path' could shadow this
+import path from 'path';
+import { readFile } from 'fs/promises';
+const { createServer } = require('http');
+
+// ✅ New style — explicit, unambiguous, lint-friendly
+import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { pipeline } from 'node:stream/promises';
+import { webcrypto } from 'node:crypto';
+import { Worker, isMainThread } from 'node:worker_threads';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+// ESLint rule to enforce this:
+// "n/prefer-node-protocol": "error"  (from eslint-plugin-n)
+```
+
+**Why it matters:** a package named `events`, `path`, or `http` on npm can shadow the built-in when you use bare specifiers. The `node:` prefix is immune to this shadowing. It also makes `import` / `require` origin instantly readable in code review.
+
+---
+
+## Additional Community Pitfalls (2026)
+
+**37. Parsing Large JSON Numbers Without `context.source`** [community] — Using `JSON.parse` directly on API responses containing 64-bit integer IDs (Twitter/X snowflakes, database BIGINT PKs, financial amounts) silently truncates numbers above 2^53 − 1. WHY it causes problems: the truncated ID is used for subsequent API calls that return "not found" errors, or worse, accidentally matches a different record at a truncated boundary. Fix: use `JSON.parse(text, (key, value, context) => typeof value === 'number' && !Number.isSafeInteger(value) ? BigInt(context.source) : value)` to intercept overflow numbers before JS truncates them.
+
+**38. Not Using the `node:` Prefix for Built-in Imports** [community] — Using bare specifiers (`import from 'path'`, `require('events')`) instead of `node:path` and `node:events` leaves code vulnerable to npm package shadowing attacks. WHY it causes problems: an attacker who can place a package named `http` or `path` in your dependency tree (via a transitive dependency) could silently replace the Node.js built-in with malicious code. The `node:` prefix is the only way to guarantee the built-in is loaded. Fix: migrate all built-in imports to use the `node:` protocol prefix; enable `n/prefer-node-protocol` in ESLint.
+
+**39. Accessing `context.source` in Non-Primitive Reviver Calls** [community] — The `context.source` property is only provided when the reviver is called for a primitive value (number, string, boolean, null). When the reviver is called for an object or array key, `context` is `undefined`. WHY it causes problems: developers write a reviver that accesses `context.source` without checking `typeof context !== 'undefined'`, then get a TypeError when the reviver fires for an object-valued key. Fix: always guard: `if (context?.source !== undefined)` before accessing `source`.
+
+**40. Using Duplicate Named Capture Groups Without Checking the Matched Alternative** [community] — ES2025 allows the same capture group name in different regex alternatives, but unmatched alternatives still populate `groups` with `undefined`. WHY it causes problems: code checks `if (match.groups.year)` and incorrectly treats an empty-string match `''` (falsy) as a non-match, or iterates over `Object.entries(match.groups)` and processes `undefined` values as if they were matches. Fix: use `!== undefined` for presence checks (`match.groups.year !== undefined`), not truthiness, since a matched group can legitimately be an empty string.
+
+**41. Calling `getOrInsert` with a Mutable Default Without `getOrInsertComputed`** [community] — Calling `map.getOrInsert(key, [])` creates a new empty array every time, even on cache hits. The unnecessary allocation is trivial for sparse maps, but in hot loops over millions of keys it adds GC pressure. WHY it causes problems: while `getOrInsert` doesn't use the default value on a hit, the `[]` literal is still allocated before being passed in — unlike `getOrInsertComputed` which passes a factory that is only called on a miss. Fix: use `map.getOrInsertComputed(key, () => [])` for any default value whose construction is non-trivial (large objects, arrays, result of expensive computation).
+
 ## Anti-Patterns Quick Reference
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
@@ -3284,6 +3525,11 @@ class AdminDto extends CreateUserDto {
 | `Atomics.pause` outside SharedArrayBuffer spinlock patterns | Using `Atomics.pause` in code that doesn't have concurrent workers sharing memory provides no benefit and obscures intent | Only use `Atomics.pause` inside tight spinlock loops on `Int32Array` backed by `SharedArrayBuffer` |
 | `import source` named imports | Syntax error — only default import form is supported | Use `import source Foo from './foo.wasm'`; access exports via the instantiated instance |
 | Mixing `reflect-metadata` with `Symbol.metadata` | Two independent metadata systems — double-registration and confusing reads | Pick one; check your framework's migration guide before combining both |
+| `JSON.parse` on responses with 64-bit integer IDs | Numbers above 2^53−1 are silently truncated — wrong IDs used for subsequent calls | Use `reviver` with `context.source` to parse as `BigInt` before JS truncates |
+| Bare specifiers for Node.js built-ins (`'path'`, `'fs'`) | Vulnerable to npm package shadowing attacks; dependency hijack possible | Always use `node:` prefix: `import from 'node:path'`, `node:fs/promises` |
+| Duplicate named regex groups without `!== undefined` checks | Unmatched alternatives set groups to `undefined`; falsy check misidentifies empty-string match | Use `match.groups.year !== undefined` — empty string `''` is a valid match |
+| `map.getOrInsert(key, [])` in hot loops | `[]` is allocated every call even on cache hits; adds GC pressure in tight loops | Use `map.getOrInsertComputed(key, () => [])` — factory only called on cache miss |
+| `(?i)pattern` unbounded modifier syntax | JavaScript only supports bounded form `(?i:pattern)`; unbounded form is a SyntaxError | Always use `(?i:subpattern)` to scope the modifier to the intended portion |
 
 ---
 

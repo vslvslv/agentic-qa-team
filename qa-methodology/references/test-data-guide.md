@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -7,6 +7,7 @@
 <!-- iter-32: faker v10.0.0 ESM-only breaking change (2026-05-12); UUID v7 time-ordered keys for DB-performance test data; Self-Initializing Fake pattern (Fowler); Testing Resource Pools (pool-size-1 technique); updated checklist to reference faker v10; Key Resources updated -->
 <!-- iter-33: Vitest 4.0 pool config migration (poolOptions.vmForks → top-level isolate; singleFork → maxWorkers: 1; poolMatchGlobs/environmentMatchGlobs → projects; workspace → projects); community gotcha #21; Key Resources updated (2026-05-12) -->
 <!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
+<!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 
 ---
 
@@ -1838,6 +1839,41 @@ export const LLMResponseFixtures = {
 
     Additionally, the `VITEST_MAX_WORKERS` environment variable replaces both `VITEST_MAX_THREADS` and `VITEST_MAX_FORKS` in Vitest 4.x. CI scripts that set `VITEST_MAX_THREADS=2` to limit parallelism on resource-constrained runners must be updated to `VITEST_MAX_WORKERS=2`.
 
+23. **[community] Vitest 4.x removed `coverage.all` and `coverage.extensions` — factory files excluded from reports silently.**
+    Vitest 4.0 removed `coverage.all` (which included all files regardless of whether they were imported by tests) and `coverage.extensions` (file extension allowlist). Teams that relied on `coverage.all: true` to surface factory files with zero coverage now get no warning when a factory is written but never imported by any test case. The replacement is `coverage.include` — an explicit glob pattern that must be set. **If `coverage.include` is omitted entirely, only files actively loaded during the test run appear in coverage reports.** Factory files in `src/factories/` that are written but never imported by any test case become invisible to coverage metrics, creating a false sense of completeness. Additionally, Vitest 4.x V8 coverage now uses AST-based remapping for source maps rather than line-heuristic remapping — factory files with complex generics or conditional types may see different (more accurate) branch coverage numbers after migration.
+
+    ```typescript
+    // vitest.config.ts — explicit coverage.include required in Vitest 4.x
+    import { defineConfig } from 'vitest/config';
+
+    export default defineConfig({
+      test: {
+        coverage: {
+          provider: 'v8',
+          // REQUIRED in 4.x: explicit include glob — coverage.all no longer exists
+          // Include both source AND factory files to catch unused factory code
+          include: [
+            'src/**/*.ts',
+            'src/factories/**/*.ts',   // Explicitly include factory directory
+          ],
+          exclude: [
+            'src/**/*.test.ts',
+            'src/**/*.spec.ts',
+            'src/**/*.d.ts',
+            'src/factories/**/*.mock.ts',  // Exclude test-only mock factories from coverage
+          ],
+          // coverage.extensions no longer exists — use include glob file extensions instead
+        },
+      },
+    });
+    ```
+
+    **Migration checklist for Vitest 4.x coverage:**
+    - [ ] Replace `coverage.all: true` with explicit `coverage.include` patterns
+    - [ ] Add factory directories to `coverage.include` to catch dead factory code
+    - [ ] Remove `coverage.extensions` (no longer a valid config key)
+    - [ ] Review branch coverage numbers — AST-based remapping may change percentages
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2497,6 +2533,373 @@ creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardles
 
 ---
 
+### Vitest 4.1 Builder Pattern for `test.extend()` — Inferred-Type Fixtures  [community]
+
+Vitest 4.1 (March 2026) introduced a new **builder syntax** for `test.extend()` that
+eliminates the `use()` callback convention. Fixtures now *return* their value directly,
+and TypeScript infers the fixture type automatically — no manual type declaration required.
+The old object-and-`use()` syntax still works but is now considered verbose.
+
+**Why it matters for test data factories:** The builder pattern drastically reduces
+the boilerplate needed to define typed fixtures for domain factories. Each `.extend()`
+call chains cleanly, and `onCleanup()` handles teardown without nesting promise callbacks
+inside the `use()` function.
+
+```typescript
+// test/fixtures/vitest-4.1-fixtures.ts — builder-syntax fixtures (Vitest 4.1+)
+import { test as baseTest } from 'vitest';
+import { faker } from '@faker-js/faker';
+import { db } from '../../db';
+import { users, orders } from '../../db/schema';
+import { eq } from 'drizzle-orm';
+
+// Builder pattern: each .extend() returns directly, TypeScript infers the type.
+// No explicit interface declaration or `use()` callback needed.
+export const test = baseTest
+  // Static config fixture — no cleanup needed, return directly
+  .extend('testConfig', { maxRetries: 3, environment: 'test' as const })
+
+  // Dynamic fixture with cleanup — use onCleanup() for teardown
+  .extend('activeUser', async ({}, { onCleanup }) => {
+    const [user] = await db.insert(users).values({
+      email: `active-${faker.string.uuid()}@test.com`,
+      name: faker.person.fullName(),
+      status: 'active',
+      subscriptionTier: 'free',
+    }).returning();
+
+    onCleanup(() => db.delete(users).where(eq(users.id, user.id)));
+    return user;  // TypeScript infers: activeUser: typeof user
+  })
+
+  // Fixture that depends on another fixture — destructure dependencies in first arg
+  .extend('userWithOrders', async ({ activeUser }, { onCleanup }) => {
+    const [order] = await db.insert(orders).values({
+      userId: activeUser.id,
+      total: faker.number.float({ min: 10, max: 500, fractionDigits: 2 }),
+      status: 'pending',
+    }).returning();
+
+    onCleanup(() => db.delete(orders).where(eq(orders.id, order.id)));
+    return { user: activeUser, order };  // TypeScript infers the combined shape
+  })
+
+  // Worker-scoped fixture — shared across all tests in the worker
+  .extend('workerDb', { scope: 'worker' }, async ({}, { onCleanup }) => {
+    const connection = await db.connect();
+    onCleanup(() => connection.close());
+    return connection;
+  });
+
+export { expect } from 'vitest';
+```
+
+```typescript
+// specs/orders.test.ts — uses builder-syntax fixtures with full type safety
+import { test, expect } from '../test/fixtures/vitest-4.1-fixtures';
+
+// TypeScript knows the exact shape of userWithOrders — no type imports needed
+test('pending order can be cancelled by its owner', async ({ userWithOrders }) => {
+  const { user, order } = userWithOrders;
+  const result = await orderService.cancel(order.id, { requestedBy: user.id });
+  expect(result.status).toBe('cancelled');
+});
+
+// testConfig fixture is static — no DB setup, instant access
+test('retry limit is enforced', async ({ testConfig }) => {
+  expect(testConfig.maxRetries).toBe(3);
+});
+```
+
+**Comparison — old `use()` callback vs new builder pattern:**
+
+| Aspect | Old `use()` syntax | New builder syntax (4.1+) |
+|---|---|---|
+| Type declaration | Manual `interface TestFixtures {}` required | Inferred from return value |
+| Cleanup | Code after `await use(value)` | `onCleanup()` callback |
+| Dependency injection | Object parameter in `async ({}, use)` | First argument with inferred deps |
+| Scope declaration | `[async, { scope: 'worker' }]` tuple | `.extend('name', { scope: 'worker' }, ...)` |
+| Cross-file reuse | Export the `base.extend<>({})` object | Chain `.extend()` and export |
+
+**Migration note:** The old `use()` syntax is **not removed** — it continues to work.
+Teams can migrate incrementally. New fixtures should prefer the builder syntax; existing
+`use()`-based fixtures do not need immediate refactoring.
+
+---
+
+### Vitest 4.1 `aroundEach` Hook — Transaction-per-Test Pattern  [community]
+
+Vitest 4.1 introduced the **`aroundEach`** hook, which wraps each test in a context
+manager. This is the idiomatic way to implement the *transaction-per-test* isolation
+pattern: start a DB transaction before each test, let the test body run (including all
+factory inserts), then rollback unconditionally. No `afterEach` cleanup, no `TRUNCATE`
+race conditions.
+
+**Why it matters:** The transaction-per-test pattern is the most reliable isolation
+strategy for integration tests that hit a real database. Before `aroundEach`, the pattern
+required either: (a) wrapping the test body manually in a transaction, which broke
+factory teardown logic, or (b) relying on the `beforeEach`/`afterEach` hook pair with
+a shared transaction reference, which was brittle in TypeScript because the transaction
+object couldn't be typed across hook boundaries. `aroundEach` solves both problems.
+
+```typescript
+// test/fixtures/transactional-fixtures.ts — aroundEach transaction isolation (Vitest 4.1+)
+import { test as baseTest } from 'vitest';
+import { faker } from '@faker-js/faker';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import * as schema from '../../db/schema';
+
+const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+
+export const test = baseTest
+  .extend('db', { scope: 'worker' }, async ({}, { onCleanup }) => {
+    // Worker-scoped: one pool connection per worker
+    const db = drizzle(pool, { schema });
+    onCleanup(() => pool.end());
+    return db;
+  });
+
+// aroundEach wraps every test in a transaction that is always rolled back.
+// Factory inserts inside the test body are visible within the transaction,
+// but never committed to the real database.
+test.aroundEach(async (runTest, { db }) => {
+  // Drizzle does not expose a raw transaction object — use pg client directly
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Run the test body; all DB operations in this context use the same connection
+    // (requires session-level transaction propagation or a tx-scoped Drizzle instance)
+    await runTest();
+
+  } finally {
+    await client.query('ROLLBACK');  // Always rolls back — isolation guaranteed
+    client.release();
+  }
+});
+
+export { expect } from 'vitest';
+```
+
+```typescript
+// specs/user-service.test.ts — factory inserts are auto-rolled-back after each test
+import { test, expect } from '../test/fixtures/transactional-fixtures';
+import { buildUser } from '../factories/user.factory';
+import { userService } from '../services/user.service';
+
+test('deactivating a user removes their active sessions', async ({ db }) => {
+  // This insert is part of the test-scoped transaction — rolled back automatically
+  const user = await db.insert(schema.users).values(buildUser()).returning();
+  await db.insert(schema.sessions).values({ userId: user[0].id, active: true });
+
+  await userService.deactivate(user[0].id);
+  const sessions = await db.select().from(schema.sessions)
+    .where(eq(schema.sessions.userId, user[0].id));
+
+  expect(sessions.every(s => !s.active)).toBe(true);
+  // No afterEach cleanup needed — transaction is rolled back by aroundEach
+});
+```
+
+**`aroundEach` vs `aroundAll`:**
+
+| Hook | Scope | Use case |
+|---|---|---|
+| `aroundEach` | Wraps each individual test | Transaction-per-test, request-scoped context, per-test metrics |
+| `aroundAll` | Wraps the entire test suite | Suite-level DB schema migration, shared expensive setup |
+| `test.beforeEach` / `test.afterEach` | Before/after each test | Factory setup that doesn't need a wrapping context |
+
+**Critical requirement:** `aroundEach` and `aroundAll` must be called on the **extended
+`test` object** (not the base `test` from vitest), so they have access to the fixtures
+defined on that object. Calling them on `import { test } from 'vitest'` will not give
+fixture access.
+
+---
+
+### Vitest 4.1 `test.override()` — Per-Suite Factory Variant Overrides  [community]
+
+`test.override()` allows overriding a fixture's value for a specific `describe` block
+and all nested tests within it. This is the idiomatic way to express "in this suite,
+the user fixture should be a suspended user" — without creating separate fixture files
+or polluting the global fixture definition.
+
+**Why it matters for test data:** Before `test.override()`, expressing suite-level
+context variants required either duplicating fixture definitions, using `beforeEach`
+to mutate shared state, or reaching for Object Mother patterns that returned different
+base variants. `test.override()` is cleaner: it documents intent at the suite level
+and composes with the fixture dependency graph automatically.
+
+```typescript
+// test/fixtures/overridable-fixtures.ts — base fixtures with override points
+import { test as baseTest } from 'vitest';
+import { buildUser } from '../factories/user.factory';
+import { buildCart } from '../factories/cart.factory';
+import { db } from '../../db';
+
+export const test = baseTest
+  .extend('currentUser', async ({}, { onCleanup }) => {
+    // Default: active free-tier user
+    const [user] = await db.insert(schema.users).values(buildUser({ status: 'active' })).returning();
+    onCleanup(() => db.delete(schema.users).where(eq(schema.users.id, user.id)));
+    return user;
+  })
+  .extend('cart', async ({ currentUser }, { onCleanup }) => {
+    const [cart] = await db.insert(schema.carts).values({ userId: currentUser.id }).returning();
+    onCleanup(() => db.delete(schema.carts).where(eq(schema.carts.id, cart.id)));
+    return cart;
+  });
+```
+
+```typescript
+// specs/checkout.test.ts — per-suite fixture overrides
+import { test, expect } from '../test/fixtures/overridable-fixtures';
+import { buildUser } from '../factories/user.factory';
+import { checkoutService } from '../services/checkout.service';
+
+// Default suite — currentUser is the active free-tier user from the fixture
+describe('active user checkout', () => {
+  test('can add items to cart', async ({ cart }) => {
+    // cart fixture depends on currentUser fixture — both are created fresh
+    expect(cart.userId).toBeDefined();
+  });
+});
+
+// Override the currentUser fixture for the suspended-user test suite
+describe('suspended user checkout', () => {
+  // test.override() is chainable — override multiple fixtures in one call
+  test
+    .override('currentUser', async ({}, { onCleanup }) => {
+      const [user] = await db.insert(schema.users).values(
+        buildUser({ status: 'suspended' })
+      ).returning();
+      onCleanup(() => db.delete(schema.users).where(eq(schema.users.id, user.id)));
+      return user;
+    });
+
+  test('cannot initiate checkout', async ({ currentUser, cart }) => {
+    // cart fixture still depends on the overridden currentUser — composition preserved
+    const result = await checkoutService.initiate(currentUser.id, cart.id);
+    expect(result.status).toBe('blocked');
+  });
+});
+
+// Chaining multiple overrides for a premium context
+describe('premium user with expired payment', () => {
+  test
+    .override('currentUser', async ({}, { onCleanup }) => {
+      const [user] = await db.insert(schema.users).values(
+        buildUser({ status: 'active', subscriptionTier: 'premium', paymentMethodId: null })
+      ).returning();
+      onCleanup(() => db.delete(schema.users).where(eq(schema.users.id, user.id)));
+      return user;
+    })
+    .override('cart', async ({ currentUser }, { onCleanup }) => {
+      const [cart] = await db.insert(schema.carts).values({
+        userId: currentUser.id,
+        requiresPayment: true,
+      }).returning();
+      onCleanup(() => db.delete(schema.carts).where(eq(schema.carts.id, cart.id)));
+      return cart;
+    });
+
+  test('checkout fails with no payment method', async ({ currentUser, cart }) => {
+    const result = await checkoutService.initiate(currentUser.id, cart.id);
+    expect(result.error).toBe('no_payment_method');
+  });
+});
+```
+
+**`test.override()` vs Object Mother:** Object Mother provides *named semantic variants*
+as static methods, while `test.override()` provides *suite-scoped fixture substitution*
+that participates in the dependency graph. They are complementary: use Object Mother
+to name your data variants, and `test.override()` to scope them to a test suite context.
+
+---
+
+### Vitest `vi.defineHelper()` — Clean Stack Traces for Factory Assertion Helpers  [community]
+
+When writing custom assertion helpers that wrap factory-generated data (common in large
+test suites with shared validation logic), test failures report the error inside the
+helper function rather than at the call site. `vi.defineHelper()` (Vitest 4.1+) marks
+a function so Vitest strips its internals from stack traces, pointing the error at the
+test that called the helper.
+
+**Why it matters:** Factory-heavy test suites often extract repeated assertions into
+shared helpers: `assertUserCanCheckout(user, cart)`. Without `vi.defineHelper()`, a
+failing assertion inside that helper shows a stack trace pointing to the helper's
+internal `expect()` line — not to the `assertUserCanCheckout()` call in the test file.
+This makes debugging factory-generated test failures slow.
+
+```typescript
+// test/helpers/factory-assertions.ts — custom assertion helpers with clean traces
+import { vi, expect } from 'vitest';
+import { checkoutService } from '../../services/checkout.service';
+import { User, Cart } from '../../domain';
+
+// vi.defineHelper() wraps the function so stack traces point to the call site,
+// not to the internal expect() lines inside this helper.
+export const assertUserCanCheckout = vi.defineHelper(
+  async (user: User, cart: Cart) => {
+    const result = await checkoutService.initiate(user.id, cart.id);
+    expect(result.status, `Expected checkout to succeed for user ${user.id}`).toBe('success');
+    expect(result.orderId, 'Expected an order ID to be returned').toBeDefined();
+  }
+);
+
+export const assertUserIsBlocked = vi.defineHelper(
+  async (user: User, cart: Cart, expectedReason: string) => {
+    const result = await checkoutService.initiate(user.id, cart.id);
+    expect(result.status, `Expected checkout to be blocked for user ${user.id}`).toBe('blocked');
+    expect(result.reason, `Expected block reason to be '${expectedReason}'`).toBe(expectedReason);
+  }
+);
+
+export const assertFactoryUserHasValidEmail = vi.defineHelper((user: User) => {
+  // Validates that factory-generated emails pass the real email validation logic
+  const validation = emailValidator.validate(user.email);
+  expect(validation.valid, `Factory user email '${user.email}' failed validation`).toBe(true);
+});
+```
+
+```typescript
+// specs/checkout.test.ts — clean stack traces from helper failures
+import { test, expect } from 'vitest';
+import { UserMother } from '../factories/user.mother';
+import { buildCart } from '../factories/cart.factory';
+import {
+  assertUserCanCheckout,
+  assertUserIsBlocked,
+} from '../test/helpers/factory-assertions';
+
+test('active premium user with payment can checkout', async () => {
+  const user = UserMother.premiumWithPayment().build();
+  const cart = buildCart({ items: [{ productId: 'prod-1', quantity: 1 }] });
+
+  // If this fails, the stack trace points HERE — not inside assertUserCanCheckout()
+  await assertUserCanCheckout(user, cart);
+});
+
+test('suspended user is blocked with account_suspended reason', async () => {
+  const user = UserMother.suspended().build();
+  const cart = buildCart({ items: [] });
+
+  // Stack trace points to THIS line on failure, not inside assertUserIsBlocked()
+  await assertUserIsBlocked(user, cart, 'account_suspended');
+});
+```
+
+**When to use `vi.defineHelper()`:**
+- Shared assertion helpers called across many test cases
+- Domain-specific matchers that wrap multiple `expect()` calls
+- Helper functions that iterate over factory-generated lists and assert on each item
+
+**When NOT to use it:**
+- Simple one-liner assertions — use `expect()` directly
+- Helpers that orchestrate setup, not just assertion — those belong in fixtures
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -2539,6 +2942,9 @@ creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardles
 | @faker-js/faker v10 migration guide | Official | https://next.fakerjs.dev/guide/upgrading | Breaking changes v9→v10: CommonJS removal, deprecated API cleanup |
 | Self-Initializing Fake (Fowler) | Official | https://martinfowler.com/bliki/SelfInitializingFake.html | Record-then-replay pattern for third-party API test data; drift detection via nightly re-recording |
 | Testing Resource Pools (Fowler) | Official | https://martinfowler.com/bliki/TestingResourcePools.html | Pool-size-1 technique for surfacing connection leak defects in integration tests |
+| Vitest 4.1 test context (builder pattern) | Official | https://vitest.dev/guide/test-context | New builder syntax for test.extend() with inferred TypeScript types; aroundEach/aroundAll; test.override(); vi.defineHelper() |
+| Vitest 4.1 blog post | Official | https://vitest.dev/blog/vitest-4-1 | Full changelog: builder fixtures, aroundEach/aroundAll hooks, test.override(), vi.defineHelper(), inferred fixture types |
+| Vitest 4.x coverage config changes | Official | https://vitest.dev/guide/migration#vitest-4-0 | coverage.all and coverage.extensions removed; coverage.include mandatory; V8 AST-based remapping |
 
 ---
 
@@ -5558,3 +5964,12 @@ test data technical debt from accumulating.
 - [ ] If using `maxWorkers: 1, isolate: false`: a `setupFiles` entry calls `vi.resetModules()` in `beforeAll` to prevent module-state leakage between files
 - [ ] CI scripts use `VITEST_MAX_WORKERS` (not `VITEST_MAX_THREADS` or `VITEST_MAX_FORKS`) to control parallelism
 - [ ] Mixed isolation strategies use `projects` array (each project can have its own `isolate` setting)
+
+**Vitest 4.1 fixture checklist:**
+- [ ] New `test.extend()` fixtures use the builder pattern (return value, `onCleanup()`) rather than the `use()` callback — reduces TypeScript boilerplate
+- [ ] Transaction-per-test isolation uses `test.aroundEach()` on the extended test object (not on the base `test` from vitest)
+- [ ] Suite-level DB setup uses `test.aroundAll()` or `test.beforeAll()` on the extended test object — these can only access file-scoped and worker-scoped fixtures, not test-scoped fixtures
+- [ ] Per-suite factory variant overrides use `test.override()` rather than `beforeEach` mutation of shared state
+- [ ] Shared assertion helpers wrapping multiple `expect()` calls are wrapped with `vi.defineHelper()` for call-site stack traces
+- [ ] `coverage.include` is explicitly set — `coverage.all: true` and `coverage.extensions` no longer exist in Vitest 4.x
+- [ ] Factory directories are included in `coverage.include` patterns to catch dead factory code

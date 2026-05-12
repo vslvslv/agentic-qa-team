@@ -1,8 +1,9 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 48 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
-<!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog -->
+<!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog, vitest.dev/api/hooks, playwright.dev/docs/api/class-tracing, playwright.dev/docs/api/class-browsercontext -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
+<!-- Iteration 48: Pattern 67 (Vitest 4.1 aroundEach/aroundAll for DB tx rollback); Pattern 68 (Playwright HAR recording for network flakiness); Pattern 69 (Vitest --detect-async-leaks); Gotcha 43 (Playwright browserContext.setStorageState() for auth isolation); AP37 (aroundEach without calling runTest) -->
 <!-- Iteration 47: Pattern 64 (Vitest 4.1 tags with per-tag retry); Pattern 65 (Playwright per-project workers for flaky isolation); Pattern 66 (Playwright test step timeout); AP36 (retry-all via global tag); Gotcha 41 (Vitest 3.2 fixture scope 'file' for shared setups); Gotcha 42 (Playwright v1.57 webserver wait regex) -->
 <!-- Iteration 46: Pattern 59 (Vitest onTestFailed/onTestFinished hooks); Pattern 60 (Vitest repeats option); Pattern 61 (Playwright test.step.skip()); Pattern 62 (Playwright page.consoleMessages/page.pageErrors for flakiness diagnosis); Pattern 63 (Playwright test.abort() from fixtures); AP35 (Vitest onTestFailed in beforeAll); Gotcha 39 (captureGitInfo correlation); Gotcha 40 (Google TotT: DI for testability) -->
 <!-- Iter-43: AP23–AP25; extended Quick Reference table -->
@@ -5132,3 +5133,466 @@ readiness. The race condition is eliminated at the protocol level, not papered o
 | Playwright test.step timeout | Official | https://playwright.dev/docs/api/class-test#test-step | timeout option on test.step() for granular flakiness attribution (v1.50) |
 | Playwright webServer.wait | Official | https://playwright.dev/docs/test-webserver | Regex readiness wait — prevents premature test start before server is fully ready (v1.57) |
 | Google TotT: Construct with Collaborators | Official | https://testing.googleblog.com/2026/05/construct-with-collaborators-call-with.html | DI pattern that eliminates a class of shared-state and network flakiness |
+
+---
+
+## Pattern 67 — Vitest 4.1 `aroundEach` / `aroundAll` for Zero-Leak Transaction Rollback  [official]
+
+Vitest 4.1.0 introduced `aroundEach` and `aroundAll` hooks that **wrap** a test or a suite,
+allowing setup and teardown to share a single execution context — something `beforeEach`/`afterEach`
+pairs cannot do. The canonical use case is wrapping each test in a database transaction that rolls
+back unconditionally, eliminating per-test `INSERT`/`DELETE` scaffolding entirely.
+
+**Why `aroundEach` beats `beforeEach`/`afterEach` for transaction rollback:**
+- `beforeEach` starts the transaction; `afterEach` rolls it back — two separate closures with
+  no shared reference. If `afterEach` doesn't run (e.g., the test process crashes), the transaction
+  leaks. `aroundEach` wraps both in one closure with the transaction reference in scope, so
+  the rollback is guaranteed by the same closure that opened the transaction.
+- Works correctly with async errors: an exception in `runTest()` still propagates up to the
+  `aroundEach` body where the rollback is in the same `try`/`finally` block.
+
+```typescript
+// vitest — aroundEach with database transaction rollback
+// Replaces the Pattern 40 (Drizzle tx rollback) approach with less boilerplate
+import { aroundEach, describe, it, expect } from 'vitest';
+import { db } from '../src/db'; // Drizzle or Kysely client
+import { users, orders } from '../src/schema';
+
+// aroundEach wraps every test in this describe block (and nested describes) in a transaction
+// The transaction is rolled back unconditionally — even if the test throws or hangs
+aroundEach(async (runTest) => {
+  await db.transaction(async (tx) => {
+    // Inject the transaction-scoped DB client into the test via a shared variable
+    // (or use Vitest's TestContext injection via the scoped hook form — see below)
+    await runTest(); // runs the test body; any writes go into the transaction
+    // Rollback is implicit: drizzle/kysely roll back when the transaction callback throws or returns
+    // Force rollback by throwing after runTest():
+    throw new Error('test-rollback'); // intentional — rolls back all test writes
+  }).catch(err => {
+    // Swallow only the intentional rollback marker — let real test failures propagate
+    if (err.message !== 'test-rollback') throw err;
+  });
+});
+
+describe('OrderRepository — transaction isolation', () => {
+  it('inserts and retrieves an order', async () => {
+    await db.insert(orders).values({ userId: 'user-1', total: 5000, status: 'pending' });
+    const found = await db.select().from(orders).where(eq(orders.userId, 'user-1'));
+    expect(found).toHaveLength(1);
+    // afterEach equivalent: transaction rolls back — no cleanup code needed
+  });
+
+  it('returns empty list for unknown user', async () => {
+    // Fresh transaction — previous test's writes were rolled back
+    const found = await db.select().from(orders).where(eq(orders.userId, 'user-1'));
+    expect(found).toHaveLength(0); // zero rows despite test above inserting one
+  });
+});
+```
+
+```typescript
+// Scoped aroundEach via test.extend — injects the transaction as a fixture
+// This is the type-safe version when using a custom test factory
+import { test as base, aroundEach, expect } from 'vitest';
+import { createTransactionalDb, TransactionalDb } from '../test-utils/db-transaction';
+
+// Extended test with a transactional DB fixture
+const test = base.extend<{ txDb: TransactionalDb }>({
+  txDb: async ({}, use) => {
+    // Placeholder — the actual transaction is managed by aroundEach below
+    let txDb!: TransactionalDb;
+    await use(txDb);
+  },
+});
+
+// Scoped aroundEach — receives TestContext for fixture access
+test.aroundEach(async (runTest, context) => {
+  const { txDb: db } = context;
+  // Use test name as correlation ID in logs — invaluable for flakiness diagnosis
+  await db.withTransaction(context.task.name, async (txDb) => {
+    context.txDb = txDb; // inject transactional client into the fixture
+    await runTest();
+    throw new Error('test-rollback'); // force rollback
+  }).catch(err => { if (err.message !== 'test-rollback') throw err; });
+});
+
+test('updates order status', async ({ txDb }) => {
+  // txDb is the transaction-scoped client — safe to write without cleanup
+  await txDb.updateOrderStatus('ORD-001', 'shipped');
+  const order = await txDb.findOrder('ORD-001');
+  expect(order.status).toBe('shipped');
+  // No afterEach needed — transaction rolls back after this test
+});
+```
+
+```typescript
+// aroundAll — wrap the entire suite in a single tracing span for distributed diagnosis
+// Useful when OpenTelemetry is used and you want all test spans to share a trace ID
+import { aroundAll, describe, it, expect } from 'vitest';
+import { tracer } from '../src/observability/tracer';
+
+aroundAll(async (runSuite) => {
+  // All tests in the suite run within this span — correlation ID is consistent
+  await tracer.startActiveSpan('vitest-suite', async (span) => {
+    try {
+      await runSuite(); // runs all tests in the describe block
+    } finally {
+      span.end(); // always closes the span — even if tests fail
+    }
+  });
+});
+
+describe('PaymentService — traced integration tests', () => {
+  it('charges card successfully', async () => {
+    // All spans within this test share the parent span from aroundAll
+  });
+  it('handles declined card', async () => {
+    // Same tracing context — enables root cause correlation across tests
+  });
+});
+```
+
+**Critical caveats:**
+- **You must call `runTest()` / `runSuite()`.** If omitted, Vitest fails the test with an error.
+- **Not safe for concurrent tests** — `aroundEach` at the module level does not track concurrent test instances. For `test.concurrent`, use the context-scoped form `test.aroundEach` via `test.extend`.
+- **`aroundAll` scope vs `beforeAll`** — `aroundAll` wraps the entire suite *execution*; `beforeAll`/`afterAll` run *around* the suite. Use `aroundAll` when the wrapper must hold state across all tests (e.g., a single transaction or tracing span).
+
+---
+
+## Pattern 68 — Playwright HAR Recording for Network-Level Flakiness Diagnosis  [official]
+
+Playwright v1.60 promoted HAR recording to a first-class API via `context.tracing.startHar()`
+and `context.tracing.stopHar()`. HAR (HTTP Archive) files capture every network request and
+response in a structured JSON format. For flaky tests whose failures correlate with unexpected
+API responses, timing, or error codes, a HAR file provides the ground truth about what actually
+went over the wire — unfiltered by any application-level retry logic.
+
+**When HAR helps vs. when traces suffice:**
+| Situation | Use |
+|-----------|-----|
+| Flakiness from a specific API endpoint returning 500 intermittently | HAR — see raw response body and timing |
+| Flakiness from UI element not appearing | Playwright trace — see DOM snapshots |
+| Flakiness from network race (request A completes before request B) | HAR — compare request timing waterfall |
+| Unknown root cause — initial investigation | Trace first; add HAR if network is suspected |
+
+```typescript
+// playwright — HAR recording fixture for network flakiness diagnosis
+import { test as base, expect, BrowserContext } from '@playwright/test';
+import { join } from 'path';
+
+// Custom fixture that captures HAR on test failure — zero overhead on passing tests
+export const test = base.extend<{
+  captureHarOnFailure: void;
+  harPath: string;
+}>({
+  harPath: [async ({}, use, testInfo) => {
+    // Unique HAR path per test — avoids cross-test file collisions
+    const path = testInfo.outputPath('network.har');
+    await use(path);
+  }, { scope: 'test' }],
+
+  captureHarOnFailure: [async ({ context, harPath }, use, testInfo) => {
+    // Start HAR recording at the beginning of each test
+    // 'minimal' mode records only routing-essential data — lower overhead
+    await context.tracing.startHar(harPath, {
+      mode: 'full', // 'full' captures request/response bodies — needed for diagnosis
+      urlFilter: /api\./, // only record API calls — skip CDN assets
+    });
+
+    await use(); // run the test
+
+    // Stop recording; only attach HAR to the report when the test failed or retried
+    if (testInfo.status === 'failed' || testInfo.retry > 0) {
+      await context.tracing.stopHar();
+      // Attach to HTML report — viewable in Playwright's network panel
+      await testInfo.attach('network.har', {
+        path: harPath,
+        contentType: 'application/json',
+      });
+    } else {
+      // On pass: stop recording without saving (discard) — saves disk space
+      await context.tracing.stopHar({ path: undefined });
+    }
+  }, { auto: true, scope: 'test' }],
+});
+
+// Usage: replace `import { test } from '@playwright/test'` with extended version
+test('checkout API returns 201 on success', async ({ page }) => {
+  await page.goto('/checkout');
+  await page.fill('[name="card-number"]', '4111111111111111');
+  await page.getByRole('button', { name: 'Place Order' }).click();
+  // If this assertion fails, the HAR attachment in the report shows the exact
+  // POST /api/orders request, its timing, and the server's response body
+  await expect(page.getByTestId('confirmation-number')).toBeVisible({ timeout: 10_000 });
+});
+```
+
+```typescript
+// Analyzing a captured HAR file — TypeScript script for post-mortem diagnosis
+// Run: npx ts-node scripts/analyze-har.ts test-results/test-checkout/network.har
+
+import { readFileSync } from 'fs';
+
+interface HarEntry {
+  startedDateTime: string;
+  time: number; // total time in ms
+  request: { method: string; url: string; bodySize: number };
+  response: { status: number; statusText: string; bodySize: number };
+}
+
+interface Har {
+  log: { entries: HarEntry[] };
+}
+
+function analyzeHar(harPath: string): void {
+  const har = JSON.parse(readFileSync(harPath, 'utf-8')) as Har;
+  const entries = har.log.entries;
+
+  console.log(`Total requests: ${entries.length}`);
+
+  // Surface slow requests — common flakiness source
+  const slowRequests = entries
+    .filter(e => e.time > 1000) // slower than 1 second
+    .map(e => ({ url: e.request.url, ms: Math.round(e.time) }));
+
+  if (slowRequests.length > 0) {
+    console.warn('Slow requests (>1s):');
+    slowRequests.forEach(r => console.warn(`  ${r.ms}ms  ${r.url}`));
+  }
+
+  // Surface non-2xx responses — unexpected errors from the application
+  const errors = entries.filter(e => e.response.status >= 400);
+  if (errors.length > 0) {
+    console.error('Error responses:');
+    errors.forEach(e => console.error(`  ${e.response.status} ${e.request.method} ${e.request.url}`));
+  }
+
+  // Detect duplicate requests — may indicate retry storms or cache miss flakiness
+  const urls = entries.map(e => `${e.request.method} ${e.request.url}`);
+  const duplicates = urls.filter((url, i) => urls.indexOf(url) !== i);
+  if (duplicates.length > 0) {
+    console.warn('Duplicate requests (possible retry storm):');
+    [...new Set(duplicates)].forEach(d => console.warn(`  ${d}`));
+  }
+}
+
+analyzeHar(process.argv[2] ?? 'network.har');
+```
+
+**HAR recording limitations:**
+- Only captures HTTP/HTTPS requests — WebSocket frames and SSE streams are not recorded.
+  For WebSocket flakiness, use Playwright's `page.on('websocket')` event listener.
+- `urlFilter` is evaluated on the request URL, not the response — cannot filter by response status.
+- In `mode: 'minimal'`, response bodies are omitted — sufficient for timing analysis but not for
+  diagnosing unexpected response content.
+
+---
+
+## Pattern 69 — Vitest `--detect-async-leaks` for Dangling Async Operations  [official]
+
+Vitest 4.1.0 introduced the `--detect-async-leaks` CLI flag and its config equivalent
+`detectAsyncLeaks: true`. When enabled, Vitest detects async operations (Promises, timers,
+open file descriptors, network connections) that were started during a test but never resolved
+or cleaned up after the test completed. Unlike Jest's `--detectOpenHandles` (which only catches
+libuv handles like timers and sockets), `--detect-async-leaks` captures unresolved Promises and
+other microtask-level leaks.
+
+**Relationship to Gotcha 11 (`--detectOpenHandles`):**
+- `detectOpenHandles` (Jest) catches OS-level handles: `setTimeout`, `setInterval`, TCP sockets, file descriptors
+- `detectAsyncLeaks` (Vitest 4.1+) catches Node.js async context leaks, including `AsyncLocalStorage` contexts that weren't closed, Promise chains that outlive the test, and `EventEmitter` listeners that remain attached
+
+They complement rather than replace each other. `detectAsyncLeaks` is more precise for
+TypeScript async/await patterns; `detectOpenHandles` is better for Node.js I/O resource tracking.
+
+```typescript
+// vitest.config.ts — enable async leak detection
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Detect async operations that outlive their test case.
+    // Performance note: adds ~5-15% overhead to test execution — acceptable for CI,
+    // disable for local hot-reload watch mode if too noisy.
+    detectAsyncLeaks: process.env.CI === 'true',
+
+    // Pair with a generous timeout so leak detection has time to collect diagnostics
+    // before the test runner times out trying to drain the async queue
+    testTimeout: 30_000,
+  },
+});
+```
+
+```typescript
+// Example: detecting an AsyncLocalStorage leak (common in tRPC/middleware tests)
+import { describe, it, expect } from 'vitest';
+import { AsyncLocalStorage } from 'async_hooks';
+import { createRequestContext, RequestContext } from '../src/context';
+
+// Leak example: AsyncLocalStorage context created but never exited
+// detectAsyncLeaks would report this as a dangling async context after the test
+describe('RequestContext — async context leak demonstration', () => {
+  const requestStorage = new AsyncLocalStorage<RequestContext>();
+
+  it('[BAD] context entered but never exited — creates async leak', async () => {
+    // ANTI-PATTERN: run() is called but the scope is not closed after the assertion
+    // Any async operations started within the run() scope inherit the context
+    // If they outlive the test, they carry a stale context indefinitely
+    requestStorage.run({ userId: 'user-1', requestId: 'req-001' }, async () => {
+      // This inner promise is not awaited at the test level — leaks after test exits
+      someBackgroundService.start();
+    });
+    // detectAsyncLeaks reports: "AsyncLocalStorage context from 'RequestContext' was not cleaned up"
+  });
+
+  it('[GOOD] context always exited — no leak', async () => {
+    // PATTERN: use AsyncLocalStorage.run() synchronously and ensure all async ops
+    // complete before the run() callback returns
+    await new Promise<void>((resolve, reject) => {
+      requestStorage.run({ userId: 'user-2', requestId: 'req-002' }, async () => {
+        try {
+          await someBackgroundService.startAndWait(); // awaited — no leak
+          expect(requestStorage.getStore()?.userId).toBe('user-2');
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    // AsyncLocalStorage context is fully exited when run() callback completes
+  });
+});
+```
+
+```bash
+# CLI usage — check specific test files for async leaks without affecting the full suite
+npx vitest run --detect-async-leaks src/services/*.test.ts
+
+# In package.json scripts for a dedicated leak-check pass:
+# "test:leak-check": "vitest run --detect-async-leaks --reporter=verbose"
+```
+
+**When NOT to use `--detect-async-leaks` globally:**
+- In local `vitest --watch` mode: each file save triggers the leak scanner on all tests,
+  adding perceptible latency to the hot-reload loop
+- For tests that intentionally fire background tasks (e.g., email queue workers) — these
+  will always be reported as leaks even if they complete shortly after the test case; use
+  `vi.waitFor()` to drain them before the test exits, or disable the flag per file via
+  `// @vitest-disable-async-leak-check` (Vitest 4.1+ feature comment)
+
+---
+
+## Anti-Patterns (additional)
+
+### AP37 — `aroundEach` Without Calling `runTest()`  [official]
+
+**What:** Registering an `aroundEach` (or `aroundAll`) hook that contains setup and teardown code
+but forgets to call `runTest()` (or calls it conditionally).
+
+**Why harmful:** Vitest fails the test case with an explicit error: "aroundEach hook did not call
+`runTest()`". However, if `runTest()` is inside a conditional that evaluates to `false` at runtime
+(e.g., `if (process.env.CI) await runTest()`), the test is silently skipped on non-CI environments
+rather than being run. This produces CI-only "passes" that never actually execute on developer
+machines — the inverse of the typical CI-only failure pattern.
+
+```typescript
+// BAD: runTest() inside a conditional — test silently skips locally
+aroundEach(async (runTest) => {
+  await db.transaction(async () => {
+    if (process.env.CI) {
+      await runTest(); // DANGER: only runs in CI — local tests pass trivially
+    }
+    throw new Error('test-rollback');
+  }).catch(err => { if (err.message !== 'test-rollback') throw err; });
+});
+
+// GOOD: runTest() always called — gate the conditional logic, not the test invocation
+aroundEach(async (runTest) => {
+  if (process.env.CI) {
+    // CI-only path: wrap in transaction
+    await db.transaction(async () => {
+      await runTest(); // always called
+      throw new Error('test-rollback');
+    }).catch(err => { if (err.message !== 'test-rollback') throw err; });
+  } else {
+    // Local path: run without transaction (faster, still isolated via other means)
+    await runTest(); // always called
+  }
+});
+```
+
+---
+
+## Real-World Gotchas (continued)  [community]
+
+**Gotcha 43 — Playwright `browserContext.setStorageState()` for Lightweight Auth Re-Isolation**
+Playwright v1.60 added `browserContext.setStorageState()` which clears and resets `localStorage`,
+`sessionStorage`, and cookies without creating a new `BrowserContext`. Before this, tests that
+needed to reset auth state between scenarios in the same context had to either create a new context
+(expensive — re-instantiates the browser session) or manually clear storage with
+`page.evaluate(() => localStorage.clear())` (incomplete — misses cookies and session storage).
+`setStorageState()` is the correct idiom for resetting auth in E2E tests that reuse a context
+across scenarios for performance:
+
+```typescript
+// playwright — reset auth state between scenarios without new context
+import { test, expect } from '@playwright/test';
+
+// Fixture: reuse a single context for performance, but reset auth before each test
+export const test_with_auth_reset = test.extend<{}>({
+  page: async ({ browser }, use) => {
+    // Create context once — reuse across tests in this worker
+    const context = await browser.newContext({
+      storageState: 'playwright/.auth/user.json', // pre-authenticated state
+    });
+    const page = await context.newPage();
+    await use(page);
+
+    // After each test: reset storage state to pristine auth — cheaper than new context
+    // setStorageState() clears localStorage, sessionStorage, and cookies in one call
+    await context.setStorageState({ storageState: 'playwright/.auth/user.json' });
+    // Next test gets the same context with reset auth — no new browser session overhead
+  },
+});
+
+// Usage:
+test_with_auth_reset('user can view dashboard', async ({ page }) => {
+  await page.goto('/dashboard');
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  // Any localStorage writes during this test are cleared before the next test
+});
+
+test_with_auth_reset('user can update profile', async ({ page }) => {
+  await page.goto('/profile');
+  // localStorage from previous test is gone — clean auth state
+  await page.fill('[name="display-name"]', 'Alice Updated');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByText('Profile saved')).toBeVisible();
+});
+```
+
+**Key insight [community]:** Teams that create a new `BrowserContext` per test (the default
+Playwright recommendation) typically see 30–60s added to E2E suites with 50+ tests because each
+context launch triggers a new browser session. `setStorageState()` enables a middle ground: context
+reuse for performance, with guaranteed auth isolation between tests.
+
+---
+
+## Quick Reference additions (iteration 48)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Transaction rollback in beforeEach/afterEach pair with state leak | Separate hook closures share no state | Pattern 67 (aroundEach for tx rollback) | AP37 (aroundEach without calling runTest) |
+| Flaky API test — unknown whether server returned 500 or 200 | No network-level visibility | Pattern 68 (HAR recording on failure) | Relying only on Playwright trace DOM snapshots |
+| AsyncLocalStorage context not cleaned up after test | No async leak detection | Pattern 69 (--detect-async-leaks) | detectOpenHandles only (misses Promise-level leaks) |
+| Auth state bleeds between E2E scenarios reusing the same context | No storage reset between tests | Gotcha 43 (setStorageState() for auth isolation) | Creating new BrowserContext per test (expensive) |
+
+---
+
+## Key Resources (iteration 48 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest aroundEach / aroundAll Hooks | Official | https://vitest.dev/api/hooks#aroundeach | Wraps tests in shared context (DB transactions, tracing spans) — v4.1.0+ |
+| Vitest detectAsyncLeaks | Official | https://vitest.dev/config/#detectasyncleaks | CLI and config flag to detect dangling Promises and AsyncLocalStorage leaks — v4.1.0+ |
+| Playwright tracing.startHar() | Official | https://playwright.dev/docs/api/class-tracing#tracing-start-har | HAR recording API for network-level flakiness diagnosis (v1.60) |
+| Playwright browserContext.setStorageState() | Official | https://playwright.dev/docs/api/class-browsercontext#browser-context-set-storage-state | Reset auth/localStorage/cookies without creating a new context (v1.60) |

@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 13 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 14 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -14,6 +14,11 @@
 <!--          jest.isolateModulesAsync for ESM (jestjs.io/docs/jest-object),                       -->
 <!--          jest.unstable_mockModule / jest.unstable_unmockModule ESM pair,                      -->
 <!--          Vitest pool types: forks vs threads vs vmThreads + isolate: false trade-off          -->
+<!--          Vitest 4.0 migration (vitest.dev/guide/migration#vitest-4-0): pool overhaul,          -->
+<!--            sequence.hooks stack model, vi.restoreAllMocks automock change,                      -->
+<!--            vi.spyOn constructor arrow-function error, per-project isolate:false,                -->
+<!--            test.extend() type-aware hooks, vi.fn() default mock name change                     -->
+<!--          Jest 30 stricter CalledWith TypeScript types (jestjs.io/docs/upgrading-to-jest30)      -->
 
 ---
 
@@ -889,6 +894,12 @@ parallel workers.
 | ESM singleton reads env var at import time | `isolateModules()` (sync) cannot contain `await import()` | `await jest.isolateModulesAsync(async () => { ... await import() ... })` | N/A (Vitest uses `vi.resetModules()`) |
 | Vitest file isolation too slow in unit suites | Module bootstrap overhead per file | `pool: 'threads'` (faster, weaker isolation) or `isolate: false` (no isolation) | N/A (Jest always isolates files) |
 | Cross-file state leak in Vitest Worker threads | Shared global modified in one file leaks to next file on same Worker | Switch to `pool: 'forks'` (separate child process per file) | N/A |
+| Vitest 4 `vi.restoreAllMocks` no longer resets call count | Mock assertions accumulate across tests after Vitest 3→4 upgrade | Add `clearMocks: true` to `vitest.config.ts` alongside `restoreMocks: true` | N/A |
+| Vitest 4 `singleFork`/`singleThread` config removed | CI breaks after Vitest upgrade with unknown option error | Replace with `maxWorkers: 1, isolate: false` + setupFile calling `vi.resetModules()` | N/A |
+| Vitest 4 `vi.spyOn` on constructor crashes with arrow fn | `TypeError: not a constructor` after Vitest upgrade | Replace arrow function mock with `function` keyword or `class` expression | N/A |
+| Vitest 4 `vi.fn().getMockName()` snapshot mismatch | Inline snapshots fail: `"spy"` vs `"vi.fn()"` after upgrade | Run `vitest --update-snapshots` once after Vitest 4 migration | N/A |
+| Vitest 4 `beforeEach` return value called as teardown | Hook returns object; Vitest 4 calls it as function; runtime error | Remove return value or return a teardown function explicitly | N/A |
+| Jest 30 `CalledWith` type error on argument mismatch | TypeScript compile error: argument type does not match mock signature | Fix test assertion type or fix production code signature | N/A |
 
 ---
 
@@ -2084,3 +2095,220 @@ variant for ESM `import()`.
 | Jest Docs — ESM Module Mocking | Official | https://jestjs.io/docs/ecmascript-modules | `jest.unstable_mockModule` + `jest.unstable_unmockModule` — ESM-native mock/unmock pair |
 | Vitest Docs — Pool Configuration | Official | https://vitest.dev/guide/improving-performance#pool | `forks` vs `threads` vs `vmThreads` isolation guarantees and performance tradeoffs |
 | Vitest Config — `isolate` | Official | https://vitest.dev/config/#isolate | `isolate: false` / `--no-isolate` flag — when safe to disable file-level isolation for speed |
+
+---
+
+## Community Lessons — Iteration 14  [community]
+
+47. **Vitest 4.0 changed `vi.restoreAllMocks()` — it no longer resets spy state, only restores.** [community]
+    In Vitest ≤ 3, `vi.restoreAllMocks()` both restored the original implementation *and* reset call
+    history (equivalent to calling `.mockRestore()` on each spy). In Vitest 4.0, `vi.restoreAllMocks()`
+    only restores spies created manually via `vi.spyOn()` — it does not reset automock state, and it
+    does not call `.mockReset()`. Teams migrating from Vitest 3 to 4 that relied on a single
+    `afterEach(() => vi.restoreAllMocks())` to handle both restoration and call-count reset will find
+    their call-count assertions now bleed across tests. The fix: pair `restoreMocks: true` in
+    `vitest.config.ts` (for automatic restoration) with `clearMocks: true` (for call-count and
+    return-value reset). WHY: the separation of concerns lets you restore originals without losing
+    spy call history — but the default expectation of most teams is full reset, so `clearMocks: true`
+    must be added explicitly after a Vitest 3 → 4 upgrade.
+
+48. **Vitest 4.0 hook execution is stack-based by default — hooks that return functions have teardown semantics.** [community]
+    In Jest, hooks execute sequentially. In Vitest 4.0, the default `sequence.hooks` mode is
+    `'stack'` — `afterEach` hooks for inner `describe` blocks run before outer ones, mirroring a call
+    stack unwind. A new behavior: if a `beforeEach` returns a function, Vitest 4.0 automatically
+    calls that returned function as teardown after the test completes. Teams that return non-void
+    values from `beforeEach` (e.g., a connection object for reuse) must rewrite those hooks, as
+    Vitest 4.0 will *call* the returned value as a teardown function. Restore Jest-compatible
+    sequential mode with `sequence: { hooks: 'list' }` in `vitest.config.ts`. WHY: the stack model
+    enables cleaner teardown pairing without a separate `afterEach`, but it is a silent behavioral
+    change for existing test suites that return non-function values from `beforeEach` hooks.
+
+49. **Vitest 4.0 `singleThread`/`singleFork` removed — `maxWorkers: 1, isolate: false` requires explicit `vi.resetModules()`.** [community]
+    Vitest 3 accepted `singleThread: true` / `singleFork: true` with per-file module isolation still
+    active. Vitest 4.0 removes these in favor of `maxWorkers: 1, isolate: false`. The critical
+    difference: `isolate: false` means the Node.js module registry is NOT reset between test files —
+    singletons from file A remain visible in file B. Add a setupFile that restores per-file resets:
+    ```typescript
+    // vitest.setup.ts — add to `setupFiles` in vitest.config.ts
+    import { vi, beforeAll } from 'vitest';
+    beforeAll(() => { vi.resetModules(); });
+    ```
+    WHY: migrating from `singleFork: true` to `maxWorkers: 1, isolate: false` without the setupFile
+    causes hard-to-diagnose order-dependent failures that only surface when all test files run
+    together in the same process.
+
+50. **Vitest 4.0 `vi.spyOn` on constructors fails with arrow function implementations.** [community]
+    Vitest 4.0 properly validates constructor targets and throws `"not a constructor"` when an
+    arrow function is provided as the mock implementation. Use `function` or `class` keywords:
+    ```typescript
+    // BROKEN in Vitest 4.0 — arrow function cannot be a constructor
+    vi.spyOn(SomeClass, 'create').mockImplementation(() => ({ id: 1 })); // TypeError
+
+    // CORRECT — function keyword supports new
+    vi.spyOn(SomeClass, 'create').mockImplementation(function() { return { id: 1 }; });
+    // OR
+    vi.spyOn(SomeClass, 'create').mockImplementation(class { id = 1; });
+    ```
+    WHY: the previous permissive behavior masked real bugs — code calling `new` on a mocked
+    constructor would silently invoke the arrow function rather than throwing, creating false passes
+    for test cases that should have caught the `new` invocation.
+
+51. **Vitest 4.0 `vi.fn().getMockName()` returns `"vi.fn()"` not `"spy"` — update inline snapshots after migration.** [community]
+    In Vitest ≤ 3, `vi.fn()` mocks returned `"spy"` from `getMockName()`. Vitest 4.0 changes the
+    default to `"vi.fn()"`. Test suites using `toMatchSnapshot()` or inline snapshots on error
+    messages that include the mock name will see snapshot mismatches after the upgrade. Run
+    `vitest --update-snapshots` once post-migration. WHY: `"vi.fn()"` is unambiguous in stack
+    traces; `"spy"` was ambiguous for tooling that needed to distinguish mock type from `vi.spyOn`.
+
+52. **Vitest 4.0 `test.extend()` type-aware hooks eliminate the shared-`let` anti-pattern.** [community]
+    Vitest 4.0 allows `test.beforeEach` and `test.afterEach` defined on an extended test instance
+    to receive full type inference of the fixture context. This eliminates both the module-level
+    `let db` mutable variable anti-pattern and the need for a separate `afterEach` to clean up
+    fixtures. The fixture's `use()` callback guarantees teardown even if the test throws — a
+    stronger isolation contract than `afterEach` alone (which is skipped if `beforeEach` throws,
+    see Gotcha 2). See Pattern 22 below. WHY: teams migrating from Playwright to Vitest unit tests
+    should adopt this pattern immediately rather than recreating the `beforeEach`/`afterEach` pair.
+
+53. **Jest 30 `CalledWith` matchers now enforce TypeScript argument types — false-positive tests surface.** [community]
+    In Jest ≤ 29, `expect(fn).toHaveBeenCalledWith('string')` on a `jest.fn((n: number) => {})`
+    produced no TypeScript error. In Jest 30, the `CalledWith` matchers apply stricter type
+    inference — passing a wrong-type value is now a compile error:
+    ```typescript
+    const fn = jest.fn((num: number) => num * 2);
+    expect(fn).toHaveBeenCalledWith('not-a-number'); // TypeScript error in Jest 30
+    expect(fn).toHaveBeenCalledWith(42);               // correct
+    expect(fn).toHaveBeenCalledWith(expect.any(Number)); // partial match OK
+    ```
+    WHY: this catches false-positive test cases where mock assertions compiled despite wrong
+    argument types at production call sites. The fix usually reveals a real bug in either the
+    test or the production code.
+
+---
+
+## Extended Patterns — Iteration 14
+
+### Pattern 22: Vitest 4.0 `test.extend()` fixture with type-aware lifecycle hooks (TypeScript)  [community]
+
+The Vitest 4.0 fixture model combines setup, teardown, and type safety into a single declaration.
+The fixture's `use()` callback makes isolation explicit: code before `use()` is setup; code after
+is guaranteed teardown that runs even if the test body throws — a stronger guarantee than `afterEach`.
+
+```typescript
+import { test as baseTest, expect, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
+
+interface TimerFixture {
+  advanceMs: (ms: number) => void;
+}
+interface SpyFixture {
+  consoleSpy: MockInstance;
+}
+
+const test = baseTest.extend<TimerFixture & SpyFixture>({
+  // Timer fixture: fake timers set up before use(), restored after regardless of test outcome
+  advanceMs: async ({}, use) => {
+    vi.useFakeTimers();
+    await use((ms: number) => vi.advanceTimersByTime(ms));
+    vi.useRealTimers(); // runs even if the test throws
+  },
+
+  // Spy fixture: per-test fresh spy, auto-restored after use()
+  consoleSpy: async ({}, use) => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await use(spy);
+    spy.mockRestore();
+  },
+});
+
+test('retryAfter warns and retries after 2 seconds', async ({ advanceMs, consoleSpy }) => {
+  // Arrange — both fixtures initialized above; no shared let variables
+  const { retryAfter } = await import('./retryAfter');
+
+  // Act
+  const promise = retryAfter(() => Promise.reject(new Error('temporary')), 2000);
+  advanceMs(2000);
+  await promise;
+
+  // Assert
+  expect(consoleSpy).toHaveBeenCalledWith(
+    expect.stringContaining('Retrying after 2000ms'),
+  );
+});
+
+test('retryAfter does not warn when succeeds immediately', async ({ consoleSpy }) => {
+  const { retryAfter } = await import('./retryAfter');
+
+  const result = await retryAfter(() => Promise.resolve('ok'), 2000);
+
+  expect(result).toBe('ok');
+  // consoleSpy is a fresh MockInstance — no accumulated calls from the previous test case
+  expect(consoleSpy).not.toHaveBeenCalled();
+});
+```
+
+**Key advantage over `beforeEach`/`afterEach` pair:** If setup throws inside `beforeEach`, Jest and
+Vitest both skip `afterEach` — the resource leaks. A fixture's post-`use()` teardown is guaranteed
+by the framework regardless of whether setup completes cleanly, because the `use()` continuation
+is modeled as an async generator boundary.
+
+### Pattern 23: Vitest 4.0 per-project isolation configuration (TypeScript)  [community]
+
+Vitest 4.0's `projects` field (replacing `workspace`) enables different isolation levels per test
+suite. Unit tests can use `isolate: false` for speed; integration tests use `forks` for correctness.
+
+```typescript
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    projects: [
+      {
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          pool: 'threads',
+          isolate: false,           // Shared module registry — ~2x faster for pure unit suites
+          setupFiles: ['./vitest.unit.setup.ts'], // REQUIRED: explicit per-file module reset
+        },
+      },
+      {
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts'],
+          pool: 'forks',            // Separate child process per file — strongest isolation
+          isolate: true,            // Module registry reset per file (default; explicit here)
+          fileParallelism: false,   // Sequential execution — prevents DB port conflicts
+        },
+      },
+    ],
+  },
+});
+```
+
+```typescript
+// vitest.unit.setup.ts — required companion when isolate: false is set
+import { vi, beforeAll } from 'vitest';
+
+beforeAll(() => {
+  // Explicit per-file module reset when file-level isolation is disabled for speed
+  vi.resetModules();
+});
+```
+
+**Safety rule:** Never apply `isolate: false` to a project whose tests set module-level global state
+(`global.fetch = vi.fn()`) without a corresponding `unstubGlobals: true` or manual cleanup —
+this state poisons every subsequent test file assigned to the same Worker thread.
+
+---
+
+## Key Resources — Iteration 14 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Vitest 4.0 Migration Guide | Official | https://vitest.dev/guide/migration.html#vitest-4-0 | Pool overhaul, hook execution model, vi.restoreAllMocks change, per-project isolation |
+| Vitest 4.0 Blog — What's New | Official | https://vitest.dev/blog/vitest-4.html | type-aware `test.extend()` hooks, `toMatchScreenshot`, Browser Mode stable |
+| Vitest Config — `sequence.hooks` | Official | https://vitest.dev/config/#sequence-hooks | `'stack'` (default Vitest 4) vs `'list'` (Jest-compatible sequential) hook execution order |
+| Vitest Config — `projects` | Official | https://vitest.dev/config/#projects | Per-project isolation configuration; replaces `workspace` field in Vitest 4.0 |
+| Vitest API — `test.extend` | Official | https://vitest.dev/api/#test-extend | Type-aware fixture definitions with guaranteed `use()`-based teardown |
+| Jest 30 Upgrade Guide (stricter types) | Official | https://jestjs.io/docs/upgrading-to-jest30 | Stricter `CalledWith` TypeScript types, `genMockFromModule` removal, `SpyInstance` removal |

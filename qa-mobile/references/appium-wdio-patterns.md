@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -11473,3 +11473,680 @@ it('should show correct order total at checkout', async () => {
      getDisplayDensity, getStrings, background, sendKeyEvent, getCurrentActivity, getCurrentPackage,
      webdriver.io/docs/mcp, webdriver.io/blog 2026-02-04 (wdio-mcp announcement) -->
 <!-- Score delta: 0 (maintained 100/100) — delta check not triggered -->
+
+---
+
+## Soft Assertions — `expect.soft()` and `SoftAssertionService`  [community]
+
+Soft assertions let tests collect multiple assertion failures instead of stopping at the first. This is especially useful in mobile UI inspections where you want to audit many element states in a single pass without masking failures.
+
+### API
+
+```typescript
+// expect.soft() — non-throwing assertion (collects failure)
+await expect.soft(element).toBeDisplayed();
+await expect.soft(element).toHaveText('Submit');
+
+// getSoftFailures() — retrieve collected failures for the current test
+const failures = expect.getSoftFailures();
+console.log(failures.length); // number of soft failures collected so far
+
+// assertSoftFailures() — manually throw collected failures as an aggregate error
+expect.assertSoftFailures();
+
+// clearSoftFailures() — reset the failure list (e.g. between phases in one test)
+expect.clearSoftFailures();
+```
+
+### `SoftAssertionService` — Automatic End-of-Test Assertion
+
+Configure the service so soft failures are automatically thrown at test end (no manual `assertSoftFailures()` needed):
+
+```typescript
+// wdio.conf.ts
+import { SoftAssertionService } from 'expect-webdriverio';
+import type { Options } from '@wdio/types';
+
+export const config: Options.Testrunner = {
+  services: [
+    [SoftAssertionService, {
+      autoAssertOnTestEnd: true, // default; throw all soft failures after each test
+    }],
+    // ... other services
+  ],
+};
+```
+
+### Mobile Product Screen Audit Pattern
+
+```typescript
+// test/specs/productScreen.spec.ts
+import ProductScreen from '@pages/ProductScreen.js';
+
+it('product screen passes full UI audit', async () => {
+  await ProductScreen.open('sku-12345');
+
+  // Soft assertions — all checked, test continues even on failure
+  await expect.soft(ProductScreen.title).toHaveText('Running Shoes');
+  await expect.soft(ProductScreen.price).toHaveText(expect.stringMatching(/^\$\d+\.\d{2}$/));
+  await expect.soft(ProductScreen.addToCartButton).toBeEnabled();
+  await expect.soft(ProductScreen.productImage).toBeDisplayed();
+  await expect.soft(ProductScreen.ratingWidget).toHaveAttribute('aria-label', expect.stringContaining('stars'));
+
+  // SoftAssertionService throws aggregated error here if any failed
+  // (or call expect.assertSoftFailures() manually if service not configured)
+});
+```
+
+### Combining Soft and Hard Assertions
+
+```typescript
+it('checkout flow with audit + gating', async () => {
+  // Hard assertion — gate: no point continuing if cart is empty
+  await expect($('~cart-item-count')).toHaveText(expect.stringMatching(/[1-9]/));
+
+  // Soft assertions — collect all display issues on checkout page
+  const fields = ['~shipping-name', '~shipping-address', '~card-number', '~expiry'];
+  for (const selector of fields) {
+    await expect.soft($(selector)).toBeDisplayed();
+    await expect.soft($(selector)).toBeEnabled();
+  }
+  // Soft failures thrown here via SoftAssertionService autoAssertOnTestEnd
+});
+```
+
+**[community] `expect.soft()` is an `expect-webdriverio` v5+ feature — not available in older WDIO v8 projects using standalone `expect-webdriverio` < v5:** WHY: The `soft()` method was introduced in expect-webdriverio v5. WDIO v9 bundles expect-webdriverio v5+ automatically; if your v8 project pins an older version, the API is absent. Fix: upgrade `expect-webdriverio` to >= 5.0 or migrate to WDIO v9.
+
+**[community] `SoftAssertionService` `autoAssertOnTestEnd: true` only fires on test teardown — NOT on `afterEach` hooks:** WHY: The service hooks into the test framework's `afterTest` event, which fires after the test function ends but before spec-level `afterEach` runs. If you `expect.getSoftFailures()` inside `afterEach` you'll see the failures before the service clears them. Fix: call `expect.clearSoftFailures()` at the start of `beforeEach` to prevent accumulation across tests if not using `autoAssertOnTestEnd`.
+
+**[community] Soft assertions still block on prerequisite failures — they are not `try/catch` wrappers:** WHY: If `$('~selector')` throws a stale element reference error (network-layer exception), the error propagates hard regardless of `expect.soft()`. Only assertion failures (value mismatches) are softened. Fix: wrap element retrieval in `waitUntil(() => elem.isExisting())` before soft-asserting on flaky elements.
+
+---
+
+## `longPressKeyCode()` — Android Long Press Key Event  [community]
+
+`browser.longPressKeyCode(keycode, metastate?, flags?)` holds a key down for a longer duration than `pressKeyCode()`. It is Android-only and mirrors the `pressKeyCode` signature.
+
+```typescript
+// Long-press power button (keycode 26) to open power menu
+it('should open power menu via long-press power key', async () => {
+  await browser.longPressKeyCode(26); // KEYCODE_POWER long-press → power menu
+  const powerMenu = await $('android=new UiSelector().resourceId("com.android.systemui:id/power_menu")');
+  await expect(powerMenu).toBeDisplayed();
+  // Dismiss — press back to cancel
+  await browser.pressKeyCode(4); // KEYCODE_BACK
+});
+
+// Long-press home button (keycode 3) to trigger recent apps / assistant
+it('should trigger recent apps via long-press home', async () => {
+  await browser.longPressKeyCode(3); // KEYCODE_HOME long-press → recent apps
+  const recentsView = await $('android=new UiSelector().resourceId("com.android.systemui:id/recents_view")');
+  await expect(recentsView).toBeDisplayed();
+});
+
+// Common Android key codes reference:
+// 3  = KEYCODE_HOME
+// 4  = KEYCODE_BACK
+// 24 = KEYCODE_VOLUME_UP
+// 25 = KEYCODE_VOLUME_DOWN
+// 26 = KEYCODE_POWER
+// 82 = KEYCODE_MENU
+// 187 = KEYCODE_APP_SWITCH (recent apps)
+```
+
+**[community] `longPressKeyCode()` is Android-only — use `mobile:pressButton` for iOS hardware key simulation:** WHY: iOS does not expose raw KeyEvent constants. The XCUITest driver's `mobile:pressButton` handles `home`, `lock`, `volumeup`, `volumedown`, `siri`. Fix: add a platform guard or use a cross-platform helper that branches on `driver.isIOS`.
+
+**[community] Long-press duration is driver-controlled and cannot be customized via `longPressKeyCode()`:** WHY: UiAutomator2 determines the long-press threshold (typically 500 ms). If your app uses a custom threshold (e.g., 2000 ms for a hold-to-delete action), use W3C Actions with a timed `pointerDown` + `pause` instead:
+```typescript
+// Custom hold duration using W3C pointer action
+const el = await $('~delete-button');
+const loc = await el.getLocation();
+await browser.action('pointer', { parameters: { pointerType: 'touch' } })
+  .move({ origin: el })
+  .down()
+  .pause(2000) // hold for 2 000 ms
+  .up()
+  .perform();
+```
+
+---
+
+## `toggleNetworkSpeed()` — Android Emulator Network Speed Preset  [community]
+
+`browser.toggleNetworkSpeed(speed)` sets the emulated network speed on an Android emulator. It is Android emulator-only (not real devices, not iOS).
+
+### Available presets
+
+| Preset | Download | Upload |
+|--------|----------|--------|
+| `'full'` | Unlimited | Unlimited |
+| `'lte'` | ~20 Mbps | ~5 Mbps |
+| `'hsdpa'` | ~3.6 Mbps | ~384 kbps |
+| `'umts'` | ~1.9 Mbps | ~384 kbps |
+| `'edge'` | ~237 kbps | ~118 kbps |
+| `'gprs'` | ~40 kbps | ~20 kbps |
+| `'gsm'` | ~9.6 kbps | ~9.6 kbps |
+| `'hscsd'` | ~14.4 kbps | ~14.4 kbps |
+| `'evdo'` | ~384 kbps | ~384 kbps |
+
+```typescript
+// test/specs/slowNetwork.spec.ts
+describe('image loading on slow networks', () => {
+  after(async () => {
+    await browser.toggleNetworkSpeed('full'); // always restore
+  });
+
+  it('should show a loading skeleton on GPRS', async () => {
+    await browser.toggleNetworkSpeed('gprs');
+    await browser.activateApp('com.example.app');
+
+    const skeleton = await $('~image-loading-skeleton');
+    await expect(skeleton).toBeDisplayed({ wait: 2000 });
+
+    // Wait for actual image to load (up to 30 s on GPRS)
+    await browser.waitUntil(
+      async () => !await skeleton.isDisplayed(),
+      { timeout: 30_000, timeoutMsg: 'Image never loaded on GPRS' }
+    );
+  });
+
+  it('should load instantly on LTE', async () => {
+    await browser.toggleNetworkSpeed('lte');
+    await browser.activateApp('com.example.app');
+
+    const skeleton = await $('~image-loading-skeleton');
+    await expect(skeleton).not.toBeDisplayed({ wait: 1000 });
+  });
+});
+```
+
+**[community] `toggleNetworkSpeed()` only works on Android emulators — silently does nothing on real devices:** WHY: The command routes through the Android Emulator console. Real devices have no console. The call succeeds without error but has no effect. Fix: add a capability guard: `if (driver.isAndroid && capabilities['appium:avd']) { await browser.toggleNetworkSpeed('gprs'); }`.
+
+**[community] Always restore to `'full'` in `after()`/`afterAll()` — speed preset persists across tests in the same session:** WHY: The emulator retains the last-set speed until changed or session ends. A test that degrades to GPRS will leave subsequent tests running at GPRS if not restored. Fix: always `toggleNetworkSpeed('full')` in the cleanup hook.
+
+**[community] `toggleNetworkSpeed` vs `browser.throttleNetwork()` — different mechanisms, different scope:** `toggleNetworkSpeed` is an Appium-only emulator console command affecting the Android kernel's network interface. `browser.throttleNetwork()` is a CDP command affecting only the WebView's network stack. WHY: If testing native HTTP clients (not WebView), use `toggleNetworkSpeed`. For hybrid-app WebView network testing, use `browser.throttleNetwork()`. They cannot be combined — the WebView CDP throttle overrides the emulator-level setting for WebView traffic.
+
+---
+
+## Appium 3 + WDIO v9.27 — Migration and Compatibility Notes  [community]
+
+Appium 3.x (released January 2025, latest `appium@3.4.2` as of May 2026) and WDIO v9.27 (March 2026) introduce several compatibility changes affecting mobile test suites.
+
+### Appium 3 driver version requirements
+
+| Driver | Appium 3 minimum | Appium 2 last compatible |
+|--------|-----------------|--------------------------|
+| `appium-xcuitest-driver` | v11.x (Node 20+) | v7.x |
+| `appium-uiautomator2-driver` | v5.x / v7.x | v3.x |
+| `appium-espresso-driver` | v4.x | v2.x |
+
+```bash
+# Install Appium 3 with Appium 3-compatible drivers
+npm install --save-dev appium@3.x appium-uiautomator2-driver@7.x appium-xcuitest-driver@11.x
+
+# Verify installation
+npx appium driver list --installed
+```
+
+### WDIO v9.27 — Appium 3 protocol command renames
+
+WDIO v9.27 aligns with Appium 3's renamed protocol endpoints. Update `package.json`:
+
+```json
+{
+  "devDependencies": {
+    "webdriverio": "9.27.x",
+    "@wdio/cli": "9.27.x",
+    "@wdio/appium-service": "9.27.x",
+    "appium": "3.x",
+    "appium-uiautomator2-driver": "7.x",
+    "appium-xcuitest-driver": "11.x"
+  }
+}
+```
+
+### Capability namespace still required
+
+Appium 3 retains the `appium:` vendor prefix requirement from Appium 2. No change needed for capabilities:
+
+```typescript
+// Still correct for Appium 3
+const capabilities: WebdriverIO.Capabilities = {
+  platformName: 'Android',
+  'appium:automationName': 'UiAutomator2',
+  'appium:deviceName': 'emulator-5554',
+  'appium:app': '/path/to/app.apk',
+};
+```
+
+### TypeScript 7 compatibility (WDIO v9.27)
+
+WDIO v9.27 fixes `wdio-globals` type definition incompatibilities with TypeScript 7:
+
+```json
+// tsconfig.json — TypeScript 7 compatible
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "types": ["node", "@wdio/globals/types", "@wdio/mocha-framework"]
+  }
+}
+```
+
+```bash
+# Upgrade TypeScript to v7 after upgrading to WDIO v9.27+
+npm install --save-dev typescript@7
+```
+
+**[community] Appium 3 drops Node 18 support — Node 20+ required:** WHY: Appium 3 uses `fetch()` natively without polyfills and requires Node 20+ built-ins. Running on Node 18 causes startup failures with `Error: fetch is not a function`. Fix: upgrade to Node 20 LTS or Node 22 LTS before upgrading to Appium 3.
+
+**[community] `appium-uiautomator2-driver` v5+ requires Android API 26 (Oreo) minimum — drops API 21-25 support:** WHY: v5.x (Appium 3 compatible) removes workarounds for older Android APIs. Fix: if you test on API 24/25 devices, stay on uiautomator2 v3.x with Appium 2 or upgrade your minimum supported Android version.
+
+**[community] WDIO v9.27 — `multiremotebrowser` renamed to `multiRemoteBrowser` (camelCase):** WHY: The lowercase `multiremotebrowser` variable was a historical inconsistency. v9.23.0 renamed it to `multiRemoteBrowser`. Any test code or helper files using the old name will receive `undefined`. Fix: global search-replace `multiremotebrowser` → `multiRemoteBrowser` before upgrading.
+
+---
+
+## `multiRemoteBrowser` — Multi-Device Mobile Testing  [community]
+
+WebdriverIO's multiremote feature coordinates multiple Appium sessions simultaneously, enabling tests that require two physical or emulated devices interacting (e.g., push notifications, WebRTC, file sharing).
+
+### Configuration
+
+```typescript
+// wdio.conf.multidevice.ts
+import type { Options } from '@wdio/types';
+
+export const config: Options.Testrunner = {
+  capabilities: {
+    senderDevice: {
+      capabilities: {
+        platformName: 'Android',
+        'appium:automationName': 'UiAutomator2',
+        'appium:deviceName': 'emulator-5554',
+        'appium:app': '/path/to/chat-app.apk',
+        'appium:systemPort': 8201,
+      },
+    },
+    receiverDevice: {
+      capabilities: {
+        platformName: 'Android',
+        'appium:automationName': 'UiAutomator2',
+        'appium:deviceName': 'emulator-5556',
+        'appium:app': '/path/to/chat-app.apk',
+        'appium:systemPort': 8202,
+      },
+    },
+  },
+  // multiremote requires local-runner with maxInstances: 1 (sessions are synchronised)
+  maxInstances: 1,
+  services: [['appium', { appiumArgs: { port: 4723 } }]],
+};
+```
+
+### TypeScript type extension for named instances
+
+```typescript
+// types/wdio.d.ts
+declare namespace WebdriverIO {
+  interface MultiRemoteBrowser {
+    senderDevice: WebdriverIO.Browser;
+    receiverDevice: WebdriverIO.Browser;
+  }
+}
+```
+
+### Chat message test — sender/receiver pattern
+
+```typescript
+// test/specs/chatMessages.spec.ts
+// Run with: wdio run wdio.conf.multidevice.ts
+
+describe('chat messaging', () => {
+  it('message sent on device A appears on device B', async () => {
+    // Commands on `browser` execute on BOTH instances in parallel
+    await browser.activateApp('com.example.chat');
+
+    // Use named instances for device-specific actions
+    const sender = multiRemoteBrowser.senderDevice;
+    const receiver = multiRemoteBrowser.receiverDevice;
+
+    // Sender: navigate to chat and send message
+    await sender.$('~compose-button').click();
+    await sender.$('~message-input').setValue('Hello from device A');
+    await sender.$('~send-button').click();
+
+    // Receiver: wait for the message to appear
+    const messageEl = await receiver.$('~message-list').$('~Hello from device A');
+    await expect(messageEl).toBeDisplayed({ wait: 10_000 });
+  });
+
+  it('push notification appears on device B when app is backgrounded', async () => {
+    const sender = multiRemoteBrowser.senderDevice;
+    const receiver = multiRemoteBrowser.receiverDevice;
+
+    // Background receiver app
+    await receiver.background(-1); // -1 = send to background indefinitely
+
+    // Sender sends a message
+    await sender.$('~message-input').setValue('You have a notification!');
+    await sender.$('~send-button').click();
+
+    // Restore receiver and check notification
+    await receiver.activateApp('com.example.chat');
+    await receiver.openNotifications();
+    const notif = await receiver.$('android=new UiSelector().textContains("You have a notification!")');
+    await expect(notif).toBeDisplayed({ wait: 8_000 });
+
+    // Dismiss
+    await receiver.pressKeyCode(4); // BACK
+  });
+});
+```
+
+**[community] `multiRemoteBrowser` is for coordination, NOT parallelism — all commands block until all instances complete:** WHY: Unlike WDIO parallel spec workers where each worker is independent, multiremote waits for all instances to finish each command before proceeding. Use parallel specs for speed; use multiremote only when devices must interact. Running 50 multiremote tests is slower than 50 parallel single-device tests.
+
+**[community] Each multiremote instance needs a unique `appium:systemPort` (Android) or `appium:wdaLocalPort` (iOS) to avoid port conflicts:** WHY: Each Appium session starts its own UiAutomator2/WDA server. Default port (8200 / 8100) is shared. Fix: assign `systemPort: 8201, 8202, ...` and `wdaLocalPort: 8101, 8102, ...` for each named capability.
+
+**[community] `browser.method()` in multiremote returns an array of results — not a single value:** WHY: `browser.getContext()` returns `['NATIVE_APP', 'NATIVE_APP']` (one result per instance). Use the named instance reference (`sender.getContext()`) when you need a single device's result. Fix: check result arrays with index access or use named instance commands.
+
+---
+
+## Pre-Built WDA — `appium:usePreinstalledWDA` (XCUITest v11+)  [community]
+
+XCUITest driver v11.3+ adds a `download-wda` CLI command to download a pre-built WebDriverAgent binary, then use it via `appium:usePreinstalledWDA` + `appium:prebuiltWDAPath`. This bypasses the Xcode build step, reducing iOS session startup time from ~60–90 s to ~5–10 s in CI.
+
+### Step 1 — Download pre-built WDA
+
+```bash
+# Download WDA for iOS simulators (kind=sim) and store in /tmp/wda
+npx appium driver run xcuitest download-wda -- \
+  --outdir=/tmp/wda \
+  --kind=sim \
+  --platform=ios
+
+# Real device variant
+npx appium driver run xcuitest download-wda -- \
+  --outdir=/tmp/wda-device \
+  --kind=device \
+  --platform=ios
+```
+
+### Step 2 — Capability configuration
+
+```typescript
+// wdio.conf.ts
+const iosCapabilities: WebdriverIO.Capabilities = {
+  platformName: 'iOS',
+  'appium:automationName': 'XCUITest',
+  'appium:deviceName': 'iPhone 16 Simulator',
+  'appium:platformVersion': '18.0',
+  'appium:app': '/path/to/MyApp.app',
+  // Pre-built WDA — skip Xcode compile
+  'appium:usePreinstalledWDA': true,
+  'appium:prebuiltWDAPath': '/tmp/wda/WebDriverAgentRunner-Runner.app',
+};
+```
+
+### CI integration (GitHub Actions)
+
+```yaml
+# .github/workflows/ios-e2e.yml
+jobs:
+  ios-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Appium + XCUITest driver
+        run: |
+          npm ci
+          npx appium driver install xcuitest
+
+      - name: Cache pre-built WDA
+        uses: actions/cache@v4
+        with:
+          path: /tmp/wda
+          key: wda-${{ runner.os }}-${{ hashFiles('node_modules/appium-xcuitest-driver/package.json') }}
+          restore-keys: wda-${{ runner.os }}-
+
+      - name: Download WDA (if not cached)
+        run: |
+          if [ ! -d /tmp/wda ]; then
+            npx appium driver run xcuitest download-wda -- \
+              --outdir=/tmp/wda --kind=sim --platform=ios
+          fi
+
+      - name: Run E2E tests
+        run: npx wdio run wdio.conf.ts
+```
+
+**[community] Pre-built WDA is version-locked to the XCUITest driver version — cache key must include driver version:** WHY: Each XCUITest driver version ships a specific WDA build. Using a WDA binary from driver v11.2 with driver v11.3 causes session startup failure (`WebDriverAgent version mismatch`). Fix: always include `appium-xcuitest-driver/package.json` hash in the cache key.
+
+**[community] `appium:usePreinstalledWDA` requires the WDA app to be already installed on the simulator:** WHY: `usePreinstalledWDA` means "use the already-installed WDA, don't reinstall". If the simulator is fresh or WDA was never installed, the session fails. Fix: on first run (cache miss), the Appium driver installs WDA normally; on cache hit, confirm WDA is present with `xcrun simctl listapps <udid> | grep WebDriverAgent` before using the pre-built path.
+
+**[community] `download-wda` is a CLI subcommand of the XCUITest driver — it is NOT part of the Appium core:** WHY: The command is registered via the Appium 2/3 plugin/driver CLI extension system. It requires the XCUITest driver to be installed with `appium driver install xcuitest` before `appium driver run xcuitest download-wda` works. Running it without the driver installed produces `Error: No driver named 'xcuitest' is installed`.
+
+---
+
+## WDIO v9.23-v9.27 — Release Highlights for Mobile Test Suites  [community]
+
+Key changes from WDIO v9.23.0 (January 2026) through v9.27.1 (April 2026) that affect mobile Appium test suites.
+
+### `--exclude-suite` CLI flag (v9.23.1)
+
+Skip a named suite at run time without editing `wdio.conf.ts`:
+
+```bash
+# Skip the "smoke" suite from the configured suites
+npx wdio run wdio.conf.ts --exclude-suite smoke
+
+# Run only "regression" and exclude "flaky"
+npx wdio run wdio.conf.ts --suite regression --exclude-suite flaky
+```
+
+### Dynamic spec inclusion in `onPrepare` (v9.23.1)
+
+Add spec files programmatically at test startup based on environment:
+
+```typescript
+// wdio.conf.ts
+export const config: Options.Testrunner = {
+  specs: ['test/specs/**/*.spec.ts'],
+
+  onPrepare: async (config: Options.Testrunner) => {
+    // Include device-specific specs at runtime
+    const isTablet = process.env.DEVICE_TYPE === 'tablet';
+    if (isTablet) {
+      // config.specs is mutable in onPrepare after v9.23.1
+      (config.specs as string[]).push('test/tablet-specs/**/*.spec.ts');
+    }
+
+    // Include specs based on build flavour
+    const flavour = process.env.BUILD_FLAVOUR ?? 'production';
+    if (flavour === 'debug') {
+      (config.specs as string[]).push('test/debug-only/**/*.spec.ts');
+    }
+  },
+};
+```
+
+### Shadow DOM memory leak fix (v9.27.1)
+
+WDIO v9.27.1 fixes a shadow root memory leak in SPA navigation. Upgrade if your app uses custom web components in a WebView:
+
+```bash
+npm install webdriverio@9.27.1 @wdio/cli@9.27.1 @wdio/appium-service@9.27.1
+```
+
+### `no-floating-promise` ESLint rule (v9.25.0, `eslint-plugin-wdio`)
+
+New lint rule catches missing `await` on WebdriverIO async commands — the most common source of silent test failures:
+
+```typescript
+// eslint.config.js (ESLint flat config)
+import wdioPlugin from 'eslint-plugin-wdio';
+
+export default [
+  {
+    plugins: { wdio: wdioPlugin },
+    rules: {
+      'wdio/no-floating-promise': 'error', // new in v9.25.0
+      'wdio/await-expect': 'error',
+      'wdio/no-pause': 'warn',
+    },
+  },
+];
+```
+
+```bash
+npm install --save-dev eslint-plugin-wdio@latest
+```
+
+Example violations caught by `no-floating-promise`:
+
+```typescript
+// ❌ Flagged — missing await; assertion runs in background, test may pass falsely
+browser.pause(1000);
+expect($('~button')).toBeDisplayed();
+
+// ✅ Correct
+await browser.pause(1000);
+await expect($('~button')).toBeDisplayed();
+```
+
+### Jasmine v5.10 hook data restoration (v9.23.0)
+
+If your mobile tests use Jasmine (instead of Mocha), WDIO v9.23.0 restores skip/pending hook data broken in Jasmine v5.10. Upgrade `@wdio/jasmine-framework` in sync with `webdriverio`:
+
+```bash
+npm install webdriverio@9.23 @wdio/jasmine-framework@9.23
+```
+
+**[community] `no-floating-promise` produces false positives for intentionally fire-and-forget patterns (e.g., start screen recording):** WHY: `browser.startRecordingScreen()` is sometimes called without `await` to begin recording in a background thread. The rule flags this as a floating promise. Fix: add `// eslint-disable-next-line wdio/no-floating-promise` above intentional fire-and-forget calls, or use `void browser.startRecordingScreen()` as an explicit signal.
+
+**[community] Dynamic spec additions via `onPrepare` mutate the `config` object in-place — ensure you don't push duplicates on re-runs:** WHY: If `onPrepare` runs multiple times (e.g., parallel WDIO workers calling the hook), specs array can grow. Fix: deduplicate with `config.specs = [...new Set(config.specs as string[])]` after all additions.
+
+---
+
+## `browser.throttleCPU()` — Simulating Slow Processors in WebView Tests  [community]
+
+`browser.throttleCPU(factor)` uses Chrome DevTools Protocol (CDP) to throttle the CPU in a Chromium-based WebView, enabling performance regression tests on lower-end device profiles.
+
+```typescript
+// Performance test: verify animation completes within budget on 4× slowdown
+it('checkout animation completes within 800 ms on mid-range device', async () => {
+  // 4× CPU slowdown ≈ mid-range Android phone
+  await browser.throttleCPU(4);
+
+  const start = Date.now();
+  await $('~checkout-button').click();
+
+  // Wait for the transition animation to complete
+  await $('~order-confirmation-screen').waitForDisplayed({ timeout: 2000 });
+  const elapsed = Date.now() - start;
+
+  // Reset immediately after measurement
+  await browser.throttleCPU(1); // 1 = no throttling
+
+  expect(elapsed).toBeLessThan(800);
+});
+
+// 1  = no throttle (full speed)
+// 2  = 2× slowdown
+// 4  = 4× slowdown (≈ mid-range phone)
+// 6  = 6× slowdown (≈ entry-level phone)
+// 20 = 20× slowdown (≈ very low-end device)
+```
+
+**[community] `throttleCPU()` requires Puppeteer Core and CDP — install it separately:** WHY: WDIO v9 does not bundle Puppeteer Core. CDP commands like `throttleCPU`, `throttleNetwork`, and `emulate` all require it. Fix: `npm install puppeteer-core`.
+
+**[community] `throttleCPU()` only works in Chromium-based WebView contexts, not in native Appium context:** WHY: CDP is a Chromium-specific protocol. In `NATIVE_APP` context, there is no DevTools channel. Fix: switch to WebView context with `browser.switchContext()` before calling `throttleCPU`, then switch back to native after.
+
+**[community] CPU throttling inflates `waitForDisplayed` timeouts — increase them when throttling is active:** WHY: A 4× CPU slowdown makes DOM rendering and JS execution 4× slower. Elements that normally appear in 500 ms may take 2 000 ms under throttle. Fix: multiply all timeouts by the throttle factor when CPU throttle is active, or use `browser.waitUntil()` with generous timeouts and restore on teardown.
+
+---
+
+## `browser.setViewport()` — Mobile Viewport Emulation in WebView Tests  [community]
+
+`browser.setViewport({ width, height, devicePixelRatio })` resizes the WebView viewport without changing the OS window size. Unlike `setWindowSize()`, it supports `devicePixelRatio` and can simulate mobile viewport breakpoints down to sub-500px widths (below the OS minimum window constraint).
+
+```typescript
+// Simulate iPhone 16 Pro viewport in WebView context
+it('renders mobile layout at iPhone 16 Pro dimensions', async () => {
+  await browser.switchContext({ url: /.*webview/ });
+
+  await browser.setViewport({
+    width: 393,            // iPhone 16 Pro CSS pixel width
+    height: 852,           // iPhone 16 Pro CSS pixel height
+    devicePixelRatio: 3,   // 3× Retina display
+  });
+
+  // Verify hamburger menu appears (mobile breakpoint)
+  const hamburger = await $('css=.nav-hamburger');
+  await expect(hamburger).toBeDisplayed();
+
+  // Verify desktop nav is hidden
+  const desktopNav = await $('css=.nav-desktop');
+  await expect(desktopNav).not.toBeDisplayed();
+
+  // Reset to full-width
+  await browser.setViewport({ width: 1280, height: 800, devicePixelRatio: 1 });
+  await browser.switchContext('NATIVE_APP');
+});
+```
+
+### Common device viewport presets
+
+```typescript
+// test/helpers/viewports.ts
+export const Viewports = {
+  iPhone16Pro:      { width: 393,  height: 852,  devicePixelRatio: 3 },
+  iPhone16ProMax:   { width: 430,  height: 932,  devicePixelRatio: 3 },
+  iPadPro12:        { width: 1024, height: 1366, devicePixelRatio: 2 },
+  SamsungGalaxyS24: { width: 360,  height: 780,  devicePixelRatio: 3 },
+  PixelTablet:      { width: 1280, height: 800,  devicePixelRatio: 2 },
+} as const satisfies Record<string, { width: number; height: number; devicePixelRatio: number }>;
+
+// Usage
+await browser.setViewport(Viewports.iPhone16Pro);
+```
+
+**[community] `browser.setViewport()` requires WebDriver BiDi — it will throw on non-BiDi sessions:** WHY: `setViewport` is a BiDi protocol command and is not available via classic WebDriver. Sessions using Appium WebView via Chromedriver in non-BiDi mode will throw `Method Not Found`. Fix: enable BiDi in your capabilities: `'wdio:enforceWebDriverClassic': false` and ensure Chrome 108+ / Chromium-based WebView is in use.
+
+**[community] `setViewport` changes CSS pixel dimensions, NOT device pixels — `devicePixelRatio` is the multiplier:** WHY: A 3× retina device at width=393 renders at 1179 physical pixels. CSS media queries use the 393 CSS pixel width. Confusing CSS pixels with physical pixels causes incorrect breakpoint assumptions. Fix: always set `devicePixelRatio` to match the target device; use CSS pixel values from browser specifications (not resolution specs).
+
+**[community] `setViewport` is NOT `emulate('device', ...)` — it does not change user-agent or touch event handling:** WHY: `browser.emulate('device', 'iPhone 15')` sets viewport AND user-agent AND touch capabilities. `setViewport` only sets dimensions. Fix: for full mobile emulation in WebView testing, use `browser.emulate('device', deviceName)` from the devices catalog; use `setViewport` only for custom dimensions not in the catalog.
+
+---
+
+## Source: Iteration Log (Run 2026-05-12, Iteration 24)
+
+<!-- iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run (iter 24):
+     - Soft assertions: expect.soft(), SoftAssertionService, getSoftFailures/assertSoftFailures/clearSoftFailures + 3 gotchas
+     - longPressKeyCode() Android long press key event + custom W3C hold-duration pattern + 2 gotchas
+     - toggleNetworkSpeed() Android emulator presets table (full/lte/hsdpa/.../gsm) + 3 gotchas
+     - Appium 3 + WDIO v9.27 migration: driver version matrix, Node 20 requirement, API 26 min, multiRemoteBrowser rename + 3 gotchas
+     - multiRemoteBrowser multi-device pattern: config, TypeScript types, chat/push-notification examples + 3 gotchas
+     - Pre-built WDA (appium:usePreinstalledWDA + download-wda CLI) CI cache pattern + 3 gotchas
+     - WDIO v9.23-v9.27 highlights: --exclude-suite, dynamic onPrepare specs, shadow DOM memory leak, no-floating-promise ESLint rule, Jasmine v5.10 fix + 2 gotchas
+     - browser.throttleCPU() CDP CPU throttling for WebView perf tests + 3 gotchas
+     - browser.setViewport() mobile viewport emulation with devicePixelRatio + device presets helper + 3 gotchas
+-->
+<!-- Total community pitfalls: 260+ tagged [community] instances -->
+<!-- Total sections: 196+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources: webdriver.io/docs/api/expect-webdriverio (soft assertions, getSoftFailures),
+     webdriver.io/docs/assertion (SoftAssertionService),
+     webdriver.io/docs/api/mobile/longPressKeyCode,
+     webdriver.io/docs/api/mobile/toggleNetworkSpeed,
+     github.com/webdriverio/webdriverio/releases (v9.23-v9.27 changelog),
+     github.com/appium/appium-xcuitest-driver/releases (v11.3.0 download-wda),
+     github.com/appium/appium-xcuitest-driver/blob/master/docs/guides/run-prebuilt-wda.md,
+     github.com/appium/appium/releases (appium@3.4.2),
+     webdriver.io/docs/multiremote,
+     webdriver.io/docs/api/browser/throttleCPU,
+     webdriver.io/docs/api/browser/setViewport -->
+<!-- Score delta: 0 (maintained 100/100) — extensions add coverage of newly released APIs -->

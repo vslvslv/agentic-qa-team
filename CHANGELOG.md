@@ -5,6 +5,38 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.7 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 4/100)
+
+### qa-refine (5 guides extended, all 100/100)
+- `playwright-patterns.md` — toHaveAccessibleName/toHaveRole/toHaveAccessibleDescription (v1.44, were undocumented 2+ years), --test-list/--test-list-invert (v1.56) for enterprise TMS, page.route() misses first popup request (use context.route()), toMatchAriaSnapshot placeholder gotcha (--update-snapshots=changed not all) (+10 patterns)
+- `cypress-patterns.md` — React SSR hydration bootstrapScript for Next.js/Remix CT, Cypress.ElementSelector.defaults() selectorPriority, cy.intercept() delay integer overflow (fixed 15.13.1), base target="_top" iframe break (fixed 15.14.2), allowCypressEnv:false blocks @cypress/grep + cypress-axe (+4 patterns, +4 gotchas)
+- `k6-patterns.md` — browser devices object emulation (v0.54+), Locator auto-retries in v2.0 (selectors wait 30s not fail instantly — reduce defaultActionTimeout), http.get() extra-arg warning exposes silent v1.x scripting errors (+2 gotchas)
+- `detox-patterns.md` — waitFor chaining silently replaces not combines, Android 14 permission dialog label changes (API 34+ breaks by.system().label()), RN 0.77+ Hermes-canary crash, device.installApp() doesn't grant permissions, missing Hermes source maps (+8 patterns, +5 gotchas)
+- `appium-wdio-patterns.md` — expect.soft() soft assertions (WDIO v9+), Appium 3 Node 20+ migration, multiRemoteBrowser rename (silent undefined), pre-built WDA CI cache, browser.throttleCPU() WebView-only, toggleNetworkSpeed() real-device caveat (+9 sections, ~25 gotchas, 196+ total sections)
+
+### qa-methodology-refine (12 guides extended, all 100/100)
+- `test-pyramid-guide.md` — TS 6.0 types:[] breaks test tsconfig (runtime not compile error), Vitest 5.0.0-beta.2 breaking changes (pin to ^4.1), Playwright tracing.startHar() HAR-based CI replay
+- `tdd-guide.md` — Correction: noUncheckedSideEffectImports is TS 5.6 (not 5.9) and OFF by default; TS 6.0 release (May 11 2026) breaks Vitest/Jest globals; Google Testing Blog "Construct with Collaborators, Call with Work" principle
+- `bdd-guide.md` — Cucumber.js upcoming SummaryFormatter/ProgressFormatter deprecation, printAttachments→includeAttachments rename, playwright-bdd next $step.docStringType, v8.4.2 multiple step decorators (zero-downtime Gherkin migration)
+- `test-isolation-guide.md` — Vitest 4.0 vi.restoreAllMocks() no longer resets call history (add clearMocks:true), singleFork/singleThread removal + isolate:false silent module isolation disable, test.extend() fixture hooks stronger teardown guarantee
+- `test-data-guide.md` — Vitest 4.1 builder pattern for test.extend() (return-based, onCleanup()), aroundEach transaction-per-test isolation, test.override() per-suite fixture substitution, vi.defineHelper() call-site stack traces, coverage.all removal (factory files silently excluded)
+- `contract-testing-guide.md` — GIGO anti-pattern for POST/PUT (echo sent fields in response), over-specified validation rules anti-pattern, pact-js v16.3.1 Content-Type extraction fix
+- `flakiness-guide.md` — Vitest 4.1 aroundEach/aroundAll transaction rollback (eliminates afterEach crash gap), Playwright HAR recording tracing.startHar() for HTTP waterfall, --detect-async-leaks catches AsyncLocalStorage leaks, setStorageState() auth reset saves 30-60s per test
+- `coverage-guide.md` — Vitest 5.0.0-beta.2 V8 tracks node:worker_threads (coverage drops on upgrade — accurate), blob reporter path change (.vitest-tmp/→.vitest/blob/), coverage.instrumenter misuse risk
+- `ci-cd-testing-guide.md` — webServer.wait named capture groups (v1.57+), --last-failed retry (25→3-4 min), aroundEach/aroundAll, --detect-async-leaks, test tags + --tags-filter, coverage.changed, Vitest 4.x defineWorkspace→silent "0 tests", Playwright HTML Speedboard, GitHub Actions custom runner images (March 2026 GA)
+- `accessibility-guide.md` — toMatchAriaSnapshot() (v1.49+) supersedes legacy JSON API, toHaveAccessibleErrorMessage() computed text vs HTML attribute, getByRole({description}) (v1.60+), React 19 form actions auto-reset timing risk
+- `shift-left-guide.md` — OWASP Top 10:2025 A03 Supply Chain (Bybit $1.5B + Shai-Hulud npm worm), A10 Exceptional Conditions (useUnknownInCatchVariables), Vitest 4.0 migration table, eslint-plugin-security v4 (recommended-legacy removed)
+- `exploratory-guide.md` — inverted test pyramid for AI features (50-70% exploratory budget), context drift requires full multi-turn oracle harness, Crescendo red-team technique (constraint erosion after 8-15 adversarial turns)
+
+### lang-refine (5 guides extended, all 100/100)
+- `typescript-patterns.md` — TS 5.9 inference tightening (may surface new errors), --moduleResolution bundler + --module commonjs TS 6.0 migration path, isolatedModules vs isolatedDeclarations distinction, tsconfig glob changes invalidate incremental cache
+- `javascript-patterns.md` — RegExp inline modifiers (?i:) ES2025, duplicate named capture groups ES2025, Map.getOrInsert/getOrInsertComputed ES2026, JSON.parse context.source (64-bit integer precision), node: protocol prefix (npm shadowing prevention)
+- `java-patterns.md` — FFM API (JEP 454 Java 22, replaces JNI), Class-File API (JEP 484 Java 24, replaces ASM), Java Testing Patterns section (JUnit 5, Mockito STRICT_STUBS, AssertJ, Testcontainers), Spring @Transactional self-invocation gotcha, finalize() removal Java 18 → Cleaner
+- `python-patterns.md` — asyncio.timeout()/timeout_at() (3.11+, dynamic rescheduling), eager task execution eager_start=True (3.12+), os.reload_environ() (3.14), fire-and-forget create_task() GC gotcha
+- `csharp-patterns.md` — EF Core 10 LeftJoin/RightJoin (replaces GroupJoin+SelectMany), EF1002 analyzer (compile-time SQL injection warning), JsonSerializerOptions.Strict (.NET 10, replaces 4 manual options)
+
+---
+
 ## v1.16.0.6 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 3/100)
 
 ### qa-refine (5 guides extended, all 100/100)

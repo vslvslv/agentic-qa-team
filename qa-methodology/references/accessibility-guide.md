@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -2706,6 +2706,469 @@ test.describe('Accessibility tree snapshot regression', () => {
   });
 });
 ```
+
+### Playwright `toMatchAriaSnapshot()` — YAML-Based Accessibility Tree Assertions (v1.49+)
+
+**`toMatchAriaSnapshot()`** (introduced in Playwright 1.49, November 2024) is the **recommended current approach** for accessibility tree regression testing, replacing the older `page.accessibility.snapshot()` API for most use cases. It compares the accessibility tree of a page or element against a YAML template, catching changes to accessible names, roles, and structure.
+
+**Why `toMatchAriaSnapshot()` supersedes `page.accessibility.snapshot()`:**
+- YAML templates are readable and diff-friendly in version control (JSON snapshots are opaque)
+- Supports partial matching — only assert the parts of the tree that matter
+- Regex support for dynamic content (version numbers, usernames, dates)
+- The `/children: equal` and `/children: deep-equal` options enable strict mode when needed
+- Built-in snapshot update workflow: `npx playwright test --update-snapshots`
+- Works on both page-level (`expect(page).toMatchAriaSnapshot()`) and locator-level
+
+```typescript
+// File: e2e/accessibility/aria-snapshot-regression.spec.ts
+// Playwright 1.49+: YAML-based accessibility tree snapshot assertions.
+// Use this to catch regressions in accessible names, roles, and tree structure.
+// This complements axe scanning — axe checks WCAG rules; aria snapshots check structure.
+import { test, expect } from '@playwright/test';
+
+test.describe('Accessibility tree snapshot regression (toMatchAriaSnapshot)', () => {
+
+  // Page-level snapshot: assert the full page aria tree (Playwright 1.60+)
+  // Good for small pages or critical views where full tree matters
+  test('homepage aria tree matches baseline snapshot', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // On first run, creates a .aria.yml snapshot file alongside the test.
+    // On subsequent runs, compares against the stored baseline.
+    // Run with: npx playwright test --update-snapshots to regenerate.
+    await expect(page).toMatchAriaSnapshot(`
+      - banner:
+        - heading /Acme/ [level=1]
+        - navigation "Main navigation"
+      - main:
+        - heading /Welcome/ [level=2]
+      - contentinfo:
+        - link "Privacy Policy"
+        - link "Terms of Service"
+    `);
+  });
+
+  // Scoped locator snapshot: better for component-level structural regression
+  test('navigation landmark matches expected aria structure', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const nav = page.getByRole('navigation', { name: 'Main navigation' });
+
+    // Partial matching (default): listed items must be present in order.
+    // Items not listed are ignored — resilient to unrelated additions.
+    await expect(nav).toMatchAriaSnapshot(`
+      - navigation "Main navigation":
+        - link "Home"
+        - link "Products"
+        - link "About"
+        - link "Contact"
+    `);
+  });
+
+  // Strict children matching: all children must match exactly (/children: equal)
+  // Use when you need to guard against unexpected additions (e.g., rogue nav items)
+  test('footer navigation has exactly the expected links', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const footer = page.getByRole('contentinfo');
+
+    await expect(footer).toMatchAriaSnapshot(`
+      - contentinfo:
+        - navigation "Footer navigation":
+          /children: equal
+          - link "Privacy Policy"
+          - link "Terms of Service"
+          - link "Accessibility Statement"
+    `);
+  });
+
+  // Dynamic content: use regex to match variable text
+  test('user dashboard heading contains username', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    await expect(page.getByRole('main')).toMatchAriaSnapshot(`
+      - main:
+        - heading /Welcome back, .+/ [level=1]
+    `);
+  });
+
+  // Link URL assertion: verify link destinations are correct (Playwright 1.52+)
+  test('social media links point to correct destinations', async ({ page }) => {
+    await page.goto('/about');
+    await page.waitForLoadState('networkidle');
+
+    const footer = page.getByRole('contentinfo');
+
+    await expect(footer).toMatchAriaSnapshot(`
+      - contentinfo:
+        - link "GitHub":
+          - /url: https://github.com/your-org
+        - link "Twitter":
+          - /url: https://twitter.com/your-org
+    `);
+  });
+
+  // Generating a snapshot programmatically — use during development to capture baseline
+  test('capture homepage aria snapshot for review', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // page.ariaSnapshot() returns the YAML string — use to create initial baseline
+    const snapshot = await page.ariaSnapshot();
+    // Output to console for review — copy into toMatchAriaSnapshot() template above
+    console.log('Homepage aria snapshot:\n', snapshot);
+
+    // Minimal assertion to ensure the snapshot captures something meaningful
+    expect(snapshot).toContain('banner');
+    expect(snapshot).toContain('main');
+  });
+});
+```
+
+**When to use `toMatchAriaSnapshot()` vs `page.accessibility.snapshot()` (legacy):**
+
+| Aspect | `toMatchAriaSnapshot()` (Playwright 1.49+) | `page.accessibility.snapshot()` (legacy) |
+|--------|-------------------------------------------|------------------------------------------|
+| Format | Human-readable YAML | JSON object |
+| Partial matching | Yes (default) | No — full tree comparison |
+| Dynamic content | Regex patterns | Manual filtering required |
+| Baseline management | `--update-snapshots` CLI | Manual JSON file management |
+| Playwright integration | Native assertion with retries | Raw API, no retry logic |
+| Status | **Recommended** | Deprecated (still works, not removed) |
+
+50. **[community] `page.accessibility.snapshot()` is the legacy API — prefer `toMatchAriaSnapshot()` for new tests**: Playwright 1.49 introduced the `toMatchAriaSnapshot()` / `ariaSnapshot()` APIs as the modern replacement. `page.accessibility.snapshot()` still works in 2026 but is not receiving new features. Teams migrating should note: the YAML aria snapshot format uses W3C ARIA roles as keys, while the legacy JSON snapshot uses a slightly different property structure (`name`, `role`, `children` vs YAML's role-first format). Migrate one test file at a time — running both side-by-side during transition is safe.
+
+### Playwright `toHaveAccessibleErrorMessage()` — Testing `aria-errormessage` (v1.50+)
+
+`toHaveAccessibleErrorMessage()` (Playwright 1.50, January 2025) asserts the computed accessible error message for a form field — the text content pointed to by `aria-errormessage`. This is the correct way to test WCAG 3.3.1 (Error Identification) in Playwright: it queries the accessibility tree's computed error message, not just the HTML attribute.
+
+**Why use this instead of attribute checks:** `expect(input).toHaveAttribute('aria-errormessage', 'error-id')` tests the HTML attribute value (the element ID). `toHaveAccessibleErrorMessage('Enter a valid email')` tests the actual error text that screen readers announce — which is what matters for WCAG 3.3.1. If the `aria-errormessage` ID is correct but the referenced element has no text, the attribute check passes but the WCAG criterion fails.
+
+```typescript
+// File: e2e/accessibility/form-error-announcement.spec.ts
+// Playwright 1.50+: toHaveAccessibleErrorMessage() tests the computed aria-errormessage.
+// This verifies what screen readers ANNOUNCE, not just what the HTML attributes say.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Form error accessibility (WCAG 3.3.1)', () => {
+
+  test('email field error message is announced via aria-errormessage', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    // Trigger form validation by submitting an empty form
+    await page.click('button[type="submit"]');
+
+    const emailInput = page.getByLabel('Email address');
+    // Wait for the input to become invalid (aria-invalid="true")
+    await expect(emailInput).toHaveAttribute('aria-invalid', 'true');
+
+    // Assert the computed accessible error message — what NVDA/VoiceOver announces
+    // This queries aria-errormessage (ARIA 1.2) attribute and resolves the target element's text
+    await expect(emailInput).toHaveAccessibleErrorMessage('Email address is required');
+  });
+
+  test('password field shows specific error for invalid format', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    await page.fill('input[type="password"]', 'abc'); // Too short
+    await page.click('button[type="submit"]');
+
+    const passwordInput = page.getByLabel('Password');
+
+    // Regex match — error message may contain extra text or formatting
+    await expect(passwordInput).toHaveAccessibleErrorMessage(
+      /Password must be at least 8 characters/
+    );
+  });
+
+  test('form error state has no axe violations', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    // Trigger errors
+    await page.click('button[type="submit"]');
+    await page.waitForTimeout(300); // Allow error state to render
+
+    // Verify axe passes the error state (aria-invalid + aria-errormessage combination)
+    const results = await new AxeBuilder({ page })
+      .include('form')
+      .withTags(['wcag2a', 'wcag2aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+});
+```
+
+**`aria-errormessage` vs `aria-describedby` for form errors:**
+
+| Pattern | ARIA version | Screen reader behavior | When to use |
+|---------|-------------|----------------------|-------------|
+| `aria-describedby="error-id"` | ARIA 1.1 | Announced when field receives focus | Broad compatibility; React/Vue form libraries |
+| `aria-errormessage="error-id"` + `aria-invalid="true"` | ARIA 1.2 | Announced specifically as error, more semantically precise | New projects; WCAG 3.3.1 strict compliance |
+
+51. **[community] `aria-errormessage` requires `aria-invalid="true"` to be meaningful — setting one without the other is a common error**: ARIA 1.2 defines `aria-errormessage` as pointing to a description of the error on an invalid field. Screen readers only read `aria-errormessage` when `aria-invalid` is `true` or `"grammar"` or `"spelling"`. Teams that add `aria-errormessage` without setting `aria-invalid="true"` on submit get no screen reader announcement. WHY: the spec ties these two attributes together — `aria-errormessage` is the message content, `aria-invalid` is the signal to announce it. axe-core 4.11.2+ correctly validates this pairing; older versions may let the mismatch through.
+
+### Playwright `getByRole({ description })` — Querying by Accessible Description (v1.60+)
+
+Playwright 1.60 (April 2025) added the `description` option to `getByRole()`. Previously you could only query by `name` (accessible name). The `description` option matches against the element's **accessible description** — the supplementary text from `aria-describedby` or `aria-description`. This is the correct way to locate elements when the accessible description is the distinguishing factor.
+
+**When accessible description is the right query target:** Form helper text ("Your email will never be shared"), tooltip content pointed to by `aria-describedby`, or supplementary landmark descriptions.
+
+```typescript
+// File: e2e/accessibility/get-by-role-description.spec.ts
+// Playwright 1.60+: getByRole({ description }) matches by accessible description.
+// Use when multiple elements have the same role and accessible name but different descriptions.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('getByRole description matching (Playwright 1.60+)', () => {
+
+  test('getByRole with description locates a button with helper text', async ({ page }) => {
+    await page.goto('/payment');
+    await page.waitForLoadState('networkidle');
+
+    // Suppose there are two "Delete" buttons — one with description "Delete payment method"
+    // and one with description "Delete saved address". Name alone is ambiguous.
+    // getByRole({ name, description }) distinguishes them precisely.
+    const deletePaymentButton = page.getByRole('button', {
+      name: 'Delete',
+      description: 'Delete payment method',
+    });
+
+    await expect(deletePaymentButton).toBeVisible();
+  });
+
+  test('form field helper text is the accessible description', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    // The email input has aria-describedby pointing to a helper text element:
+    // <input id="email" aria-describedby="email-hint" />
+    // <span id="email-hint">Your email will never be shared with third parties.</span>
+    const emailInput = page.getByRole('textbox', {
+      name: 'Email address',
+      description: /never be shared/,
+    });
+
+    await expect(emailInput).toBeVisible();
+
+    // Verify the input has the correct accessible description
+    await expect(emailInput).toHaveAccessibleDescription(
+      /Your email will never be shared/
+    );
+  });
+
+  test('icon button aria-label and description combination', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    // An icon button that has both a name (icon label) and description (tooltip/hint)
+    // getByRole with description is more precise than name alone
+    const downloadButton = page.getByRole('button', {
+      name: 'Download',
+      description: /Downloads the current report as PDF/,
+    });
+
+    if (await downloadButton.count() > 0) {
+      await expect(downloadButton).toHaveAccessibleName('Download');
+      await expect(downloadButton).toHaveAccessibleDescription(/Downloads the current report/);
+    }
+  });
+
+  // toHaveAccessibleDescription: assert computed accessible description
+  test('form input has accessible description from aria-describedby hint text', async ({ page }) => {
+    await page.goto('/register');
+    await page.waitForLoadState('networkidle');
+
+    const passwordInput = page.getByRole('textbox', { name: 'Password' });
+    // Verifies the COMPUTED description (follows aria-describedby ID to get text)
+    // Not the same as checking aria-describedby attribute value
+    await expect(passwordInput).toHaveAccessibleDescription(
+      /Must be at least 8 characters/
+    );
+  });
+
+  // toHaveRole: assert ARIA role of a located element
+  test('custom dropdown component exposes correct role', async ({ page }) => {
+    await page.goto('/settings');
+    await page.waitForLoadState('networkidle');
+
+    // Locate the custom dropdown by its visible text label
+    const dropdown = page.locator('[data-testid="theme-selector"]');
+    // Verify the component correctly exposes role="combobox" per ARIA 1.2 pattern
+    await expect(dropdown).toHaveRole('combobox');
+  });
+});
+```
+
+52. **[community] `getByRole({ description })` reveals accessible description bugs that attribute checks miss**: Teams that test accessible descriptions by checking `aria-describedby` attribute values (`toHaveAttribute('aria-describedby', 'hint-id')`) verify the HTML wiring but not the actual description text. If the hint element changes its content or ID, `toHaveAttribute` still passes. `getByRole({ description })` + `toHaveAccessibleDescription()` tests what screen readers announce — if the description text changes, the test catches it. This is the same principle as using `getByRole({ name })` instead of checking `aria-label` attribute values. Use the accessibility tree as your query and assertion surface, not HTML attributes.
+
+### React 19 Form Actions — Accessibility Impact
+
+React 19 (stable December 2024) introduced **form Actions** that simplify accessible form patterns. Key accessibility implications:
+
+**`<form action={fn}>` automatically resets the form on successful submission.** This is significant for screen reader users: previously, developers had to manually reset forms, and forgetting to do so left stale data in fields — confusing screen reader users who hear pre-filled values when returning to the form. Automatic reset eliminates this common oversight.
+
+**`useFormStatus` hook** enables design system components to access form pending state without prop drilling. This makes it easier to implement accessible `disabled` states on submit buttons during async operations — a pattern previously requiring manual context wiring.
+
+```typescript
+// File: src/components/AccessibleForm/AccessibleForm.tsx
+// React 19 form actions + accessibility: auto-reset + aria-busy + error announcements.
+// Demonstrates how React 19 form patterns integrate with WCAG requirements.
+'use client';  // Required for form actions with client-side state in Next.js App Router
+import React, { useActionState } from 'react';
+import { useFormStatus } from 'react-dom';
+
+interface FormState {
+  error?: string;
+  success?: boolean;
+  message?: string;
+}
+
+// Separate component for the submit button — uses useFormStatus to access pending state
+// This is the React 19 pattern for accessible form buttons in design systems
+function SubmitButton({ label }: { label: string }) {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      // aria-disabled is NOT needed when the button is genuinely disabled (disabled attr)
+      // aria-busy communicates loading state to screen readers when the form is processing
+    >
+      {pending ? 'Submitting...' : label}
+    </button>
+  );
+}
+
+// Server action (or client-side async function)
+async function submitContactForm(_prev: FormState, formData: FormData): Promise<FormState> {
+  const email = formData.get('email') as string;
+
+  if (!email || !email.includes('@')) {
+    return { error: 'Enter a valid email address' };
+  }
+
+  // Simulate submission
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  return { success: true, message: 'Message sent successfully' };
+}
+
+export function AccessibleContactForm() {
+  // useActionState (React 19) replaces useState + manual submission logic.
+  // The form auto-resets on successful submission — no manual reset needed.
+  const [state, formAction] = useActionState(submitContactForm, {});
+
+  return (
+    <form
+      action={formAction}  // React 19: form action — auto-resets on success
+      aria-label="Contact form"
+      // aria-busy would go here if you want to communicate overall form loading state
+      // but useFormStatus on the submit button is the more targeted approach
+      noValidate  // Suppress native browser validation — use custom accessible errors
+    >
+      {/* Success announcement: aria-live polite announces after submission */}
+      {state.success && (
+        <div role="status" aria-live="polite" aria-atomic="true">
+          {state.message}
+        </div>
+      )}
+
+      <div>
+        <label htmlFor="contact-email">Email address</label>
+        <input
+          id="contact-email"
+          type="email"
+          name="email"
+          required
+          autoComplete="email"  // WCAG 1.3.5 Identify Input Purpose
+          aria-invalid={state.error ? 'true' : undefined}
+          aria-describedby={state.error ? 'contact-email-error' : undefined}
+        />
+        {state.error && (
+          // role="alert" for immediate announcement on submission error
+          // aria-live="assertive" is implicit in role="alert"
+          <p id="contact-email-error" role="alert">
+            {state.error}
+          </p>
+        )}
+      </div>
+
+      {/* SubmitButton uses useFormStatus — accessible disabled state during submission */}
+      <SubmitButton label="Send message" />
+    </form>
+  );
+}
+```
+
+```typescript
+// File: src/components/AccessibleForm/AccessibleForm.a11y.test.tsx
+// Unit tests for the React 19 form with jest-axe.
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+
+// For testing React 19 form actions in JSDOM, wrap in a test-compatible form handler
+// that doesn't call the actual server action
+expect.extend(toHaveNoViolations);
+
+function ContactFormTestWrapper({ error }: { error?: string }) {
+  return (
+    <form aria-label="Contact form" noValidate>
+      <div>
+        <label htmlFor="contact-email">Email address</label>
+        <input
+          id="contact-email"
+          type="email"
+          name="email"
+          required
+          autoComplete="email"
+          aria-invalid={error ? 'true' : undefined}
+          aria-describedby={error ? 'contact-email-error' : undefined}
+        />
+        {error && (
+          <p id="contact-email-error" role="alert">{error}</p>
+        )}
+      </div>
+      <button type="submit">Send message</button>
+    </form>
+  );
+}
+
+describe('AccessibleContactForm accessibility', () => {
+  it('initial state has no axe violations', async () => {
+    const { container } = render(<ContactFormTestWrapper />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('error state has no axe violations', async () => {
+    const { container } = render(
+      <ContactFormTestWrapper error="Enter a valid email address" />
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('error message is linked to input via aria-describedby', () => {
+    render(<ContactFormTestWrapper error="Enter a valid email address" />);
+    const input = screen.getByLabelText('Email address');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', 'contact-email-error');
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a valid email address');
+  });
+});
+```
+
+53. **[community] React 19 `useActionState` form auto-reset can clear in-progress user input if the action resolves too quickly**: React 19's `<form action={fn}>` resets the form on a successful action response. If a user is filling out a multi-field form and another field triggers an auto-save action that resolves as success, the entire form resets — wiping data the user was actively entering. WHY: auto-reset is tied to the action return value, not to explicit user submit intent. Mitigation: ensure form actions only return success state in response to deliberate user submission (button type="submit"), not on individual field interactions. Also: if using optimistic updates with `useOptimistic`, the reset happens before the optimistic UI resolves — test this scenario explicitly with screen readers to verify the announcements are not interrupted.
 
 **Storybook `@storybook/addon-a11y` integration** — runs axe on each story in the browser:
 
@@ -5688,3 +6151,7 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | aria-required MDN | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-required | When to use aria-required vs HTML required attribute |
 | RGAA (French Accessibility Standard) | Official | https://accessibilite.numerique.gouv.fr/methode/criteres-et-tests/ | French government accessibility standard; axe-core 4.11.0+ supports RGAA tags for rule filtering |
 | WCAG 3.0 Working Draft (March 2026) | Draft spec | https://www.w3.org/TR/wcag-3.0/ | Most current draft (March 3, 2026); Bronze/Silver/Gold outcome-based model; still "several years" from finalization |
+| Playwright Aria Snapshots | Official | https://playwright.dev/docs/aria-snapshots | toMatchAriaSnapshot() YAML-based accessibility tree regression testing (v1.49+); preferred over legacy page.accessibility.snapshot() |
+| Playwright toHaveAccessibleErrorMessage | Official | https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-error-message | Assert computed aria-errormessage text (v1.50+); tests what screen readers announce, not HTML attributes |
+| Playwright getByRole description | Official | https://playwright.dev/docs/api/class-page#page-get-by-role | description option for getByRole() (v1.60+); matches by accessible description from aria-describedby |
+| React 19 Form Actions | Official | https://react.dev/blog/2024/12/05/react-19 | React 19 form Actions: auto-reset on success, useFormStatus for accessible loading states |

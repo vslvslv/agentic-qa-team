@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 42 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 43 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -4342,6 +4342,624 @@ apps: {
 ```
 
 **Common symptom of missing reverse port**: The test passes the first Detox action (element visible) but then hangs on the first `waitFor` that expects data from the mock server. `--debug-synchronization 3000` shows `1 network requests in flight: http://localhost:8088/...` — the request is in-flight indefinitely because the connection is refused.
+
+---
+
+---
+
+## Additional Patterns (iteration 43 additions)
+
+### Pattern 28 — `device.getPlatform()` extended: detecting simulator vs physical device
+
+`device.getPlatform()` returns `'ios'` or `'android'`. When you need to additionally distinguish whether the test is running on a simulator/emulator vs a real device (e.g., to skip biometric tests that require real hardware enrollment), combine the platform check with environment variable conventions used by Detox CI configurations:
+
+```js
+// e2e/helpers/platform.js
+/**
+ * Returns the current test platform context.
+ * Use for guarding simulator-only or emulator-only APIs.
+ */
+function isSimulator() {
+  return device.getPlatform() === 'ios';  // Detox iOS always runs on Simulator
+}
+
+function isEmulator() {
+  return device.getPlatform() === 'android';  // Detox Android always runs on Emulator
+}
+
+/**
+ * Returns true when running in CI (GitHub Actions, Bitrise, CircleCI, etc.)
+ * Relies on the CI=true convention followed by all major CI providers.
+ */
+function isCI() {
+  return process.env.CI === 'true';
+}
+
+/**
+ * Guard for iOS-only Detox APIs that throw on Android:
+ * - device.setBiometricEnrollment()
+ * - device.matchFace() / device.unmatchFace()
+ * - device.setAppearance() (iOS Simulator only)
+ * - element.pinch()
+ * - by.traits()
+ */
+function skipIfNotIOS() {
+  if (device.getPlatform() !== 'ios') {
+    return true;  // signal the test to return early
+  }
+  return false;
+}
+
+module.exports = { isSimulator, isEmulator, isCI, skipIfNotIOS };
+```
+
+```js
+// e2e/biometrics.test.js — guarded iOS-only test
+const { skipIfNotIOS } = require('./helpers/platform');
+
+it('enrolls and matches Face ID on iOS Simulator', async () => {
+  if (skipIfNotIOS()) return;  // skip on Android without test error
+
+  await device.setBiometricEnrollment(true);
+  await element(by.id('enable-biometrics-button')).tap();
+  await device.matchFace();
+  await waitFor(element(by.id('biometric-success-screen')))
+    .toBeVisible()
+    .withTimeout(5000);
+  await device.setBiometricEnrollment(false);
+});
+```
+
+**Why this pattern matters**: Teams with cross-platform test suites frequently see `TypeError: device.setBiometricEnrollment is not a function` on Android CI jobs. The Detox TypeScript types expose these methods without platform restriction, so the error only surfaces at runtime. A centralized helper makes all guards consistent and searchable.
+
+---
+
+### Pattern 29 — Intercepting `console.log`/native logs in tests for debugging
+
+When an element-not-found failure is caused by app-side logic (e.g., a condition gate, a null check that prevents rendering), adding `console.log` statements to the RN code and reading them back in the Detox test helps without requiring `captureViewHierarchy`. Detox forwards React Native JS logs to the test process when the `log` artifact is enabled:
+
+```js
+// .detoxrc.js — enable log collection
+artifacts: {
+  rootDir: '.artifacts',
+  plugins: {
+    log: { enabled: true },  // captures RN JS logs + native logs
+  },
+},
+```
+
+```bash
+# View logs from the most recent test run inline:
+npx detox test -c ios.sim.debug --record-logs all --loglevel verbose 2>&1 | grep "RN:"
+```
+
+```js
+// In RN app code — prefix Detox-relevant logs for easy grep
+const detoxLog = (...args) => {
+  if (__DEV__ || global.DETOX_MODE === '1') {
+    console.log('[RN]', ...args);
+  }
+};
+
+// Usage inside a component's render-blocking condition:
+if (!userData) {
+  detoxLog('ProductScreen: userData is null — skipping render of product-list');
+  return <LoadingSpinner testID="loading-spinner" />;
+}
+```
+
+```bash
+# In CI: grep the artifact log for diagnostic messages after a failure
+cat .artifacts/**/*.log | grep '\[RN\]'
+```
+
+**When to use this over `captureViewHierarchy`**:
+- `captureViewHierarchy` shows you the current native tree (the "what") — best for selector debugging
+- Log inspection shows you the conditional branch taken (the "why") — best for logic debugging
+- Use both together: hierarchy confirms the element is absent; logs confirm why the render path skipped it
+
+---
+
+### Pattern 30 — Expo SDK 52+ with Detox (managed workflow)
+
+Expo SDK 52 (released November 2024) introduced significant changes to the managed workflow that affect Detox setup. The primary change is that `expo prebuild` now generates a merged `metro.config.js` using `@expo/metro-config` (distinct from `@react-native/metro-config`). The Expo Babel preset also moved to `babel-preset-expo`, and the default `app.json` `expo.jsEngine` switched to `hermes`.
+
+```bash
+# Expo SDK 52 + Detox setup
+npx expo install detox expo-modules-core
+npm install --save-dev @config-plugins/detox jest jest-circus
+
+# Prebuild (required before detox build)
+npx expo prebuild --clean --platform ios
+npx expo prebuild --clean --platform android
+```
+
+```js
+// metro.config.js — Expo SDK 52 format (NOT @react-native/metro-config)
+const { getDefaultConfig } = require('expo/metro-config');
+const { mergeConfig } = require('@react-native/metro-config');
+
+const expoConfig = getDefaultConfig(__dirname);
+
+// Add Detox-specific resolver for test mocks (optional)
+const detoxConfig = {
+  resolver: {
+    resolveRequest: (context, moduleName, platform) => {
+      if (process.env.DETOX_BUILD && moduleName === './analytics') {
+        return { filePath: require.resolve('./e2e/mocks/analytics.js'), type: 'sourceFile' };
+      }
+      return context.resolveRequest(context, moduleName, platform);
+    },
+  },
+};
+
+module.exports = mergeConfig(expoConfig, detoxConfig);
+```
+
+```js
+// .detoxrc.js — Expo SDK 52 managed workflow
+module.exports = {
+  testRunner: {
+    args: { $0: 'jest', config: 'e2e/jest.config.js' },
+    jest: { setupTimeout: 300000 },
+  },
+  apps: {
+    'ios.expo52': {
+      type: 'ios.app',
+      // After: npx expo prebuild && cd ios && xcodebuild -scheme YourApp ...
+      binaryPath: 'ios/build/Build/Products/Release-iphonesimulator/YourApp.app',
+      build: 'npx expo run:ios --configuration Release --no-bundler 2>&1 | tail -30',
+    },
+    'android.expo52': {
+      type: 'android.apk',
+      binaryPath: 'android/app/build/outputs/apk/release/app-release.apk',
+      build: 'npx expo run:android --variant release --no-bundler 2>&1 | tail -30',
+      reversePorts: [8088],
+    },
+  },
+  devices: {
+    simulator: { type: 'ios.simulator', device: { type: 'iPhone 16' } },
+    emulator: { type: 'android.emulator', device: { avd: 'Pixel_8_API_35' } },
+  },
+  configurations: {
+    'ios.expo52.release': { device: 'simulator', app: 'ios.expo52' },
+    'android.expo52.release': { device: 'emulator', app: 'android.expo52' },
+  },
+};
+```
+
+**[community] gotcha — Expo SDK 52 `app.json` `jsEngine: "hermes"` is the default.** If your old `app.json` has `"jsEngine": "jsc"` explicitly set and you upgrade to SDK 52 without removing it, Detox tests fail with a JS engine mismatch at boot. The app launches but the Detox synchronization bridge (which uses Hermes's CDP protocol) cannot attach. Fix: remove `"jsEngine"` from `app.json` or set it to `"hermes"` explicitly.
+
+**[community] gotcha — Expo Router 4 (SDK 52) `+not-found.tsx` screens change deep-link test behavior.** SDK 52 ships Expo Router 4 which adds a typed `+not-found` route that returns a 404 screen for unmatched paths. Tests using `device.launchApp({ url: 'myapp:///products/42' })` must use the triple-slash path format. If the app redirects to the `+not-found` screen, the test is using the wrong URL format (double-slash vs triple-slash) or the route file doesn't exist yet.
+
+---
+
+### Pattern 31 — `testRunner.jest.bail` for fail-fast CI pipelines
+
+Detox's `testRunner` accepts a `bail` option that causes Jest to stop running new test suites after N test suite failures. Unlike `--bail` passed to Jest directly (which stops after the first failing test anywhere), the Detox-level `bail` operates at the suite (file) level:
+
+```js
+// .detoxrc.js — bail after 2 suite failures in CI (do not bail locally)
+module.exports = {
+  testRunner: {
+    args: {
+      $0: 'jest',
+      config: 'e2e/jest.config.js',
+      bail: process.env.CI ? 2 : 0,  // 0 = run all; N = stop after N failures
+      forceExit: true,
+    },
+    jest: {
+      setupTimeout: 300000,
+    },
+    retries: process.env.CI ? 1 : 0,
+  },
+  // ...
+};
+```
+
+**When to use `bail`**: In CI pipelines where the first two failures strongly indicate a systemic problem (simulator crashed, binary stale, network mock server down) rather than individual test flakiness. Bailing early saves CI runner minutes and surfaces the root cause faster because the first failure's logs are not buried under 50 more timeouts.
+
+**When NOT to use `bail`**: During local development or when running sharded CI jobs — bailing in a shard skips tests that other shards might have passed, giving an incomplete picture.
+
+**Interaction with `retries`**: When `retries: 1` is set alongside `bail: 2`, Detox retries each failed suite once before counting it toward the bail threshold. A suite must fail both attempts to count as a failure.
+
+---
+
+### Pattern 32 — `device.setLocation()` iOS 17+ permission requirements
+
+iOS 17 tightened location permission enforcement in the Simulator. On iOS 17+, calling `device.setLocation(lat, lon)` without the app having an active "Always" location authorization causes the call to silently fail — the GPS coordinates are set at the OS level but the app never receives the location update because the `CLLocationManager` authorization was not granted at the right level.
+
+```js
+// CORRECT — grant 'always' (not 'inuse') when using device.setLocation() for persistent updates
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    permissions: {
+      location: 'always',  // NOT 'inuse' — 'inuse' only works while app is foregrounded
+    },
+  });
+});
+
+it('shows weather for San Francisco', async () => {
+  // Grant 'always' permission before setLocation for reliable updates on iOS 17+
+  await device.setLocation(37.7749, -122.4194);
+
+  await element(by.id('get-weather-button')).tap();
+  await waitFor(element(by.id('weather-card-sanfrancisco')))
+    .toBeVisible()
+    .withTimeout(8000);
+});
+
+// For "inuse" permission, wrap setLocation in a foreground-ensured context:
+it('shows weather only when app is active (inuse permission)', async () => {
+  await device.launchApp({
+    newInstance: true,
+    permissions: { location: 'inuse' },
+  });
+
+  // Ensure app is foregrounded before location call
+  await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(5000);
+  await device.setLocation(37.7749, -122.4194);  // only works while app is in foreground
+  await element(by.id('get-weather-button')).tap();
+  await waitFor(element(by.id('weather-card-sanfrancisco'))).toBeVisible().withTimeout(8000);
+});
+```
+
+**iOS 17+ `by.system()` dialog label change [community]**: iOS 17 changed the "Allow Once" and "Allow While Using App" button label text in location permission dialogs. Teams that use `by.system().label('Allow While Using App')` find their tests fail on iOS 17 simulators because the label is now `'Allow While Using'` (without "App") on some locale configurations. Fix: use `launchApp({ permissions: { location: 'always' } })` to pre-grant and never encounter the dialog. If you must use `by.system()`, test the exact label on your target simulator first via `captureViewHierarchy`.
+
+---
+
+### Pattern 33 — `by.text()` with partial/normalized matching (Detox 20.9+)
+
+Detox 20.9+ added support for `by.text()` matching against normalized whitespace and optional partial matching. This is useful when text content includes line breaks, extra spaces, or dynamic content (e.g., "Order #12345" where the number is dynamic):
+
+```js
+// Exact text match (default) — fails if whitespace differs
+await element(by.text('Order confirmed')).tap();
+
+// Partial text match using .and() with substring approach:
+// (Detox does not expose a built-in "contains" matcher, but you can combine
+// by.id() narrowing with getAttributes() for partial text assertions)
+it('verifies dynamic order confirmation text', async () => {
+  await waitFor(element(by.id('order-confirmation-text')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // Read the text and assert it contains the expected prefix
+  const attrs = await element(by.id('order-confirmation-text')).getAttributes();
+  jestExpect(attrs.text).toMatch(/^Order #\d+/);  // regex match on dynamic order number
+});
+
+// Alternative: when the element count is known, use toHaveText() with a fixed prefix:
+it('verifies all item rows show price', async () => {
+  const listAttrs = await element(by.id('price-label')).getAttributes();
+  const prices = (listAttrs.elements ?? [listAttrs]).map(el => el.text);
+  prices.forEach(price => {
+    jestExpect(price).toMatch(/^\$[\d.]+$/);  // every price should be "$N.NN"
+  });
+});
+```
+
+**Pattern: Numeric value assertion without exact text matching**
+
+When an element displays a formatted number (currency, percentage, count) that includes locale-specific formatting, avoid `toHaveText('$1,234.56')` — use `getAttributes()` + regex or numeric parsing:
+
+```js
+it('displays the order total in the correct currency format', async () => {
+  const attrs = await element(by.id('order-total')).getAttributes();
+  // Strip currency symbol and commas before parsing
+  const total = parseFloat(attrs.text.replace(/[$,]/g, ''));
+  jestExpect(total).toBeGreaterThan(0);
+  jestExpect(total).toBeLessThan(10000);  // sanity check
+});
+```
+
+---
+
+### Pattern 34 — `device.clearUserNotifications()` for notification isolation
+
+When multiple test suites trigger `sendUserNotification()`, undelivered notifications from a previous suite can appear in the next suite's notification center, causing ghost notification banner appearances that interfere with `waitFor` assertions. `device.clearUserNotifications()` (available in Detox 20+) purges all pending and delivered notifications from the simulator/emulator before a test suite runs:
+
+```js
+// e2e/setup.js or in beforeAll blocks for notification-sensitive suites
+beforeAll(async () => {
+  await device.launchApp({ newInstance: true });
+
+  // Clear any notifications from previous test runs or suites
+  // Prevents ghost notification banners from triggering unexpected waitFor resolutions
+  if (device.getPlatform() === 'ios') {
+    await device.clearUserNotifications();
+  }
+});
+
+// In afterAll: clear notifications so they don't leak into the next suite
+afterAll(async () => {
+  if (device.getPlatform() === 'ios') {
+    await device.clearUserNotifications();
+  }
+  await device.terminateApp();
+});
+```
+
+**[community] gotcha**: Notification banners from a previous `sendUserNotification()` call can remain on-screen for 3–5 seconds (the iOS default banner duration). If the next test expects `toBeVisible()` on a banner element and a stale banner from the previous test is still fading out, the assertion may resolve against the wrong notification. Using `clearUserNotifications()` in `afterAll` prevents this. If the API is unavailable in older Detox versions, use `device.reloadReactNative()` — the JS bundle reload dismisses any active banners.
+
+---
+
+### Pattern 35 — Reducing Detox test suite cold-start time with `launchApp` `userDefaults`
+
+The `launchApp` `userDefaults` option (distinct from `launchArgs`) writes `NSUserDefaults` values into the simulator before the app launches. This is faster than using a native module bridge to read `launchArgs` and is the preferred way to inject feature flags, locale settings, and onboarding-skip tokens in iOS tests:
+
+```js
+// e2e/setup.js — inject user defaults to skip onboarding on every launch
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    // userDefaults: written directly to NSUserDefaults before app starts
+    // Key-value pairs — values can be strings, booleans, integers, or doubles
+    userDefaults: {
+      hasCompletedOnboarding: true,     // boolean → stored as NSNumber (BOOL)
+      selectedLocale: 'en-US',          // string → stored as NSString
+      featureFlagNewCheckout: 1,        // integer → stored as NSNumber (int)
+      lastSyncTimestamp: 0,             // integer → resets sync state
+    },
+    permissions: { notifications: 'YES' },
+  });
+});
+```
+
+```js
+// In RN app — read defaults with @react-native-async-storage or react-native-default-preference
+// But for NSUserDefaults: use NativeModules.RNCAsyncStorage or a custom native module:
+import { NativeModules } from 'react-native';
+const defaults = NativeModules.RNUserDefaults; // e.g., react-native-default-preference
+
+if (await defaults.get('hasCompletedOnboarding')) {
+  // Skip onboarding — user defaults were injected by Detox
+  navigateTo('HomeScreen');
+}
+```
+
+**Important**: `userDefaults` is iOS-only. For Android, use `launchArgs` which are passed as `Intent` extras. The native equivalent of NSUserDefaults on Android is `SharedPreferences` — accessible via a native module if needed.
+
+**Speed benefit [community]**: Skipping onboarding via `userDefaults` instead of tapping through the onboarding flow saves 15–30 seconds per `beforeAll` block. In a suite with 20 test files, this adds up to 5–10 minutes of CI time savings.
+
+---
+
+### 39. RN 0.77+ Metro bundler `unstable_transformProfile` change breaks Detox Hermes build [community]
+
+**Root cause**: React Native 0.77 (released January 2025) updated the default Metro `transformProfile` from `default` to `hermes-stable`. If your `metro.config.js` explicitly sets `transformer.unstable_transformProfile: 'hermes-canary'` (a config carried over from pre-0.74 projects), the compiled JS bundle includes bytecode optimizations that the stable Hermes version shipped with Detox's test binary cannot execute. The app launches, shows a brief white screen, then crashes with `Error: unrecognized Hermes bytecode version`.
+
+**WHY it's missed**: The crash happens during app launch, not during a test action. Detox's error output shows `App has crashed` without a JS stack trace — making it look like a native crash rather than a bundler mismatch. The crash does not reproduce when running the app normally with Metro (which builds at runtime with the matching Hermes version).
+
+**Diagnostic**:
+```bash
+# Check the transformer profile in use
+cat metro.config.js | grep transformProfile
+
+# Build the app and check the bundle's Hermes bytecode version
+npx react-native bundle --platform ios --dev false --bundle-output /tmp/test.jsbundle
+head -c 8 /tmp/test.jsbundle | xxd  # first 4 bytes should match expected Hermes magic
+```
+
+**Fix**: Remove the explicit `transformProfile` setting and let Metro derive it from the React Native version:
+
+```js
+// metro.config.js — DO NOT set transformProfile explicitly in RN 0.77+
+const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+
+const defaultConfig = getDefaultConfig(__dirname);
+
+const config = {
+  transformer: {
+    // Remove: unstable_transformProfile: 'hermes-canary',  // ← DELETE THIS
+    // Let Metro inherit the profile from the RN version default
+  },
+};
+
+module.exports = mergeConfig(defaultConfig, config);
+```
+
+---
+
+### 40. `waitFor` chaining multiple conditions causes silent first-condition resolution [community]
+
+**Root cause**: Some teams attempt to chain multiple `waitFor` conditions on the same element in a single statement, expecting AND-semantics:
+
+```js
+// BROKEN — this does NOT assert both conditions simultaneously
+// The second .toBeVisible() REPLACES the first — only the final assertion is evaluated
+await waitFor(element(by.id('submit-button')))
+  .toBeVisible()
+  .toBeEnabled()   // ← silently overrides the previous .toBeVisible()
+  .withTimeout(5000);
+```
+
+Detox's fluent API is designed for a single terminal condition per `waitFor` call. Each assertion method (`.toBeVisible()`, `.toExist()`, `.toHaveText()`) replaces the previous — it does not combine them. The above code waits only for the `enabled` state, not for visibility.
+
+**WHY this breaks silently**: The code runs without a compile-time or runtime error. The test "passes" even if the button is enabled but off-screen, because the visibility assertion was never evaluated.
+
+**Fix**: Use separate `waitFor` calls for each condition, or use `expect()` for the secondary assertion:
+
+```js
+// CORRECT — sequential waitFor calls for compound readiness
+it('waits for submit button to be both visible and enabled', async () => {
+  // 1. Wait for visibility first (element may be in the tree but off-screen)
+  await waitFor(element(by.id('submit-button')))
+    .toBeVisible()
+    .withTimeout(5000);
+
+  // 2. Then confirm enabled state via getAttributes (synchronous check after visibility)
+  const attrs = await element(by.id('submit-button')).getAttributes();
+  jestExpect(attrs.enabled).toBe(true);
+
+  // 3. Now safe to tap
+  await element(by.id('submit-button')).tap();
+});
+
+// Alternative: use expect() for the secondary condition (no polling, immediate assertion)
+await waitFor(element(by.id('submit-button')))
+  .toBeVisible()
+  .withTimeout(5000);
+await expect(element(by.id('submit-button'))).toBeVisible();  // immediate re-check
+// The immediate expect() is redundant here but demonstrates the pattern
+```
+
+---
+
+### 41. Android 14+ (`API 34`) permission dialog changes break `by.system()` selectors [community]
+
+**Root cause**: Android 14 (API 34) introduced new permission dialog layouts and changed button labels for camera, microphone, and photos permissions:
+
+- Camera/Microphone: removed "Allow only while using the app" — replaced with "Allow" and "Don't allow" only
+- Photos: new three-option dialog ("Allow access to all photos" / "Allow access to selected photos" / "Don't allow")
+- Precise Location: now asks separately for "Use precise location" vs "Use approximate location" as a toggle, not a dialog button
+
+If you use `by.system().label('While using the app')` or similar Android-specific labels, these selectors break silently on API 34+ emulators. The test taps nothing and proceeds, leaving the permission in a denied state.
+
+**WHY this bites teams during emulator API level upgrades**: CI pipelines that pin `api-level: 33` are unaffected. When upgrading to `api-level: 34` or `35` for broader coverage, previously passing permission tests start failing — but the failure mode looks like "element not found" on the screen after the permission dialog rather than "couldn't tap the dialog button".
+
+**Fix**: Always pre-grant permissions in `launchApp({ permissions })` — this approach is immune to dialog label changes across all Android API levels:
+
+```js
+// PREFERRED — immune to all Android permission dialog label changes
+beforeAll(async () => {
+  await device.launchApp({
+    newInstance: true,
+    permissions: {
+      camera: 'YES',
+      microphone: 'YES',
+      photos: 'YES',         // grants full photo access on Android 14+
+      location: 'always',
+      notifications: 'YES',
+    },
+  });
+});
+
+// FALLBACK — if you must use by.system() on Android, test labels on the exact API level:
+// Android 14 (API 34) camera permission dialog:
+if (device.getPlatform() === 'android') {
+  // Note: exact label depends on API level — test on each target API
+  await waitFor(element(by.system().label('Allow'))).toBeVisible().withTimeout(5000);
+  await element(by.system().label('Allow')).tap();
+}
+```
+
+**Android API-level-specific permission label reference:**
+
+| Permission | Android 13 (API 33) | Android 14 (API 34+) |
+|---|---|---|
+| Camera | "Allow only while using the app" | "Allow" |
+| Microphone | "Allow only while using the app" | "Allow" |
+| Photos | "Allow" (single) | "Allow access to all photos" |
+| Location (fine) | "Allow all the time" | "Allow all the time" (unchanged) |
+| Notifications | "Allow" | "Allow" (unchanged) |
+
+---
+
+### 42. `device.installApp()` does not grant permissions — a common multi-app test trap [community]
+
+**Root cause**: When testing cross-app flows with `device.installApp(binaryPath)`, teams assume that the same `permissions` object from `launchApp` also applies to the installed secondary app. It does not. `device.installApp()` installs the binary without launching it and without granting any permissions. The secondary app will show permission dialogs on its first run — disrupting test flow.
+
+**Fix**: After installing the secondary app, launch it once (with `device.launchApp`) to grant permissions, then terminate it, then proceed with the cross-app flow:
+
+```js
+// e2e/multi-app.test.js
+const SECONDARY_BINARY = process.env.SECONDARY_APP_BINARY || 'ios/build/SecondaryApp.app';
+const SECONDARY_BUNDLE_ID = 'com.mycompany.secondaryapp';
+
+beforeAll(async () => {
+  // Launch primary app
+  await device.launchApp({ newInstance: true, permissions: { notifications: 'YES' } });
+
+  // Install secondary app
+  await device.installApp(SECONDARY_BINARY);
+
+  // Grant permissions to secondary app by launching it once with permissions
+  // This is required because installApp() does not grant permissions
+  await device.launchApp({
+    bundleId: SECONDARY_BUNDLE_ID,
+    newInstance: true,
+    permissions: { notifications: 'YES', camera: 'YES' },
+  });
+
+  // Terminate secondary app and re-launch primary
+  await device.terminateApp(SECONDARY_BUNDLE_ID);
+  await device.launchApp({ bundleId: undefined, newInstance: false });
+  // Resume primary app from background (it was backgrounded when secondary launched)
+});
+
+afterAll(async () => {
+  await device.uninstallApp(SECONDARY_BUNDLE_ID);
+});
+```
+
+**API note**: `device.launchApp({ bundleId: 'com.other.app' })` launches a different app than the one configured in `.detoxrc.js`. This is available in Detox 20+ and allows per-test app switching without changing the Detox configuration.
+
+---
+
+### 43. Hermes source maps missing in Detox artifact logs cause unreadable crash reports [community]
+
+**Root cause**: When a test fails due to a JS exception in the RN app, Detox's log artifact captures the native crash report. Without Hermes source maps, the crash stack trace shows bytecode addresses (`0x12a4b`) instead of JS function names and line numbers — making production-style crash diagnosis impossible in CI.
+
+**WHY teams miss this**: The app runs fine in development (Metro provides source maps in real time). Only in CI — where the app is built as a Release binary with bundled Hermes bytecode — are the source maps missing. Developers never see the minified stack trace locally.
+
+**Fix**: Generate and store Hermes source maps as part of the release build, then configure the artifact upload to include them:
+
+```bash
+# iOS: generate Hermes source map during xcodebuild
+xcodebuild \
+  -workspace ios/MyApp.xcworkspace \
+  -scheme MyApp \
+  -configuration Release \
+  -sdk iphonesimulator \
+  -derivedDataPath ios/build \
+  CODE_SIGNING_ALLOWED=NO \
+  HERMES_BUNDLE_JAVASCRIPT_ENGINE=hermes \
+  | xcpretty
+
+# The source map is generated at:
+# ios/build/.../MyApp.app.dSYM/Contents/Resources/DWARF/  (native)
+# AND: ios/build/Build/Intermediates.noindex/.../main.jsbundle.map  (Hermes JS)
+```
+
+```yaml
+# GitHub Actions — save source maps alongside test artifacts
+- name: Upload source maps (for crash symbolication)
+  if: failure()
+  uses: actions/upload-artifact@v4
+  with:
+    name: hermes-sourcemaps
+    path: ios/build/**/*.jsbundle.map
+    retention-days: 7
+```
+
+```bash
+# Symbolicate a Hermes crash report manually using the source map:
+# Install: npm install -g @react-native/hermes-profile-transformer
+hermes-profile-transformer \
+  --sourcemap ios/build/.../main.jsbundle.map \
+  --cpuprofile .artifacts/test-name.cpuprofile \
+  > symbolicated-crash.json
+```
+
+**For Android**: The Hermes source map is generated at `android/app/build/generated/assets/react/release/index.android.bundle.map`. Include it in the `android-build-cache` artifact or upload it separately alongside the Detox failure artifacts.
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 43 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| `device.setBiometricEnrollment()` called without platform guard | Wrap with `if (device.getPlatform() === 'ios')` — method throws on Android (Gotcha 43-style) |
+| `device.setLocation()` with `permissions: { location: 'inuse' }` on iOS 17+ | Use `'always'` permission level for persistent location updates; 'inuse' only works while foregrounded |
+| `launchApp({ userDefaults })` used on Android | `userDefaults` is iOS-only; use `launchArgs` for Android |
+| Multiple `waitFor` conditions chained in one call (e.g., `.toBeVisible().toExist()`) | Use separate `waitFor` calls — chaining replaces rather than combines conditions (Gotcha 40) |
+| `device.installApp()` without post-install permission grant | Launch the installed app once with `permissions` to grant, then terminate before cross-app test |
+| `by.system().label('While using the app')` on Android 14+ emulators | Use `launchApp({ permissions })` to pre-grant; dialog labels changed in API 34 (Gotcha 41) |
+| `unstable_transformProfile: 'hermes-canary'` in `metro.config.js` on RN 0.77+ | Remove the explicit setting; let Metro derive the profile from the RN version (Gotcha 39) |
+| Release build artifacts not including Hermes source maps | Configure xcodebuild to output `.jsbundle.map` and upload alongside failure artifacts (Gotcha 43) |
+| `clearUserNotifications()` not called between notification test suites | Call in `afterAll` to prevent ghost banners from prior suite (Pattern 34) |
+| Feature flag injected via remote config without `launchArgs` override | Use `launchArgs` to short-circuit remote config fetch; prevents idle-detection delays and network dependency |
 
 ---
 

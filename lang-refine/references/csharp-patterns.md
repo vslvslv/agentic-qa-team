@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 28 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 29 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -26,6 +26,14 @@
        added community gotchas: `field` keyword naming conflict, extension member resolution
        ambiguity vs old-style extension methods — sourced from learn.microsoft.com/dotnet/csharp/whats-new/csharp-14
        and learn.microsoft.com/aspnet/core/release-notes/aspnetcore-10.0
+     Iter 29 (2026-05-12): added EF Core 10 Named Query Filters, Vector Search (SqlVector<float>),
+       LeftJoin/RightJoin LINQ operators, Complex Types (table splitting + JSON mapping), ExecuteUpdateAsync
+       improvements; added .NET 10 library APIs: JsonSerializerOptions.Strict, AllowDuplicateProperties,
+       PipeReader JSON deserialization, CompareOptions.NumericOrdering, Post-Quantum Cryptography
+       (MLKem/MLDsa/SlhDsa), ZipArchive async APIs; added community gotchas: EF Core parameterized
+       collection mode selection, SQL injection analyzer for FromSqlRaw — sourced from
+       learn.microsoft.com/ef/core/what-is-new/ef-core-10.0 and
+       learn.microsoft.com/dotnet/core/whats-new/dotnet-10/libraries
 -->
 
 ## Core Philosophy
@@ -2851,6 +2859,11 @@ Console.WriteLine(JsonConvert.SerializeObject(new { hello = "world" }));
 | Mixing classic extension methods and C# 14 extension blocks for same type | Resolution order surprises; explicit static invocation form differs | Fully migrate to `extension` blocks; mark old form `[Obsolete]` during transition |
 | `#:` directives in project-based `.cs` files | Compiler emits warning per directive per build — floods diagnostics | Strip `#:` and `#!` lines when promoting file-based scripts into project-based solutions |
 | `TypedResults.ServerSentEvents` without `EnumeratorCancellation` | Client disconnect doesn't cancel the generator; connection leaks | Add `[EnumeratorCancellation] CancellationToken ct` to `IAsyncEnumerable<T>` generator |
+| `FromSqlRaw` with string concatenation of user input | SQL injection — EF1002 analyzer fires at compile time (EF Core 10+) | Use `FromSql` with `FormattableString` for user-supplied values; `FromSqlRaw` only for constant SQL fragments |
+| EF Core `Contains(ids)` after upgrading to EF 10 — unexpected plan changes | EF 10 changes default translation to scalar parameters; different query plans may emerge vs EF 9's JSON OPENJSON approach | Benchmark the query; override with `UseParameterizedCollectionMode` or `EF.Constant(ids)` as needed |
+| `JsonDeserialize` with default options accepting unknown properties | Silently ignores unknown fields — masking schema drift, typos, and API version mismatches | Use `JsonSerializerOptions.Strict` or `JsonUnmappedMemberHandling.Disallow` for hardened deserialization |
+| Sorting version strings or file names with default `string` comparer | Lexicographic order puts "10" before "2" — wrong for humans | Use `StringComparer.Create(culture, CompareOptions.NumericOrdering)` for natural sort |
+| `ZipArchive` used in async code without `Task.Run` | Synchronous ZIP operations block the calling thread in async context | Use the new async `ZipArchive.CreateAsync` / `ZipFile.CreateFromDirectoryAsync` APIs (.NET 10+) |
 
 ---
 
@@ -3219,3 +3232,409 @@ if (a is int) Console.WriteLine("compatible with int");  // prints — can't use
 | Three-state `bool?` without documentation | Implicit semantics; readers don't know what `null` means | Document the three states explicitly, or use an `enum { Unknown, True, False }` |
 | `DateTime?` in serialization without culture | `null` JSON round-trips as the default (midnight 0001-01-01) in some serializers | Always use `DateTimeOffset?` and configure serializer to emit/accept `null` |
 | `new()` on a `record struct` positional type | Positional record structs auto-generate a `Deconstruct` — mixing positional and `new()` is fine, but forgetting `readonly` on the struct allows unintended mutation via boxing | Prefer `readonly record struct` for stack-allocated value objects |
+
+---
+
+## EF Core 10 — New Patterns (.NET 10 LTS)
+
+### Named Query Filters — Multiple Per Entity with Selective Disabling
+
+EF Core 10 introduces *named query filters*, allowing multiple independent global filters per entity type that can be individually disabled at query time. Previously, a single global filter per entity type forced all concerns (soft delete, multi-tenancy, etc.) into one combined expression, making it impossible to disable just one.
+
+```csharp
+// Model configuration: named filters
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Blog>()
+        .HasQueryFilter("SoftDeletionFilter", b => !b.IsDeleted)
+        .HasQueryFilter("TenantFilter", b => b.TenantId == _tenantId);
+}
+
+// Query — apply all filters (default)
+var blogs = await context.Blogs.ToListAsync(ct);
+
+// Disable only the soft-deletion filter for an admin view
+var withDeleted = await context.Blogs
+    .IgnoreQueryFilters(["SoftDeletionFilter"])
+    .ToListAsync(ct);
+
+// Disable all filters (existing behavior)
+var all = await context.Blogs.IgnoreQueryFilters().ToListAsync(ct);
+```
+
+**Why it matters:** before EF 10 you could only call `IgnoreQueryFilters()` to disable ALL filters at once. Named filters enable composite multi-tenant + soft-delete patterns where admin queries see deleted records but still respect tenant isolation.
+
+### Vector Search — `SqlVector<float>` for AI / RAG Workloads (EF 10 + SQL Server 2025 / Azure SQL)
+
+EF Core 10 adds first-class support for the `vector` SQL Server data type (available in Azure SQL Database and SQL Server 2025). Use `SqlVector<float>` to store embedding vectors on entities and `EF.Functions.VectorDistance()` to perform semantic similarity search in LINQ.
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+// Entity: store an embedding alongside the document
+public class Article
+{
+    public int Id { get; set; }
+    public required string Title { get; set; }
+    public required string Body { get; set; }
+
+    // Vector column — dimension must match your embedding model (1536 for text-embedding-3-small)
+    [Column(TypeName = "vector(1536)")]
+    public SqlVector<float>? Embedding { get; set; }
+}
+
+// Insert: populate embedding from an AI model
+IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator = /* inject */;
+var vector = await embeddingGenerator.GenerateVectorAsync(article.Body);
+article.Embedding = new SqlVector<float>(vector);
+await context.SaveChangesAsync(ct);
+
+// Semantic search: order by cosine distance from a query embedding
+float[] queryVector = await embeddingGenerator.GenerateVectorAsync(userQuery);
+var topMatches = await context.Articles
+    .Where(a => a.Embedding != null)
+    .OrderBy(a => EF.Functions.VectorDistance("cosine", a.Embedding!, new SqlVector<float>(queryVector)))
+    .Take(5)
+    .Select(a => new { a.Id, a.Title })
+    .ToListAsync(ct);
+```
+
+**Distance metrics:** `"cosine"` (direction similarity, most common for text), `"euclidean"` (geometric distance), `"dot"` (inner product — faster, requires normalized vectors).
+
+### `LeftJoin` and `RightJoin` — First-Class LINQ Outer Joins (EF 10 / .NET 10)
+
+.NET 10 adds native `LeftJoin` and `RightJoin` extension methods to LINQ. EF Core 10 recognizes these methods and translates them to `LEFT JOIN` / `RIGHT JOIN` SQL. Previously, left outer joins required a verbose `GroupJoin` + `SelectMany` + `DefaultIfEmpty` construct that few developers could write from memory.
+
+```csharp
+// Before .NET 10: verbose GroupJoin pattern
+var legacyQuery =
+    from student in context.Students
+    join dept in context.Departments
+        on student.DepartmentId equals dept.Id into deptGroup
+    from dept in deptGroup.DefaultIfEmpty()
+    select new { student.Name, DeptName = dept == null ? "[NONE]" : dept.Name };
+
+// .NET 10 / EF 10: native LeftJoin — idiomatic and readable
+var query = context.Students
+    .LeftJoin(
+        context.Departments,
+        student => student.DepartmentId,
+        dept => dept.Id,
+        (student, dept) => new
+        {
+            student.Name,
+            DeptName = dept == null ? "[NONE]" : dept.Name
+        });
+
+// RightJoin: all departments, only matched students
+var rightQuery = context.Students
+    .RightJoin(
+        context.Departments,
+        student => student.DepartmentId,
+        dept => dept.Id,
+        (student, dept) => new { StudentName = student == null ? "[NONE]" : student.Name, dept.Name });
+```
+
+**Note:** C# query syntax (`from x in y join z`) does not yet support the new `LeftJoin` / `RightJoin` operators. Use method syntax.
+
+### Complex Types — Table Splitting and JSON Mapping (EF 10)
+
+EF 10 promotes *complex types* over owned entity types for embedded value objects. Complex types have value semantics, support `ExecuteUpdateAsync`, allow assignment copying, and map to either table columns (table splitting) or JSON columns. Unlike owned entities, they cannot be confused with separate entity instances.
+
+```csharp
+// Value object as a complex type
+public class Address
+{
+    public required string Street { get; set; }
+    public required string City { get; set; }
+    public required string PostalCode { get; set; }
+}
+
+public class Customer
+{
+    public int Id { get; set; }
+    public required string Name { get; set; }
+    public required Address ShippingAddress { get; set; }
+    public Address? BillingAddress { get; set; }  // optional complex type (EF 10)
+}
+
+// Configuration: table splitting (columns in the same table)
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Customer>(b =>
+    {
+        b.ComplexProperty(c => c.ShippingAddress);
+        b.ComplexProperty(c => c.BillingAddress);  // optional — nullable
+    });
+}
+
+// Configuration: JSON mapping (single JSON column per address)
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Customer>(b =>
+    {
+        b.ComplexProperty(c => c.ShippingAddress, cp => cp.ToJson());
+        b.ComplexProperty(c => c.BillingAddress, cp => cp.ToJson());
+    });
+}
+
+// Assignment works naturally — copies values (unlike owned entity types)
+var customer = await context.Customers.FindAsync(id, ct);
+customer.BillingAddress = customer.ShippingAddress;  // OK — value copy, not reference
+await context.SaveChangesAsync(ct);
+
+// Bulk update on JSON column — new in EF 10 (not supported with owned entity types)
+await context.Customers.ExecuteUpdateAsync(
+    s => s.SetProperty(c => c.ShippingAddress.City, "Seattle"), ct);
+```
+
+**Migration note:** if you previously used owned entity types (`OwnsOne`) for table splitting or JSON, migrate to complex types. Owned entities have reference semantics which causes subtle bugs when copying or comparing values, and do not support `ExecuteUpdateAsync` on their JSON-mapped properties.
+
+---
+
+## .NET 10 Library APIs
+
+### `JsonSerializerOptions.Strict` — Hardened JSON Deserialization
+
+`JsonSerializerOptions.Strict` is a preconfigured preset that enforces security-conscious defaults: disallows duplicate JSON properties, disallows unmapped members (`JsonUnmappedMemberHandling.Disallow`), enforces case-sensitive property binding, and respects nullable annotations and required constructor parameters. Use it for public APIs, configuration parsing, and any scenario where unexpected JSON fields are a concern.
+
+```csharp
+using System.Text.Json;
+
+// Default: lenient — extra properties ignored, duplicates use last value
+string json = """{ "Name": "Alice", "Age": 30, "Unknown": "extra" }""";
+var person = JsonSerializer.Deserialize<Person>(json);  // succeeds, Unknown ignored
+
+// Strict: rejects unknown properties AND duplicate property names
+JsonSerializerOptions strict = JsonSerializerOptions.Strict;
+
+// Throws JsonException: "Unknown" is not a member of Person
+JsonSerializer.Deserialize<Person>(json, strict);
+
+// Strict also disallows duplicates
+string dupe = """{ "Name": "Alice", "Name": "Bob" }""";
+JsonSerializer.Deserialize<Person>(dupe, strict);  // throws: duplicate property "Name"
+
+record Person(string Name, int Age);
+
+// Option to disallow duplicates independently (without full Strict)
+var noDupes = new JsonSerializerOptions { AllowDuplicateProperties = false };
+JsonSerializer.Deserialize<Person>(dupe, noDupes);  // throws: duplicate property
+
+// Source-gen context: enable strict mode globally in context options
+[JsonSourceGenerationOptions(AllowDuplicateProperties = false)]
+[JsonSerializable(typeof(Person))]
+internal partial class AppJsonContext : JsonSerializerContext { }
+```
+
+**When to use:** `Strict` is ideal for security-sensitive deserialization (API inputs, config files). For maximum performance with AOT/trimming, combine `JsonSerializerOptions.Strict` with a source-generated `JsonSerializerContext`.
+
+### `CompareOptions.NumericOrdering` — Natural Sort for Version and Version-Like Strings
+
+`CompareOptions.NumericOrdering` makes `StringComparer` sort embedded numbers by their numeric value rather than lexicographically. `"Windows 10"` sorts after `"Windows 8"` (not before, as lexicographic sorting produces). `"2"` and `"02"` compare as equal. This is the "natural sort" behavior that end users expect for file lists, version strings, and UI tables.
+
+```csharp
+using System.Globalization;
+
+StringComparer naturalOrder = StringComparer.Create(
+    CultureInfo.CurrentCulture,
+    CompareOptions.NumericOrdering);
+
+// Sort OS names in the order a human expects
+string[] versions = ["Windows 11", "Windows 8", "Windows 10", "Windows 7"];
+Array.Sort(versions, naturalOrder);
+// Result: ["Windows 7", "Windows 8", "Windows 10", "Windows 11"]
+
+// Lexicographic sort gives wrong order:
+Array.Sort(versions);
+// Result: ["Windows 10", "Windows 11", "Windows 7", "Windows 8"] — WRONG for humans
+
+// Numeric equality: "007" == "7" when numeric ordering
+bool equal = naturalOrder.Equals("007", "7");  // True
+
+// Useful for UI sort columns, file names, semantic version lists
+var sorted = files.Order(naturalOrder).ToList();  // ["file1.txt", "file2.txt", "file10.txt"]
+
+// Note: NumericOrdering doesn't work with index operations (IndexOf, StartsWith, etc.)
+// It is only valid for comparison and ordering operations
+```
+
+### `JsonSerializer` with `PipeReader` — Zero-Copy Streaming Deserialization
+
+`JsonSerializer.DeserializeAsync` now accepts `PipeReader` directly in .NET 10, eliminating the need to convert a `PipeReader` to a `Stream` before deserializing. Combined with `DeserializeAsyncEnumerable<T>`, this is the idiomatic approach for streaming JSON in high-throughput pipelines.
+
+```csharp
+using System.IO.Pipelines;
+using System.Text.Json;
+
+// Server: serialize an IAsyncEnumerable<T> directly to PipeWriter
+public async Task StreamToClientAsync(PipeWriter writer, CancellationToken ct)
+{
+    var data = GenerateDataAsync(ct);
+    await JsonSerializer.SerializeAsync<IAsyncEnumerable<DataPoint>>(writer, data, cancellationToken: ct);
+    await writer.CompleteAsync();
+}
+
+// Client: deserialize incrementally from PipeReader — no intermediate Stream needed
+public async Task ConsumeStreamAsync(PipeReader reader, CancellationToken ct)
+{
+    await foreach (var point in JsonSerializer.DeserializeAsyncEnumerable<DataPoint>(reader, cancellationToken: ct))
+    {
+        await ProcessAsync(point, ct);
+    }
+    await reader.CompleteAsync();
+}
+
+public record DataPoint(string Id, double Value, DateTimeOffset RecordedAt);
+
+// Direct Pipe round-trip in a single method (useful for tests and in-process pipelines)
+var pipe = new Pipe();
+await JsonSerializer.SerializeAsync(pipe.Writer, new DataPoint("X1", 3.14, DateTimeOffset.UtcNow));
+await pipe.Writer.CompleteAsync();
+var result = await JsonSerializer.DeserializeAsync<DataPoint>(pipe.Reader);
+await pipe.Reader.CompleteAsync();
+```
+
+**Why it matters:** before .NET 10, integrating JSON deserialization with `System.IO.Pipelines` required a `PipeReader.AsStream()` call, which added buffering overhead and lost the zero-copy characteristics of the pipeline. Direct `PipeReader` support enables fully allocation-efficient JSON streaming end-to-end.
+
+### Post-Quantum Cryptography — `MLKem`, `MLDsa`, `SlhDsa` (.NET 10)
+
+.NET 10 adds three FIPS-standardized post-quantum cryptography (PQC) algorithms: ML-KEM (key encapsulation, FIPS 203), ML-DSA (digital signatures, FIPS 204), and SLH-DSA (hash-based signatures, FIPS 205). Unlike classical `AsymmetricAlgorithm` types, PQC types use static factory methods for key generation and import. Use `IsSupported` to check platform availability before use.
+
+```csharp
+using System.Security.Cryptography;
+
+// ML-KEM: key encapsulation for secure key exchange
+// GenerateKey requires an algorithm parameter (MLKemAlgorithm enum)
+using MLKem recipientKey = MLKem.GenerateKey(MLKemAlgorithm.MLKem768);
+
+// Export public key and share with sender
+string publicKeyPem = recipientKey.ExportSubjectPublicKeyInfoPem();
+
+// Sender: encapsulate a shared secret using the recipient's public key
+using MLKem senderPublic = MLKem.ImportFromPem(publicKeyPem);
+// (Encapsulate/Decapsulate APIs wrap key exchange — see docs for full example)
+
+// ML-DSA: signing and verification
+private static byte[] SignWithMLDsa(string privateKeyPath, ReadOnlySpan<byte> data)
+{
+    using MLDsa signingKey = MLDsa.ImportFromPem(File.ReadAllText(privateKeyPath));
+    return signingKey.SignData(data);  // returns signature as byte[]
+}
+
+private static bool VerifyMLDsaSignature(
+    string publicKeyPath,
+    ReadOnlySpan<byte> data,
+    ReadOnlySpan<byte> signature)
+{
+    using MLDsa verifyingKey = MLDsa.ImportFromPem(File.ReadAllText(publicKeyPath));
+    return verifyingKey.VerifyData(data, signature);
+}
+
+// Check platform support before use (requires OpenSSL 3.5+ or Windows CNG with PQC support)
+if (!MLDsa.IsSupported)
+    throw new PlatformNotSupportedException("ML-DSA is not available on this platform.");
+
+// Note: MLDsa and SlhDsa are marked [Experimental] (SYSLIB5006) until fully finalized
+```
+
+**Algorithm guidance:**
+- **ML-KEM** (FIPS 203): use for key encapsulation / key exchange. Replaces classical Diffie-Hellman and ECDH in post-quantum scenarios.
+- **ML-DSA** (FIPS 204): use for digital signatures. Replaces RSA and ECDSA.
+- **SLH-DSA** (FIPS 205): hash-based signature scheme, stateless. More conservative option when ML-DSA trust assumptions are uncertain.
+
+### `ZipArchive` Async APIs (.NET 10)
+
+.NET 10 adds native async methods for ZIP file operations. Previously, `ZipArchive` was synchronous-only; using it in async code required `Task.Run` to avoid blocking the calling thread. The new `CreateAsync`, `OpenAsync`, and `ExtractToDirectoryAsync` methods integrate naturally with async I/O pipelines.
+
+```csharp
+using System.IO.Compression;
+
+// Create a ZIP archive asynchronously
+public static async Task CreateZipAsync(
+    string outputPath,
+    IEnumerable<string> filePaths,
+    CancellationToken ct)
+{
+    await using var zipStream = File.Create(outputPath);
+    await using var archive = await ZipArchive.CreateAsync(
+        zipStream,
+        ZipArchiveMode.Create,
+        leaveOpen: false,
+        entryNameEncoding: null,
+        ct);
+
+    foreach (var filePath in filePaths)
+    {
+        var entry = archive.CreateEntry(Path.GetFileName(filePath));
+        await using var entryStream = await entry.OpenAsync(ct);
+        await using var fileStream = File.OpenRead(filePath);
+        await fileStream.CopyToAsync(entryStream, ct);
+    }
+}
+
+// Create ZIP from directory asynchronously
+await ZipFile.CreateFromDirectoryAsync(
+    sourceDirectoryName: "output/reports",
+    destinationArchiveFileName: "reports.zip",
+    cancellationToken: ct);
+
+// Extract ZIP asynchronously
+await ZipFile.ExtractToDirectoryAsync(
+    sourceArchiveFileName: "reports.zip",
+    destinationDirectoryName: "extracted/",
+    cancellationToken: ct);
+```
+
+**Why it matters:** ZIP archiving is a common I/O operation in background jobs, file uploads, and report generation. The new async APIs eliminate the `Task.Run` wrapper anti-pattern and allow proper cancellation when the caller's token fires.
+
+---
+
+## EF Core 10 — Community Gotchas
+
+### **EF Core Parameterized Collection Mode — Plan Cache vs. Query Planner Tradeoff**  [community]
+
+EF Core 10 changes the default translation of `ids.Contains(b.Id)` queries from a JSON array parameter (`OPENJSON(...)`) to individual scalar parameters (`@ids1, @ids2, ...`). Each unique collection size still generates a distinct SQL (padded to the next batch size), but the query planner gets cardinality hints. WHY it causes problems: teams upgrading from EF 9 to EF 10 may see different query plans in production — typically faster for small collections but potentially slower for very large ones. Fix: benchmark before relying on the default. Override globally with `UseParameterizedCollectionMode(ParameterTranslationMode.Constant)` for the EF 9 JSON behavior, or per-query with `EF.Constant(ids).Contains(b.Id)` when inlining is correct for a known-small set.
+
+```csharp
+// EF 10 default: scalar parameters — query planner gets cardinality info
+int[] ids = [1, 2, 3];
+var blogs = await context.Blogs.Where(b => ids.Contains(b.Id)).ToListAsync(ct);
+// Generated SQL: WHERE [b].[Id] IN (@ids1, @ids2, @ids3)
+
+// Override globally to EF 9 JSON behavior
+builder.Services.AddDbContext<BlogContext>(o =>
+    o.UseSqlServer(conn, sql =>
+        sql.UseParameterizedCollectionMode(ParameterTranslationMode.MultipleParameters)));
+        // or: ParameterTranslationMode.Constant (for inlined constants)
+        // or: ParameterTranslationMode.SingleParameter (JSON OPENJSON)
+
+// Per-query override: inline constants for small, known sets
+var trusted = await context.Blogs
+    .Where(b => EF.Constant(new[] { 1, 2, 3 }).Contains(b.Id))
+    .ToListAsync(ct);
+```
+
+### **EF Core `FromSqlRaw` String Concatenation — SQL Injection Analyzer Warning**  [community]
+
+EF Core 10 ships a Roslyn analyzer that warns when string concatenation is used inside `FromSqlRaw`, `ExecuteSqlRaw`, or similar raw-SQL methods. WHY it causes problems: `FromSqlRaw` with concatenated user input is the most common path to SQL injection in EF Core apps. The analyzer (warning `EF1002`) fires at compile time rather than at review time. Fix: switch to `FromSql` (accepts `FormattableString` — parameters are automatically sent safely) for dynamic values. Use `FromSqlRaw` only with compile-time-constant fragments that have been manually reviewed.
+
+```csharp
+// BAD: EF1002 analyzer warning — SQL injection risk
+string field = "Name";  // user-supplied
+var results = context.Blogs.FromSqlRaw("SELECT * FROM Blogs WHERE [" + field + "] IS NULL");
+
+// GOOD: FormattableString — parameters sent separately, injection-safe
+// (EF automatically parameterizes the interpolated value)
+string value = userInput;
+var safe = context.Blogs.FromSql($"SELECT * FROM Blogs WHERE Name = {value}");
+
+// GOOD: constant fragment with no user input — safe to use FromSqlRaw
+var byStatus = context.Blogs.FromSqlRaw("SELECT * FROM Blogs WHERE IsDeleted = 0");
+
+// If FromSqlRaw with dynamic fragments is unavoidable, suppress EF1002 with a comment
+// explaining the manual sanitization performed
+#pragma warning disable EF1002
+var dynamic = context.Blogs.FromSqlRaw(sanitizedSql);  // manually reviewed
+#pragma warning restore EF1002
+```

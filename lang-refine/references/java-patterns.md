@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas) | mixed | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -1354,6 +1354,96 @@ void main() {
 
 **Note for production code:** Unnamed classes and instance main are for scripting and teaching contexts. Production application entry points should still use `public static void main(String[] args)` or Spring Boot's `@SpringBootApplication` — not unnamed classes — for clarity and compatibility with tooling.
 
+### Foreign Function & Memory API — Safe Native Interop (Java 22 standard — JEP 454)
+The Foreign Function & Memory (FFM) API replaces `sun.misc.Unsafe` and JNI for native code interop. It provides type-safe, scope-bound access to off-heap memory (`MemorySegment`) and the ability to call native functions directly (`Linker`). Unlike JNI, FFM APIs are checked by the compiler and automatically free native memory when the arena goes out of scope.
+
+```java
+import java.lang.foreign.*;
+import java.lang.invoke.MethodHandle;
+
+public class NativeStrlen {
+
+    // Call the C standard library strlen() from Java — no JNI boilerplate
+    public static long strlen(String input) throws Throwable {
+        Linker linker = Linker.nativeLinker();
+        SymbolLookup stdlib = linker.defaultLookup();
+
+        // Look up 'strlen' in the C runtime
+        MemorySegment strlenAddr = stdlib.find("strlen")
+            .orElseThrow(() -> new RuntimeException("strlen not found"));
+
+        // Describe the function: takes a pointer, returns size_t (a long)
+        FunctionDescriptor desc = FunctionDescriptor.of(
+            ValueLayout.JAVA_LONG,    // return type: size_t
+            ValueLayout.ADDRESS       // parameter: const char*
+        );
+
+        MethodHandle strlen = linker.downcallHandle(strlenAddr, desc);
+
+        // Allocate a confined arena — native memory freed automatically at close()
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment cString = arena.allocateFrom(input);  // Java String → C string
+            return (long) strlen.invoke(cString);
+        }
+    }
+}
+```
+
+**When to use:** FFM is for library authors integrating with native code (OS APIs, BLAS, OpenSSL, CUDA). For most application code, use a JVM library wrapper instead. Never use `sun.misc.Unsafe` in new code — FFM is the sanctioned replacement.
+
+### Class-File API — Programmatic Bytecode Manipulation (Java 24 standard — JEP 484)
+The Class-File API provides a standard Java library for reading, writing, and transforming `.class` files. It replaces third-party bytecode libraries (ASM, Javassist) for use cases like instrumentation, annotation processors, and code generators that need to inspect or modify compiled classes.
+
+```java
+import java.lang.classfile.*;
+import java.lang.constant.ClassDesc;
+import java.lang.constant.MethodTypeDesc;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public class ClassFileExample {
+
+    // Read a class file and print all method names
+    public static void listMethods(Path classFile) throws Exception {
+        byte[] bytes = Files.readAllBytes(classFile);
+        ClassModel model = ClassFile.of().parse(bytes);
+
+        model.methods().forEach(method ->
+            System.out.println(method.methodName().stringValue()
+                + method.methodType().stringValue())
+        );
+    }
+
+    // Transform: add a System.out.println at the start of every method
+    public static byte[] instrumentMethods(byte[] classBytes) {
+        return ClassFile.of().transform(
+            ClassFile.of().parse(classBytes),
+            ClassTransform.transformingMethods(
+                (methodBuilder, methodElement) -> {
+                    if (methodElement instanceof CodeModel code) {
+                        methodBuilder.withCode(codeBuilder -> {
+                            // Inject: System.out.println("<methodName> called")
+                            codeBuilder
+                                .getstatic(ClassDesc.of("java.lang.System"), "out",
+                                    ClassDesc.of("java.io.PrintStream"))
+                                .ldc(methodBuilder.methodName().stringValue() + " called")
+                                .invokevirtual(ClassDesc.of("java.io.PrintStream"), "println",
+                                    MethodTypeDesc.ofDescriptor("(Ljava/lang/String;)V"));
+                            // Then emit all original instructions
+                            code.forEach(codeBuilder::with);
+                        });
+                    } else {
+                        methodBuilder.with(methodElement);
+                    }
+                }
+            )
+        );
+    }
+}
+```
+
+**Note:** The Class-File API is designed for tooling authors, not application developers. It follows the class file format version that the running JVM understands — always generates valid bytecode for the current JVM version. For simple annotation-based code generation, use APT (Annotation Processing Tool) or Lombok instead.
+
 ---
 
 ## Real-World Gotchas  [community]
@@ -2097,7 +2187,7 @@ BigDecimal min = amounts.stream().min(BigDecimal::compareTo).orElseThrow();
 ```
 **WHY:** Because `BigDecimal` implements `Comparable<BigDecimal>` but `equals()` is inconsistent with `compareTo()`, the documentation explicitly warns that `BigDecimal` is unusual in this respect. Using it in `TreeSet`/`TreeMap` (which use `compareTo`) produces different behavior than `HashSet`/`HashMap` (which use `equals`). Always use `compareTo()` for monetary value comparisons.
 
-**36. Using `double` or `float` for Monetary Calculations [community]**
+**36. Using `double`/`float` for Monetary Values [community]**
 `double` and `float` use binary floating-point representation, which cannot exactly represent most decimal fractions. `0.1 + 0.2` in IEEE 754 double precision is `0.30000000000000004`, not `0.3`. This causes rounding errors that silently accumulate in financial calculations — cents off in small transactions become dollars off at scale. The root cause is treating `double` as a "real number" type rather than a "binary approximation" type. Fix: always use `BigDecimal` with explicit scale and `RoundingMode` for money; or represent monetary values as integer cents and convert only for display.
 
 ```java
@@ -2133,6 +2223,161 @@ long totalCents = priceCents + taxCents;  // 102 cents = $1.02 (exact integer ar
 BigDecimal display = BigDecimal.valueOf(totalCents, 2);  // "1.02"
 ```
 **WHY:** IEEE 754 double has 52 mantissa bits — about 15–16 significant decimal digits. A value like `0.1` is stored as `0.1000000000000000055511151231257827021181583404541015625`. For a high-volume payment system processing a billion transactions at $0.01 each, cumulative rounding errors can produce incorrect totals. The JVM spec guarantees `double` precision but not decimal exactness. `BigDecimal` is the standard Java solution: it stores decimal numbers exactly (subject to the scale you specify) and gives you full control over rounding.
+
+**37. Spring `@Transactional` Self-Invocation Bypass [community]**
+When a method annotated with `@Transactional` is called from another method **within the same class**, Spring's proxy-based AOP never intercepts the call — the transaction is silently skipped. The root cause is that Spring's `@Transactional` is implemented via a JDK dynamic proxy or CGLIB subclass: only calls routed through the proxy are intercepted. An internal `this.myMethod()` call bypasses the proxy entirely.
+
+```java
+// BAD — internal call bypasses the proxy; no transaction is started for processItem
+@Service
+public class OrderService {
+
+    public void processBatch(List<Order> orders) {
+        for (Order order : orders) {
+            this.processItem(order);  // direct method call on 'this'; no proxy intercept!
+        }
+    }
+
+    @Transactional  // NEVER fires for the internal call above
+    public void processItem(Order order) {
+        repo.save(order);
+        eventPublisher.publish(new OrderProcessed(order.id()));
+    }
+}
+
+// GOOD — extract to a separate Spring-managed bean so the proxy wraps the call
+@Service
+public class OrderProcessor {
+    @Transactional
+    public void processItem(Order order) {
+        repo.save(order);
+        eventPublisher.publish(new OrderProcessed(order.id()));
+    }
+}
+
+@Service
+public class OrderService {
+    private final OrderProcessor processor;
+
+    public void processBatch(List<Order> orders) {
+        orders.forEach(processor::processItem);  // goes through proxy — transaction fires
+    }
+}
+```
+**WHY:** This is the single most common Spring pitfall. The `@Transactional` annotation on `processItem` will show in the source code, yet the transaction never opens. Debugging requires JPA exception handlers to notice that no EntityManager is bound to the thread. Fix: always call `@Transactional` methods from a different Spring bean; alternatively use `ApplicationContext.getBean(OrderService.class)` to get the proxy, but the separate-bean pattern is far cleaner.
+
+**38. JPA `@Transactional(readOnly = true)` Missing on Read Methods [community]**
+Most JPA repositories fetch data without modifying it, yet developers often omit `readOnly = true` on read-only transactions. Without it, Hibernate enables dirty-checking — tracking all loaded entities for changes — even when the method never modifies anything. On large result sets, dirty checking adds significant CPU overhead and prevents some database-side read optimizations (e.g., Postgres allows read replicas for `SET TRANSACTION READ ONLY`). Fix: annotate all read-only service methods with `@Transactional(readOnly = true)`; Spring Data JPA repository methods already do this by default, but custom service methods do not.
+
+```java
+// BAD — full transaction with dirty checking, even though nothing is written
+@Transactional
+public List<OrderSummary> getRecentOrders(String userId) {
+    return orderRepo.findByUserIdOrderByCreatedAtDesc(userId, Pageable.ofSize(20));
+}
+
+// GOOD — readOnly=true skips dirty checking; hints database read replica routing
+@Transactional(readOnly = true)
+public List<OrderSummary> getRecentOrders(String userId) {
+    return orderRepo.findByUserIdOrderByCreatedAtDesc(userId, Pageable.ofSize(20));
+}
+
+// GOOD — default Spring Data JPA: findAll(), findById() already use readOnly=true
+// But any custom @Service method wrapping repository calls needs explicit annotation:
+@Transactional(readOnly = true)
+public DashboardStats getDashboardStats(String tenantId) {
+    long orders = orderRepo.countByTenantId(tenantId);
+    BigDecimal revenue = orderRepo.sumRevenueByTenantId(tenantId);
+    return new DashboardStats(orders, revenue);
+}
+```
+**WHY:** Hibernate's first-level cache tracks every entity loaded in a session. Without `readOnly = true`, it stores a snapshot of each entity for dirty-checking at flush time. On a query returning 10,000 rows, this doubles memory usage and CPU time. With `readOnly = true`, Hibernate skips snapshot creation and tells JDBC drivers the transaction is read-only, enabling connection pool optimizations.
+
+**39. Overriding `finalize()` for Resource Cleanup [community]**
+The `finalize()` method (deprecated since Java 9, removed in Java 18) was commonly misused for resource cleanup. Even before removal, relying on it was dangerous: the JVM offers no timing guarantee — an object's finalizer may run minutes after it becomes eligible, or never. This caused file descriptor leaks, database connection exhaustion, and native memory leaks that only appeared under GC pressure. The modern replacement is `java.lang.ref.Cleaner` for post-GC cleanup, but `AutoCloseable` + `try-with-resources` should be the first choice.
+
+```java
+// BAD — finalize() is unreliable and has been removed in Java 18+
+public class LegacyFileHandle {
+    private final FileInputStream fis;
+
+    @Override
+    @Deprecated
+    protected void finalize() throws Throwable {
+        try { fis.close(); } finally { super.finalize(); }
+        // Not guaranteed to run; removed in Java 18; never write this
+    }
+}
+
+// GOOD — AutoCloseable; cleanup is deterministic via try-with-resources
+public class FileHandle implements AutoCloseable {
+    private final FileInputStream fis;
+
+    public FileHandle(Path path) throws IOException {
+        this.fis = new FileInputStream(path.toFile());
+    }
+
+    @Override
+    public void close() throws IOException {
+        fis.close();
+    }
+}
+
+// GOOD — java.lang.ref.Cleaner for true post-GC cleanup (last-resort safety net only)
+// Use only when you cannot control close() call sites (e.g., library code)
+public class NativeBuffer {
+    private static final java.lang.ref.Cleaner CLEANER = java.lang.ref.Cleaner.create();
+
+    private final long address;
+    private final java.lang.ref.Cleaner.Cleanable cleanable;
+
+    public NativeBuffer(int size) {
+        this.address = allocateNative(size);
+        this.cleanable = CLEANER.register(this, () -> freeNative(address));
+        // Cleaner holds a Runnable, NOT a reference to 'this' — no leak
+    }
+
+    public void close() {
+        cleanable.clean();  // explicit cleanup when possible; Cleaner is the safety net
+    }
+}
+```
+**WHY:** `finalize()` created a resurrection window: any finalizer that stores `this` somewhere resurrected the object, requiring two GC cycles to collect. Finalizers also blocked GC threads. `Cleaner` avoids both problems by holding a `Runnable` (no reference to the cleaned object) and running in a separate daemon thread.
+
+**40. Not Using `@SafeVarargs` on Generic Varargs Methods [community]**
+When a method accepts `T... args` (generic varargs), the compiler emits an unchecked warning because varargs internally creates an array, and arrays and generics don't mix safely in Java. Developers often suppress this with `@SuppressWarnings("unchecked")` on the caller instead of `@SafeVarargs` on the method declaration. `@SafeVarargs` is the correct solution: it documents that the method itself does not perform unsafe operations on the varargs array, and suppresses the warning at the declaration rather than at every call site.
+
+```java
+// BAD — @SuppressWarnings at each call site; boilerplate; wrong layer
+@SuppressWarnings("unchecked")
+List<String> result = combine(list1, list2, list3);
+
+// ALSO BAD — unchecked warning on the method itself without documentation
+public <T> List<T> combine(List<T>... lists) {  // heap pollution warning
+    List<T> result = new ArrayList<>();
+    for (List<T> list : lists) result.addAll(list);
+    return result;
+}
+
+// GOOD — @SafeVarargs promises we don't write into the varargs array itself
+// Rule: safe if the method only reads from varargs, never writes back to it or escapes it
+@SafeVarargs
+public final <T> List<T> combine(List<T>... lists) {
+    List<T> result = new ArrayList<>();
+    for (List<T> list : lists) result.addAll(list);  // only reads lists[i], safe
+    return result;
+}
+
+// SAFE to call — no warning at call site
+List<String> merged = combine(List.of("a", "b"), List.of("c"), List.of("d", "e"));
+
+// UNSAFE — do NOT add @SafeVarargs to this: varargs array element is stored
+// @SafeVarargs  ← WRONG
+public <T> T[][] storeAll(T... items) {
+    return (T[][]) new Object[][]{ items };  // escapes varargs array — NOT safe
+}
+```
+**WHY:** Without `@SafeVarargs`, every call site that passes generic collections gets an unchecked warning, cluttering build output and training developers to suppress warnings broadly. `@SafeVarargs` is the correct contract annotation: it signals that the method author guarantees safe usage, and the warning moves from N call sites to 0. It can only be applied to `final`, `static`, or constructor methods (ensuring the contract cannot be violated by an override).
 
 ---
 
@@ -2181,6 +2426,233 @@ BigDecimal display = BigDecimal.valueOf(totalCents, 2);  // "1.02"
 | Module imports (`import module`) misuse | Ambiguous type resolution when same name exists in two modules | Add explicit single-type import after module import to resolve ambiguity |
 | `BigDecimal.equals()` for numeric equality | Returns false for same value with different scale (1.0 ≠ 1.00) | Use `compareTo() == 0`; `stripTrailingZeros()` before using as map key |
 | `double`/`float` for monetary values | Binary floating-point cannot represent 0.1 exactly; silent rounding errors accumulate | Use `BigDecimal` with explicit scale and `RoundingMode`; or store as integer cents |
+| Spring `@Transactional` on self-invoked method | AOP proxy not in call path; transaction silently never opens | Call `@Transactional` methods from a different Spring-managed bean |
+| No `@Transactional(readOnly = true)` on reads | Hibernate dirty-checks all loaded entities; wasted CPU + memory | Always annotate read-only service methods with `readOnly = true` |
+| `finalize()` for resource cleanup | No timing guarantee; deprecated Java 9, removed Java 18; GC resurrection risk | Use `AutoCloseable` + `try-with-resources`; `Cleaner` as last-resort safety net |
+| Missing `@SafeVarargs` on generic varargs | Unchecked warning at every call site; N warnings instead of 1 at declaration | Add `@SafeVarargs` to `final`/`static` methods that only read from varargs |
+| In-memory H2 instead of real DB in tests | Dialect differences (JSON columns, arrays, window functions) hide integration bugs | Use Testcontainers with the production database engine (Postgres, MySQL, etc.) |
+| `Thread.sleep()` in async test assertions | Flaky: too short = false failure, too long = slow CI | Use Awaitility `await().untilAsserted(...)` for polling async state |
+
+---
+
+## Java Testing Patterns
+
+Modern Java testing relies on four complementary layers: JUnit 5 for test structure, Mockito for isolation, AssertJ for expressive assertions, and Testcontainers for real-infrastructure integration tests. Use them together; each covers what the others cannot.
+
+### JUnit 5 — Parameterized and Dynamic Tests
+
+JUnit 5's `@ParameterizedTest` eliminates copy-pasted test methods. `@CsvSource` covers table-driven cases inline; `@MethodSource` provides complex object arguments. `@DynamicTest` generates tests at runtime for property-based or data-driven scenarios.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.TestFactory;
+import java.util.stream.Stream;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.DynamicTest.dynamicTest;
+
+class DiscountCalculatorTest {
+
+    // Inline table-driven — each row is a separate test
+    @ParameterizedTest(name = "qty={0}, price={1} → expected={2}")
+    @CsvSource({
+        "1,  100.0,  100.0",
+        "10, 100.0,  90.0",   // 10% bulk discount
+        "50, 100.0,  75.0",   // 25% volume discount
+    })
+    void bulkDiscount(int qty, double price, double expected) {
+        assertEquals(expected, new DiscountCalculator().apply(qty, price), 0.001);
+    }
+
+    // MethodSource: complex objects as arguments
+    @ParameterizedTest
+    @MethodSource("invalidOrders")
+    void rejectsInvalidOrders(Order order, String reason) {
+        assertThrows(IllegalArgumentException.class,
+            () -> new OrderValidator().validate(order), reason);
+    }
+
+    static Stream<org.junit.jupiter.params.provider.Arguments> invalidOrders() {
+        return Stream.of(
+            org.junit.jupiter.params.provider.Arguments.of(
+                new Order(null, 1), "null product"),
+            org.junit.jupiter.params.provider.Arguments.of(
+                new Order("SKU-1", -1), "negative quantity")
+        );
+    }
+
+    // TestFactory — generate tests dynamically (e.g., from a data file)
+    @TestFactory
+    Stream<DynamicTest> dynamicDiscountTests() {
+        return Stream.of(
+            new int[]{1, 100, 100},
+            new int[]{10, 100, 90},
+            new int[]{50, 100, 75}
+        ).map(row -> dynamicTest(
+            "qty=%d price=%d → %d".formatted(row[0], row[1], row[2]),
+            () -> assertEquals(row[2],
+                (int) new DiscountCalculator().apply(row[0], row[1]))
+        ));
+    }
+}
+```
+
+### Mockito — Argument Captors and Strict Mocks
+
+Use `ArgumentCaptor` when you need to assert on complex objects passed to a mock (e.g., verify the exact event published). Enable `MockitoSettings(strictness = STRICT_STUBS)` to catch unnecessary stubbing — stubs that are set up but never called indicate dead test code.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.*;
+
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.STRICT_STUBS)  // fails on unnecessary stubs
+class OrderServiceTest {
+
+    @Mock  NotificationSender sender;
+    @Mock  OrderRepository    repo;
+    @InjectMocks OrderService service;
+
+    @Captor ArgumentCaptor<Notification> notifCaptor;
+
+    @Test
+    void placingOrder_sendsConfirmationWithCorrectDetails() {
+        // Arrange
+        Order order = new Order("ORD-1", "user-42", 99.99);
+        when(repo.save(order)).thenReturn(order);
+
+        // Act
+        service.placeOrder(order);
+
+        // Assert — capture what was actually sent to the sender
+        verify(sender).send(notifCaptor.capture());
+        Notification sent = notifCaptor.getValue();
+        assertThat(sent.recipient()).isEqualTo("user-42");
+        assertThat(sent.subject()).contains("ORD-1");
+        assertThat(sent.body()).contains("99.99");
+    }
+
+    @Test
+    void placeOrder_doesNotSendOnRepositoryFailure() {
+        when(repo.save(any())).thenThrow(new DatabaseException("disk full"));
+        assertThrows(OrderException.class, () -> service.placeOrder(new Order()));
+        verifyNoInteractions(sender);  // important: no notification on failure
+    }
+}
+```
+
+### AssertJ — Fluent, Readable Assertions
+
+AssertJ's fluent API produces far more informative failure messages than JUnit `assertEquals` and enables chained assertions on the same subject without repeating it. Use `assertThatThrownBy` for exception assertions and `assertThat(list).extracting(...)` for collection field assertions.
+
+```java
+import static org.assertj.core.api.Assertions.*;
+
+@Test
+void assertj_fluent_assertions() {
+    List<User> users = List.of(
+        new User("Alice", "alice@example.com", 30, true),
+        new User("Bob",   "bob@example.com",   25, false)
+    );
+
+    // Collection assertions — readable, composable
+    assertThat(users)
+        .hasSize(2)
+        .extracting(User::name)
+        .containsExactly("Alice", "Bob");
+
+    // Field-level extraction across collection
+    assertThat(users)
+        .extracting(User::name, User::active)
+        .containsExactly(
+            tuple("Alice", true),
+            tuple("Bob",   false)
+        );
+
+    // Exception assertion — better than assertThrows when you need the message
+    assertThatThrownBy(() -> new User(null, "test@x.com", 25, true))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("name");
+
+    // Optional assertion — don't unwrap manually
+    Optional<User> found = Optional.of(users.get(0));
+    assertThat(found)
+        .isPresent()
+        .hasValueSatisfying(u -> assertThat(u.email()).endsWith("@example.com"));
+
+    // Map assertions
+    Map<String, User> byEmail = Map.of("alice@example.com", users.get(0));
+    assertThat(byEmail)
+        .containsKey("alice@example.com")
+        .extractingByKey("alice@example.com")
+        .extracting(User::name)
+        .isEqualTo("Alice");
+}
+```
+
+### Testcontainers — Real Infrastructure in Integration Tests
+
+Testcontainers starts disposable Docker containers for databases, message brokers, and other services. Tests run against the actual technology — not a mock or in-memory substitute — so integration issues surface in CI rather than production.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+@SpringBootTest
+@Testcontainers
+class UserRepositoryIntegrationTest {
+
+    // Container is shared across all tests in this class (reuse = true)
+    @Container
+    static final PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine")
+            .withDatabaseName("testdb")
+            .withUsername("test")
+            .withPassword("test");
+
+    // Wire the dynamic port into Spring's datasource config before context starts
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url",    postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
+
+    @Autowired UserRepository repo;
+
+    @Test
+    void savedUser_canBeRetrievedById() {
+        User saved = repo.save(new User("Alice", "alice@example.com"));
+        Optional<User> found = repo.findById(saved.id());
+        assertThat(found).isPresent()
+            .hasValueSatisfying(u -> assertThat(u.email()).isEqualTo("alice@example.com"));
+    }
+}
+```
+
+**Testing anti-patterns:**
+
+| Anti-Pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| `assertEquals` with cryptic failure message | `expected: <42> but was: <43>` gives no context | Use AssertJ's `assertThat(actual).isEqualTo(42).as("order total after 10% discount")` |
+| In-memory H2 instead of real DB for integration tests | H2 ignores dialect differences (JSON columns, array types, window functions) that break on Postgres | Use Testcontainers with the production database engine |
+| `Mockito.when(...)` on every test even when stub is irrelevant | Unnecessary stubs mask unused-stub bugs and add noise | Enable `STRICT_STUBS`; only stub what the test exercises |
+| Testing private methods directly via reflection | Brittle; private APIs change without notice | Test behaviour through public API; if private method is complex, extract it to a package-private collaborator |
+| `Thread.sleep()` in tests to wait for async events | Flaky; too short = false failures, too long = slow CI | Use `Awaitility.await().untilAsserted(...)` for polling; or restructure to synchronous testing with `@Async` disabled |
 
 ---
 

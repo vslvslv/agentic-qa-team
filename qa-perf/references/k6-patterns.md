@@ -1,5 +1,5 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/ -->
 
 > Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Re-run `/qa-refine k6` to refresh.
@@ -1314,7 +1314,138 @@ export default async function () {
 > When testing error handling, set `status: 500` or `status: 503` in `route.fulfill()`
 > to inject failure scenarios without modifying the server.
 
+### Browser Device Emulation — Mobile Profile Testing  [community]
 
+k6's browser module exposes a `devices` object containing pre-built device profiles (viewport size,
+user agent, device scale factor, touch events). Use `browser.newContext({ ...devices['iPhone 14'] })`
+to simulate a specific mobile device without manually specifying each option. Essential for measuring
+Core Web Vitals from a mobile-user perspective.
+
+```javascript
+// k6/scripts/browser-device-emulation.js
+// Emulate iPhone 14 for mobile Web Vitals baseline
+import { browser, devices } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    mobile_iphone: {
+      executor: "shared-iterations",
+      vus: 1,
+      iterations: 3,
+      options: { browser: { type: "chromium" } },
+    },
+  },
+  thresholds: {
+    // Mobile budgets are tighter — use device-specific LCP/INP targets
+    "browser_web_vital_lcp":    ["p(75)<4000"],   // 4s LCP for mobile on 4G
+    "browser_web_vital_inp":    ["p(75)<300"],    // INP (replaces FID in v2.0)
+    "browser_web_vital_fcp":    ["p(75)<3000"],   // 3s FCP for mobile
+    checks:                      ["rate==1.0"],
+  },
+};
+
+// Available profiles include: 'iPhone 14', 'iPhone 14 Plus', 'iPhone 14 Pro',
+// 'Pixel 7', 'Galaxy S23', 'iPad Pro 11', 'Desktop Chrome', 'Desktop Firefox'
+// Run `k6 x docs k6/browser` to list all available devices
+const iPhoneProfile = devices["iPhone 14"];
+
+export default async function () {
+  // Spread device profile into context options — sets viewport, userAgent,
+  // deviceScaleFactor, isMobile, hasTouch, defaultBrowserType automatically
+  const ctx  = await browser.newContext({
+    ...iPhoneProfile,
+    // Override locale/timezone for locale-sensitive tests
+    locale:   "en-US",
+    timezoneId: "America/New_York",
+  });
+  const page = await ctx.newPage();
+
+  try {
+    await page.goto(`${__ENV.APP_URL || "http://localhost:3001"}/`);
+    await page.waitForLoadState("networkidle");
+
+    // Touch events fire correctly due to isMobile: true in the device profile
+    const signupBtn = page.getByRole("button", { name: "Sign Up" });
+    await signupBtn.waitFor({ state: "visible" });
+
+    // Tap (not click) — correct for touch devices
+    await signupBtn.tap();
+
+    const heading = page.getByRole("heading", { level: 1 });
+    check(await heading.textContent(), {
+      "heading visible on mobile": (t) => t && t.length > 0,
+    });
+
+    await page.screenshot({ path: `results/mobile-${__ITER}.png` });
+  } finally {
+    await page.close();
+    await ctx.close();
+  }
+}
+```
+
+```javascript
+// Side-by-side: desktop vs. mobile Web Vitals comparison
+import { browser, devices } from "k6/browser";
+import { check } from "k6";
+import { Trend } from "k6/metrics";
+
+const lcpDesktop = new Trend("lcp_desktop_ms", true);
+const lcpMobile  = new Trend("lcp_mobile_ms",  true);
+
+export const options = {
+  scenarios: {
+    desktop: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 3,
+      exec: "desktopFlow",
+      options: { browser: { type: "chromium" } },
+    },
+    mobile: {
+      executor: "shared-iterations",
+      vus: 1, iterations: 3,
+      startTime: "15s",
+      exec: "mobileFlow",
+      options: { browser: { type: "chromium" } },
+    },
+  },
+};
+
+const APP = __ENV.APP_URL || "http://localhost:3001";
+
+export async function desktopFlow() {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${APP}/`);
+    await page.waitForLoadState("networkidle");
+    // LCP emitted automatically — read from data.metrics in handleSummary
+    check(page.url(), { "desktop loaded": (u) => !u.includes("error") });
+  } finally { await page.close(); }
+}
+
+export async function mobileFlow() {
+  const ctx = await browser.newContext({ ...devices["Pixel 7"] });
+  const page = await ctx.newPage();
+  try {
+    await page.goto(`${APP}/`);
+    await page.waitForLoadState("networkidle");
+    check(page.url(), { "mobile loaded": (u) => !u.includes("error") });
+  } finally { await page.close(); await ctx.close(); }
+}
+```
+
+> **[community]:** The `devices` object is imported from `"k6/browser"` — NOT from a
+> separate module. It mirrors the Playwright `devices` object, so teams familiar with
+> Playwright's device profiles can reuse the same names. If a device name doesn't exist
+> in k6's built-in list, `devices['Unknown Device']` returns `undefined` and
+> `browser.newContext({ ...undefined })` throws a runtime error — always verify device
+> names against the k6 docs or `k6 x docs k6/browser`.
+
+> **[community]:** When emulating mobile devices, set `K6_BROWSER_ARGS="--no-sandbox
+> --disable-dev-shm-usage"` in Docker/CI environments — the device profile changes the
+> viewport size which triggers Chromium to re-initialize its renderer process, consuming
+> more `/dev/shm` than a headless desktop session.
 
 Use `k6/net/grpc` for gRPC service performance tests. Load `.proto` files in the init
 context (not inside `default`) — loading per-iteration recreates the client on every VU
@@ -2122,6 +2253,30 @@ export default async function (data) {
     await ctx.close();
   }
 }
+```
+
+### 36. Browser Locator API automatic retries in v2.0 — flaky selectors may now pass silently  [community]
+**What:** k6 v2.0.0 adds automatic retry logic to all `newAction`-based Locator APIs (click, fill, check, etc.). In v1.x, a click on an element that wasn't immediately actionable would fail instantly. In v2.0, k6 retries the action for up to the default action timeout before failing. Teams migrating from v1.x may notice that previously-flaky tests now pass more consistently — but also that tests that were previously fast-failing on wrong selectors now take longer to fail because they wait through the retry window.
+**WHY:** The retry logic mirrors Playwright's auto-waiting behavior: k6 waits for the element to be visible, stable, and actionable before dispatching the action. This eliminates a class of race conditions where the test clicks an element milliseconds before it is actually ready. However, it also means tests with incorrect selectors fail more slowly — the retry window masks the immediate "element not found" signal that teams used as a quick feedback indicator.
+**Fix:** If test runs are slowing down on incorrect selectors, reduce the action timeout:
+```javascript
+const ctx = await browser.newContext({ defaultActionTimeout: 5000 });  // 5s vs 30s default
+// Or per-page:
+page.setDefaultTimeout(5000);
+```
+Keep the default (30s) for production tests where servers may have legitimate rendering delays.
+
+### 37. `http.get()` extra-argument warning in v2.0 silently ignored in v1.x — audit your scripts  [community]
+**What:** k6 v2.0.0 adds a warning when `http.get()` or `http.head()` are called with extra positional arguments (e.g., a request body). In v1.x, these extra arguments were silently ignored. Teams who accidentally wrote `http.get(url, body, params)` (using the `http.post()` signature) were sending GET requests without any body or params — their tests ran but the extra arguments were discarded without warning.
+**WHY:** `http.get()` and `http.head()` accept only `(url, params?)` — there is no request body in a GET or HEAD request. The extra-argument warning catches typos where the developer meant to use `http.post()` or `http.put()` but wrote `http.get()`. In production, such mistakes produced requests that silently dropped auth headers or custom tags specified in the third positional argument.
+**Fix:** Run `k6 run --log-level=warn k6/scripts/load.js` after upgrading to v2.0 and audit any "extra arguments" warnings. For requests that need a body, switch to `http.post()`, `http.put()`, or `http.request()`. For params-only GET requests, ensure params are the SECOND argument:
+```javascript
+// ❌ v1.x silently ignored the third arg
+http.get(url, body, { tags: { name: "profile" } });
+
+// ✓ Correct v2.0 patterns:
+http.get(url, { tags: { name: "profile" } });  // params as second arg
+http.post(url, body, { tags: { name: "profile" } });  // if you need a body
 ```
 
 ## Lesser-Known Options
@@ -3119,6 +3274,11 @@ k6 run --scenario run k6/scripts/universal.js
 # Inspect script structure without executing
 k6 inspect k6/scripts/universal.js
 
+# Scaffold a new k6 script from a template (k6 v0.52+)
+k6 new                                 # interactive prompts for type and name
+k6 new --template browser browser-script.js  # browser module starter
+k6 new --template protocol load.js          # HTTP/gRPC/WebSocket starter
+
 # Analyze script dependencies — identifies required extensions and k6 version constraints
 k6 deps k6/scripts/universal.js
 # JSON output (for CI parsing)
@@ -3146,6 +3306,22 @@ k6 deps --json k6/scripts/universal.js > k6/results/deps.json
 > # Pin extensions via manifest rather than ad-hoc xk6 build flags
 > export K6_DEPENDENCY_MANIFEST=./k6-manifest.json
 > k6 run k6/scripts/load.js  # k6 reads manifest to resolve extension versions
+> ```
+
+> **[community]:** `k6 x docs` and `k6 x explore` (k6 v2.0+) are built-in discovery helpers
+> surfaced in the main `k6 --help` output. `k6 x docs k6/browser` opens the browser module
+> documentation and lists available device profiles, API methods, and options. `k6 x explore`
+> lists all available extensions in the xk6 registry. Use these in onboarding scripts and
+> team runbooks instead of linking to external URLs that may drift:
+> ```bash
+> # List all available k6 built-in and extension modules
+> k6 x explore
+>
+> # Open browser module docs including available devices list
+> k6 x docs k6/browser
+>
+> # Open secrets module docs
+> k6 x docs k6/secrets
 > ```
 
 ### Extensions (xk6)  [community]
@@ -5151,6 +5327,7 @@ Stream metrics to external systems during the run:
 
 ```bash
 # k6 Web Dashboard — built-in real-time browser UI (no external tools required)
+# NOTE (v2.0): Dashboard is now part of the core k6 binary — no xk6-dashboard extension needed.
 # Default: http://localhost:5665 — open in browser while test runs
 K6_WEB_DASHBOARD=true k6 run k6/scripts/load.js
 
@@ -5269,6 +5446,7 @@ Note: Complex nested options (`scenarios`, `thresholds`) are NOT configurable vi
 | `K6_PAUSED` | `false` | Start test paused (resume via REST API or `k6 resume`) |
 | `K6_NO_COLOR` | `false` | Disable ANSI colors in output (always use in CI) |
 | `K6_ADDRESS` | `""` | Enable k6 REST API server at this address, e.g. `localhost:6565` (v2.0: disabled by default) |
+| `K6_PROVISION_HOST_VERSION` | `""` | Exposes extension version compatibility info; used by xk6 auto-resolution to check host k6 semver against extension requirements |
 
 ```bash
 # Typical CI override — no script modifications needed
@@ -5939,6 +6117,7 @@ These items were introduced between v2.0.0-rc1 and the final v2.0.0 release. Upd
 | easyjson → stdlib `encoding/json` | Extension authors using easyjson-generated methods must update their serialization code. |
 | `--summary-mode=legacy` removed | Previously kept for backward compat. Now only `full`, `compact`, `disabled` are valid. |
 | Archive metadata `dependencies` field | `k6 archive` now embeds extension dependency info so `k6/x/` imports survive re-execution. |
+| Dashboard in core binary | `K6_WEB_DASHBOARD` no longer requires the `xk6-dashboard` extension — it is built into the v2.0 binary. Remove `xk6-dashboard` from custom builds. |
 
 **HTTP API server migration:**
 ```bash

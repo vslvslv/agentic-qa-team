@@ -1,15 +1,16 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
 <!-- new (2026-05-12): Fowler 5-layer microservice strategy (component test level), Neon DB branch isolation, Vitest defineProject + extends API, Google "Construct with Collaborators" principle, "Fantastical Shapes" quality-over-ratio insight -->
 <!-- new (2026-05-12 iter 33): Vitest 3.x inline workspace config, multi-browser instances API, Playwright 1.50+ Clock API + tsconfig option + Aria Snapshots, TypeScript 7.0 migration implications for test pipelines, Test Double taxonomy per pyramid level (Classical vs Mockist TDD), Fowler TestDouble taxonomy at pyramid layers -->
 <!-- new (2026-05-12 iter 34): Vitest 4.0 (Oct 2025) + 4.1 (Mar 2026) — browser mode stable, toMatchScreenshot, expect.schemaMatching (Zod/Valibot), test tags with --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false; Playwright v1.51-v1.60 — test.abort(), await using teardown, --only-changed, ARIA snapshot on page object, toContainClass(), testProject.teardown, locator.normalize(), page.pickLocator() -->
+<!-- new (2026-05-12 iter 35): TypeScript 6.0 breaking default changes (types:[], strict:true, module:esnext, rootDir:.) — silent test pipeline breakage; Vitest 5.0.0-beta.2 (May 5, 2026) — inline expect, sequential removal, directory restructure; Playwright v1.60 HAR tracing API (tracing.startHar) + locator.drop() drag-and-drop; Google "The Way of TDD" (Mar 2026) blog post -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
 
 ---
 
@@ -1205,6 +1206,47 @@ export const orderFactory = Factory.define<Order>(() => ({
 
 28. **Vitest 4.x `--detect-async-leaks` exposes hidden inter-test pollution** [community] — After enabling `--detect-async-leaks` in Vitest 4.1, teams frequently discover that integration test cases involving NestJS `TestingModule` or typeorm `DataSource` were not properly closed in `afterAll`. The uncleaned handles caused non-deterministic failures in subsequent test files — previously misdiagnosed as "flaky tests." The fix is straightforward: ensure `module.close()` and `dataSource.destroy()` are awaited in `afterAll`. After fixing the leaks, many teams report a 20–40% reduction in their perceived flaky test count, because the flakiness was actually leak-induced pollution rather than true non-determinism. Enable `--detect-async-leaks` as a permanent CI flag at the unit and integration levels; disable it for the e2e level where Playwright manages its own browser lifecycle. [community: vitest.dev/blog/vitest-4-1.html]
 
+29. **TypeScript 6.0 new defaults silently break test `tsconfig.json` configurations** [community] — TypeScript 6.0 changed four critical default values that most test configs relied on implicitly. Teams upgrading from TS 5.x find that `describe`, `it`, `expect`, and `process` are suddenly undefined in test files, because `types` now defaults to `[]` (previously all `@types/*` packages under `node_modules/@types` were auto-included). The three other breaking defaults: `strict` is now `true` (was `false`), `module` is now `esnext` (was derived from `target`), and `rootDir` is now `.` (was inferred from source structure). These changes require explicit opt-ins in every test `tsconfig.json`. The most common CI failure pattern: a greenfield project migrates to TS 6.0, the test suite compiles locally (IDE resolves types via project references), but CI fails with "Cannot find name 'describe'" because the bare `tsc --noEmit` invoked by CI uses the root `tsconfig.json` which now has `types: []`. Fix: update every test `tsconfig.json` or the root `tsconfig.json` (if tests share it) to include the required types explicitly:
+
+```json
+// tsconfig.json (or tsconfig.test.json) — explicit TypeScript 6.0 configuration
+// Required after upgrading from TS 5.x — none of these were needed before TS 6.0
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2025",
+    "rootDir": "./src",
+    // TS 6.0: types now defaults to [] — must list every @types/* package needed
+    "types": ["node", "vitest/globals"],
+    // If using Jest instead: "types": ["node", "jest"]
+    // If using both: "types": ["node", "vitest/globals", "jest-extended"]
+    "paths": {
+      // TS 6.0: baseUrl is deprecated — use paths entries with explicit prefixes
+      "@/*": ["./src/*"]
+    }
+  }
+}
+```
+
+```json
+// tsconfig.integration.json — separate config for integration test level
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Integration tests may need node16/nodenext for testcontainers ESM exports
+    "moduleResolution": "node16",
+    "types": ["node", "vitest/globals", "testcontainers"]
+  },
+  "include": ["src", "tests/integration", "tests/helpers"]
+}
+```
+
+The `strict: true` default is usually harmless if the codebase already uses `"strict": true`, but teams that relied on the old `strict: false` default will suddenly see type errors in test files that use `any` implicitly — particularly in older test fixtures and mocks. The `rootDir: "."` default is the most structurally disruptive: if `tsconfig.json` sits at the repo root and `rootDir` previously inferred to `./src`, the new default includes `tests/` in the compilation root, which can break `outDir` paths and emit unexpected files. Fix: explicitly set `"rootDir": "./src"` and add `tests/` to `"include"` without it being part of `rootDir`. [official: typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html]
+
+30. **Vitest 5.0 (beta) introduces breaking changes to test directory conventions and the `sequential` option** [community] — Vitest 5.0.0-beta.2 (released May 5, 2026) is the next major version. Teams maintaining custom CI scripts that interact with Vitest output artifacts should prepare now. Key breaking changes: (1) The default attachment directory has changed from `.vitest-attachements/` to `.vitest/attachments/` and the blob reporter now writes to `.vitest/blob/` — any CI script that reads these paths hardcoded will silently produce empty reports or fail. (2) The `sequential` option on `test` and `suite` has been removed in favour of `concurrent: false` — test files using `test.sequential(...)` or `suite.sequential(...)` will produce a runtime error after upgrading. (3) The `expect` package is now inlined into Vitest rather than a peer dependency — projects that imported `expect` from `'vitest/expect'` directly need to update to `'vitest'`. (4) V8 coverage now tracks `node:child_process` and `node:worker_threads` contexts — this may increase measured branch coverage for integration tests that use worker threads, which can shift coverage threshold pass/fail status. Do not upgrade to Vitest 5.0 stable in production test pipelines until the release is stable; monitor [vitest.dev/blog/vitest-5.html] for the stable announcement. Until then, pin to `vitest@^4.1` and add a TODO note to unpin when 5.0 stable lands. [community: github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2]
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -1700,6 +1742,81 @@ test('order with disposable test user', async ({ page }) => {
 
 ---
 
+### Playwright v1.60: HAR Tracing and Drag-and-Drop at the E2E Level  [community]
+
+Two additions in Playwright v1.60 affect specific e2e test case patterns in TypeScript projects:
+
+**`tracing.startHar()` / `tracing.stopHar()` — first-class HAR recording:**
+Previously, HAR recording in Playwright required `page.routeFromHAR()` patterns that were awkward to integrate into test fixtures. Playwright v1.60 elevates HAR tracing to a first-class tracing API using `await using` syntax for automatic cleanup. This is useful at the e2e level when you need to record and replay network traffic for reproducible test scenarios — for example, capturing a third-party API response sequence and replaying it in CI without hitting the live API.
+
+```typescript
+// e2e/payment-flow.e2e.test.ts — HAR recording + replay at e2e level (Playwright v1.60)
+import { test, expect } from '@playwright/test';
+
+// Step 1: Record HAR (run once against the live environment, commit the .har file)
+test('record payment flow HAR', async ({ page, context }) => {
+  // Start HAR recording with URL filter — only capture payment API calls
+  const har = await context.tracing.startHar({
+    path: 'fixtures/payment-flow.har',
+    url: /api\.payment-provider\.com/,
+    content: 'attach', // embed response bodies in the HAR file
+    mode: 'minimal',   // omit redundant headers to keep file size manageable
+  });
+
+  await page.goto('/checkout');
+  await page.fill('[name="card"]', '4242424242424242');
+  await page.getByRole('button', { name: 'Place order' }).click();
+  await expect(page.getByRole('heading', { name: /order confirmed/i })).toBeVisible();
+
+  await context.tracing.stopHar();
+});
+
+// Step 2: Replay HAR in CI — no live third-party API required
+test('checkout completes using recorded HAR (offline-safe)', async ({ page, context }) => {
+  // Route requests matching the HAR to the recorded responses
+  await context.routeFromHAR('fixtures/payment-flow.har', {
+    url: /api\.payment-provider\.com/,
+    update: false, // use recorded responses; fail if a request has no match
+  });
+
+  await page.goto('/checkout');
+  await page.fill('[name="card"]', '4242424242424242');
+  await page.getByRole('button', { name: 'Place order' }).click();
+  await expect(page.getByRole('heading', { name: /order confirmed/i })).toBeVisible();
+});
+```
+
+The HAR recording pattern sits in a hybrid space between the e2e test level and the contract test level: it records the real external API contract once, then replays it deterministically in CI. This is particularly valuable when the external API has rate limits or is unavailable in the CI environment. It is not a replacement for Pact contract tests when you *own both sides* of the contract — HAR replay is appropriate for read-only, one-directional contracts with third-party APIs you cannot instrument for Pact verification.
+
+**`locator.drop()` — drag-and-drop e2e test cases:**
+Drag-and-drop interaction has historically been one of the most brittle patterns in e2e testing. Playwright v1.60's `locator.drop()` provides a semantically correct simulation of external file or clipboard data being dropped onto a target element, distinct from `dragTo()` which simulates a same-page drag. Use `locator.drop()` for file upload via drag-and-drop; use `dragTo()` for reordering within a sortable list.
+
+```typescript
+// e2e/file-upload.e2e.test.ts — locator.drop() for external file drag-and-drop (v1.60)
+import { test, expect } from '@playwright/test';
+import path from 'node:path';
+
+test('user can upload a file by dragging it onto the dropzone', async ({ page }) => {
+  await page.goto('/upload');
+  const dropZone = page.getByRole('region', { name: 'file drop zone' });
+
+  // locator.drop(): simulates external file drag onto an element
+  // Works across Chromium, Firefox, WebKit — no browser-specific workaround needed
+  await dropZone.drop({
+    files: [path.resolve('fixtures/test-invoice.pdf')],
+    mimeType: 'application/pdf',
+  });
+
+  // Verify file was accepted and processing began
+  await expect(page.getByRole('status', { name: /processing/i })).toBeVisible();
+  await expect(page.getByText('test-invoice.pdf')).toBeVisible();
+});
+```
+
+[official: playwright.dev/docs/release-notes — v1.60 (tracing.startHar, locator.drop)]
+
+---
+
 ### Vitest 4.x Async Leak Detection and Tag-Based Quarantine  [community]
 
 The `--detect-async-leaks` flag introduced in Vitest 4.1 changes the economics of the "quarantine don't delete" flakiness strategy at the unit and integration test levels. Previously, a test case that leaked a `setInterval` or an open `net.Socket` would silently corrupt the next test case — the flakiness appeared in the *wrong* test case, making root-cause diagnosis difficult. With `--detect-async-leaks`, the leaking test case fails immediately with a diagnostic message listing the leaked handles.
@@ -1715,7 +1832,42 @@ This is the Vitest 4.x idiom for the quarantine strategy described in gotcha #8 
 
 ---
 
-## Key Resources
+### Preparing for Vitest 5.0 (Beta as of May 2026)  [community]
+
+Vitest 5.0.0-beta.2 was released on May 5, 2026. It is not yet stable, but teams should audit their pyramid configuration for the following breaking changes before upgrading:
+
+| Breaking change | Impact on test pyramid | Migration |
+|-----------------|------------------------|-----------|
+| Default attachment dir: `.vitest-attachements/` → `.vitest/attachments/` | CI scripts reading screenshot/trace artifacts by hardcoded path will break silently | Update `attachmentsDir` in `vitest.config.ts` or fix CI script paths |
+| Blob reporter output: `.vitest-blob/` → `.vitest/blob/` | Multi-shard merge pipelines that use blob reporter lose output | Update `--outputFile` path or merge step configuration |
+| `test.sequential()` / `suite.sequential()` removed | Test files using the `sequential` sugar produce runtime errors | Replace with `test('...', { concurrent: false }, ...)` |
+| `expect` package now inlined into Vitest | Projects importing from `'vitest/expect'` directly need to update | Change import to `'vitest'` |
+| V8 coverage tracks `node:child_process` + `node:worker_threads` | Branch coverage may increase for integration tests using worker threads; threshold checks may now pass that previously failed | Review coverage thresholds after upgrade |
+
+**Stable release timeline:** Not announced as of May 12, 2026. Pin to `vitest@^4.1` until stable is announced at [vitest.dev/blog/vitest-5.html].
+
+**Safe upgrade path:**
+
+```bash
+# Test the upgrade in a separate branch before landing it to main
+npm install vitest@5.0.0-beta.2 --save-dev
+
+# Run only unit tests first — the level least affected by directory/reporter changes
+npx vitest run --project unit
+
+# If unit tests pass, run integration tests
+npx vitest run --project integration
+
+# Check that coverage output is at the expected path
+ls .vitest/
+
+# If all pass, update CI scripts before committing the version bump
+# Key files to update: .github/workflows/*.yml, scripts/check-pyramid-shape.ts
+```
+
+The most critical audit is for teams using `--reporter=blob` in sharded CI pipelines: the output directory change means the merge step (`vitest merge`) will fail silently if pointed at the old `.vitest-blob/` path. [community: github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2]
+
+---
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
@@ -1753,4 +1905,5 @@ This is the Vitest 4.x idiom for the quarantine strategy described in gotcha #8 
 | Vitest 3.0 Release | Tool | https://vitest.dev/blog/vitest-3.html | Inline workspace config, multi-browser instances, reporter redesign, public node API stabilisation |
 | Vitest 4.0 Release | Tool | https://vitest.dev/blog/vitest-4.html | Browser mode stable, toMatchScreenshot visual regression, expect.schemaMatching (Zod/Valibot), Playwright trace support |
 | Vitest 4.1 Release | Tool | https://vitest.dev/blog/vitest-4-1.html | Test tags + --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false, test.extend builder pattern |
-| TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping |
+| TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping; BREAKING: `types:[]`, `strict:true`, `module:esnext`, `rootDir:.` new defaults |
+| Vitest 5.0 Beta | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Next major version (beta May 2026): inline expect, sequential removal, .vitest/ directory restructure, V8 worker coverage — audit before upgrading |

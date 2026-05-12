@@ -1,6 +1,7 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 15 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.8-5.9 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + typescript-5.9-noUncheckedSideEffectImports (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 16 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
+<!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 
 ## Core Principles
 
@@ -1264,6 +1265,51 @@ describe('calculateTotal (property-based)', () => {
 
 21. **[community] The "Is TDD Dead?" debate produced a durable framework for evaluating any testing approach.** Kent Beck's four dimensions — Frequency (how often tests run), Fidelity (how accurately they represent production), Overhead (time/complexity cost), and Lifespan (cost over the software's life) — apply to every testing decision, not just TDD. In TypeScript projects: unit test cases with fakes score high on Frequency and Lifespan but lower on Fidelity (the fake diverges from the real DB); integration test cases score high on Fidelity but lower on Frequency (slow). The framework prevents religious debates ("unit tests are always better") by making the tradeoff explicit. Apply it when choosing between TDD'd unit test cases and Testcontainers-based integration tests for a given TypeScript module.
 
+22. **[community] "Construct with Collaborators, Call with Work" — a precise design rule for TDD-driven injection.** The Google Testing Blog (May 2026) articulates a principle that resolves the most common TDD design question: what goes in a constructor vs. what goes in a method parameter? The answer: **collaborators** (services, repositories, mailers — objects the class works _with_) belong in constructors; **work** (data, request inputs, commands — what the method acts _on_) belongs in method parameters. This is not merely style — it has a direct TDD implication: test cases that construct objects with all collaborators injected, then call methods with the work, produce the clearest, most reusable typed fakes. Violations of this rule (passing work through constructors, or injecting all inputs as services) make test cases harder to write — which is the TDD signal that the design is wrong.
+
+```typescript
+// ❌ WRONG: passing work (request data) in the constructor
+class OrderService {
+  constructor(
+    private readonly orderId: string,    // ← work, not a collaborator
+    private readonly userId: string,     // ← work, not a collaborator
+    private readonly repo: OrderRepository  // ← collaborator (correct)
+  ) {}
+  async process(): Promise<void> { /* ... */ }
+}
+// Problem: every test case must create a new OrderService per request — no reuse.
+// The repo (collaborator) should outlive the request; orderId/userId (work) should not.
+
+// ✅ CORRECT: collaborators in constructor, work in method parameters
+class OrderService {
+  constructor(
+    private readonly repo: OrderRepository,  // ← collaborator
+    private readonly mailer: Mailer,          // ← collaborator
+  ) {}
+
+  async processOrder(orderId: string, userId: string): Promise<void> {
+    // orderId and userId are work — they change per call
+    const order = await this.repo.findById(orderId);
+    await this.mailer.send({ to: userId, subject: `Order ${orderId} confirmed` });
+  }
+}
+
+// TDD test case — one OrderService instance, multiple test cases with different work:
+describe('OrderService', () => {
+  const repo = new InMemoryOrderRepository();
+  const mailer = new SpyMailer();
+  const service = new OrderService(repo, mailer); // ← constructed once, used across test cases
+
+  it('sends confirmation for a valid order', async () => {
+    await repo.save({ id: 'ORD-1', status: 'pending', userId: 'user@example.com' });
+    await service.processOrder('ORD-1', 'user@example.com');  // ← work passed per call
+    expect(mailer.sent[0].subject).toContain('ORD-1');
+  });
+});
+```
+
+23. **[community] TypeScript 6.0 upgrade will silently break TDD test suites that rely on auto-discovered `@types`.** TypeScript 6.0 (May 2026) changed the `types` default from auto-discovering all installed `@types/*` packages to an empty array `[]`. Teams upgrading from TypeScript 5.x will find their TDD test files immediately failing to compile with "Cannot find name 'describe'" and "Cannot find name 'expect'" errors — even though nothing in the test code changed. The fix is one line (`"types": ["vitest/globals"]` or `"jest"`), but without foreknowledge this error is confusing because it looks like the test runner is broken, not the TypeScript config. Add the `types` field to `tsconfig.json` explicitly **before** upgrading to TypeScript 6.0.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2340,12 +2386,13 @@ TypeScript 5.9 updated `tsc --init` to generate a prescriptive minimal `tsconfig
 
 ```jsonc
 // tsconfig.json generated by `tsc --init` in TypeScript 5.9+
+// (Accurate as of TypeScript 5.9 release — subsequently superseded by TypeScript 6.0 defaults)
 {
   "compilerOptions": {
     "strict": true,                         // ← previously off by default; now on
     "noUncheckedIndexedAccess": true,       // ← new in 5.9 baseline
     "exactOptionalPropertyTypes": true,     // ← new in 5.9 baseline
-    "noUncheckedSideEffectImports": true,   // ← new in 5.9 baseline (see below)
+    "noUncheckedSideEffectImports": true,   // ← available since 5.6, now part of 5.9 default scaffold
     "isolatedModules": true,                // ← new in 5.9 baseline; required for esbuild/SWC
     "moduleDetection": "force",             // ← prevents accidental global scripts
     "module": "nodenext",                   // ← ESM-first
@@ -2356,7 +2403,7 @@ TypeScript 5.9 updated `tsc --init` to generate a prescriptive minimal `tsconfig
 
 **Why TDD benefits from the 5.9 baseline:** New projects initialized with `tsc --init` now start with the same strict settings that this guide has recommended since the first iteration. Teams no longer need to manually add `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` — the default scaffold enforces TDD-quality type precision from the first test case.
 
-**`noUncheckedSideEffectImports` (TypeScript 5.9):** This new compiler option flags imports that are only used for their side effects (e.g., `import './polyfill.js'`) when the module does not exist. Without it, TypeScript silently ignores missing side-effect-only imports. In TDD, this catches test setup files that accidentally import a path that was renamed or deleted — a category of defect that previously produced silent test isolation failures.
+**`noUncheckedSideEffectImports` (TypeScript 5.6, not 5.9):** This compiler option (introduced in TypeScript 5.6, available but off by default) flags imports that are only used for their side effects (e.g., `import './polyfill.js'`) when the module does not exist. Without it, TypeScript silently ignores missing side-effect-only imports. In TDD, enabling this catches test setup files that accidentally import a path that was renamed or deleted — a category of defect that previously produced silent test isolation failures. **Note:** This option is opt-in. Enable it in `tsconfig.json` explicitly: `"noUncheckedSideEffectImports": true`.
 
 ```typescript
 // Before TypeScript 5.9 noUncheckedSideEffectImports:
@@ -2597,6 +2644,103 @@ userTest('returns null for unknown email', async ({ repo }) => {
 
 ---
 
+### TypeScript 6.0 — Breaking Changes Affecting TDD Workflows [community]
+
+TypeScript 6.0 was released May 2026. It is a **transition release** with significant default changes. TDD test suites on TypeScript 5.x will need targeted updates before upgrading.
+
+#### The Most Impactful Change: `types` Defaults to `[]`
+
+In TypeScript 6.0, `"types"` in `compilerOptions` now defaults to an empty array instead of auto-discovering all installed `@types/*` packages. This means Vitest/Jest/Mocha global functions (`describe`, `it`, `expect`, `test`) are no longer automatically recognised without an explicit `types` declaration.
+
+```typescript
+// ❌ After TypeScript 6.0 upgrade without config update — TDD test files immediately error:
+// Cannot find name 'describe'. Do you need to install type definitions?
+// Cannot find name 'it'.
+// Cannot find name 'expect'.
+describe('ShoppingCart', () => {   // ← TypeScript error in TS 6.0 without types config
+  it('starts empty', () => { ... });
+});
+
+// ✅ Fix: add explicit types to tsconfig.json or tsconfig.test.json
+```
+
+```jsonc
+// tsconfig.json — TypeScript 6.0 compatible TDD configuration
+{
+  "compilerOptions": {
+    "target": "es2025",           // ← TS 6.0 new default; check Node.js version compatibility
+    "module": "esnext",           // ← TS 6.0 new default
+    "strict": true,               // ← TS 6.0 new default (previously false)
+    "rootDir": "./src",           // ← Must be explicit now; TS 6.0 defaults to tsconfig dir
+    "types": ["node", "vitest/globals"],  // ← REQUIRED in TS 6.0 — no more auto-discovery
+
+    // Options REMOVED in TypeScript 6.0 — delete from existing configs:
+    // ❌ "moduleResolution": "node"   → use "bundler" or "nodenext"
+    // ❌ "module": "commonjs"         → use "esnext" or "nodenext"
+    // ❌ "esModuleInterop": false      → removed (true is now always assumed)
+    // ❌ "target": "es5"              → removed
+
+    // TDD-relevant options — remain valid and recommended:
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedSideEffectImports": true,  // opt-in since TS 5.6
+    "isolatedModules": true
+  }
+}
+```
+
+**New features in TypeScript 6.0 useful for TDD:**
+
+- **ES2025 `RegExp.escape()` and `Temporal` API types:** Test cases for date/time logic can now use the `Temporal` API without a polyfill type definition.
+- **`Map.prototype.getOrInsert()` / `getOrInsertComputed()`:** Useful in typed in-memory fakes (reduces boilerplate for test double stores).
+- **`--stableTypeOrdering` flag:** Produces deterministic type union ordering — important for TDD test cases that `toMatchObject` complex unions, which previously could have non-deterministic TypeScript error messages in CI.
+- **DOM library consolidation:** `dom.iterable` and `dom.asynciterable` are now included by default in the `dom` lib — test cases using async iterators no longer need `"lib": ["es2023", "dom", "dom.iterable"]` boilerplate.
+
+```typescript
+// TypeScript 6.0 TDD: Map.getOrInsert in typed in-memory fakes
+// InMemoryOrderRepository.ts — cleaner factory logic with getOrInsert
+class InMemoryOrderRepository implements OrderRepository {
+  readonly #store = new Map<string, Order>();
+  readonly #byCustomer = new Map<string, Set<string>>();  // customerId → orderIds
+
+  async save(order: Order): Promise<Order> {
+    this.#store.set(order.id, order);
+    // TypeScript 6.0: getOrInsert removes the boilerplate Map.has + Map.set pattern
+    this.#byCustomer
+      .getOrInsert(order.customerId, new Set<string>())
+      .add(order.id);
+    return order;
+  }
+
+  async findByCustomer(customerId: string): Promise<Order[]> {
+    return [...(this.#byCustomer.get(customerId) ?? [])]
+      .map(id => this.#store.get(id))
+      .filter((o): o is Order => o !== undefined);
+  }
+}
+
+// TDD test case — unchanged by TS 6.0; the fake's internals changed but the interface did not
+it('retrieves orders by customer id', async () => {
+  const repo = new InMemoryOrderRepository();
+  const order = await repo.save({ id: 'ORD-1', customerId: 'CUST-1', total: 50 });
+  const found = await repo.findByCustomer('CUST-1');
+  expect(found).toHaveLength(1);
+  expect(found[0].id).toBe('ORD-1');
+});
+```
+
+**[community] TypeScript 6.0 migration checklist for TDD projects:**
+
+1. Add `"types": ["node", "vitest/globals"]` (or `"jest"` / `"mocha"`) to `tsconfig.json` **before** upgrading.
+2. Remove deprecated options: `moduleResolution: "node"`, `module: "commonjs"`, `esModuleInterop: false`, `target: "es5"`.
+3. Set `"rootDir"` explicitly — the inference changed.
+4. Run `tsc --noEmit` after upgrading — expect 20–100 new errors on a 50k-line codebase; most are `types` configuration errors and removed-option errors.
+5. Use `"ignoreDeprecations": "6.0"` as a temporary escape hatch during migration — it will not work in TypeScript 7.0.
+
+**[community] The `types: []` default change is the highest-impact TDD gotcha in TypeScript 6.0.** Teams that rely on globally available `describe`/`it`/`expect` from Vitest globals will see immediate compile errors after upgrading without adding `"types": ["vitest/globals"]`. The fix is one line, but it will block CI if the upgrade happens without reading the migration guide first.
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -2617,8 +2761,10 @@ userTest('returns null for unknown email', async ({ repo }) => {
 | TypeScript 5.5 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html | Inferred type predicates — TDD-friendly filter functions with automatic narrowing |
 | TypeScript 5.7 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html | `--noCheck` flag for CI parallelisation of type-check vs test jobs |
 | TypeScript 5.8 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html | Granular return branch checks; `--erasableSyntaxOnly` for Node.js type-stripping TDD loops |
-| TypeScript 5.9 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | TDD-friendly `tsc --init` defaults; `import defer` for lazy module evaluation; `noUncheckedSideEffectImports` |
+| TypeScript 5.9 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | TDD-friendly `tsc --init` defaults; `import defer` for lazy module evaluation; `noUncheckedSideEffectImports` (note: option introduced in TS 5.6) |
+| TypeScript 6.0 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | Major breaking changes: `types:[]` default breaks Vitest/Jest globals without explicit config; removed deprecated module options; ES2025 support; `Map.getOrInsert` in typed fakes |
 | Vitest 4.0 Release Notes | Docs | https://vitest.dev/blog/vitest-4.html | Stable Browser Mode; `expect.schemaMatching` (Zod/Valibot/ArkType); `expect.assert` for type narrowing; `spyOn` constructor; `toMatchScreenshot`; typed `test.extend()` fixture context in hooks; sequential `verbose` reporter |
 | "Is TDD Dead?" video series | Video series | https://martinfowler.com/articles/is-tdd-dead/ | Kent Beck, DHH, Fowler debate; introduces Frequency/Fidelity/Overhead/Lifespan framework |
 | Self-Testing Code — Martin Fowler | Article | https://martinfowler.com/bliki/SelfTestingCode.html | The foundational goal behind TDD; explains why automated test suites matter more than methodology |
 | Google Testing Blog — "The Way of TDD" | Blog post | https://testing.googleblog.com/2026/03/the-way-of-tdd.html | 2026 Google TotT post on TDD practice and discipline |
+| Google Testing Blog — "Construct with Collaborators, Call with Work" | Blog post | https://testing.googleblog.com/2026/05/construct-with-collaborators-call-with.html | 2026 Google TotT post; articulates the design principle underlying constructor injection in TDD: collaborators (services, dependencies) belong in constructors, work (data, request inputs) belongs in method parameters |

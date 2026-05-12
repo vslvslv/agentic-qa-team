@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 24 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 25 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 25 additions: Cucumber.js unreleased — formatter output redesign (summary/progress/progress-bar/pretty), printAttachments deprecated→includeAttachments migration, SummaryFormatter/ProgressFormatter class deprecation, FORCE_COLOR env var replaces color format option; playwright-bdd unreleased — docStringType in $step fixture (now officially exposed), AI agent skill for Gherkin generation, strict arity checks (breaking), Node.js 20+ / Playwright 1.60+ minimum; playwright-bdd v8.4.2 — multiple step decorators on single method TypeScript example added -->
 <!-- Iter 24 additions: Cucumber.js v12.7-v12.8.3 — env var propagation to parallel child processes (v12.7.0), custom externalizing option (v12.8.0), thrown-string error fix (v12.8.3 — latest as of 2026-05-09); playwright-bdd v8.0–v8.5.0 — missingSteps option, matchKeywords, BeforeScenario/AfterScenario aliases, tags-from-path, min Playwright 1.41, single-quote default, step decorators, "Fix with AI" (v8.1+); Gherkin DocString content-type annotation caveats; Additional Resources section completion -->
 <!-- Iter 23 additions: Cucumber.js v12 (current version as of 2026) — TypeScript config files, built-in sharding v12.2, plugin architecture v12.5, formatter redesign, includeAttachments option, Node 24/25; Gherkin Rule keyword practical usage with per-rule Background and TypeScript step binding example; v12 migration pitfalls [community] -->
 <!-- Iter 22 additions: two new official anti-patterns from cucumber.io/docs/guides/anti-patterns/ (Feature-Coupled Step Definitions, Conjunction Steps); discovery-first BDD model from cucumber.io/docs/bdd/ — both sources added to learning-sources catalog 2026-05-12 -->
@@ -6428,3 +6429,322 @@ purely as a readability aid for reviewers of feature files. Write step definitio
 the content regardless of annotation. This keeps step definitions forward-compatible: they
 work whether the annotation is present, absent, or changed, and do not silently break if a
 team member omits the annotation on a new scenario.
+
+---
+
+### Cucumber.js Upcoming Formatter Changes (Next Major — Unreleased)
+
+The next major Cucumber.js release (post-v12.8.3) introduces several formatter-related changes
+that TypeScript teams should prepare for. These are documented in the `CHANGELOG.md` `[Unreleased]`
+section as of 2026-05-09.
+
+**1. `printAttachments` → `includeAttachments` migration**
+
+The `printAttachments` format option was deprecated in v12 in favour of `includeAttachments`.
+The upcoming release enforces this. Update any existing configuration:
+
+```javascript
+// cucumber.js — BEFORE (deprecated in v12, removed in next major)
+export default {
+  default: {
+    format: ['progress-bar', 'html:reports/report.html'],
+    formatOptions: { printAttachments: true },  // deprecated
+  },
+};
+
+// cucumber.js — AFTER (correct form)
+export default {
+  default: {
+    format: ['progress-bar', 'html:reports/report.html'],
+    formatOptions: { includeAttachments: true },  // current option
+  },
+};
+```
+
+**2. `SummaryFormatter` and `ProgressFormatter` class deprecation**
+
+TypeScript teams that extend these built-in formatter classes will need to migrate to the
+new formatter architecture. The classes are deprecated (not removed) in the next release, but
+will be removed in a subsequent major version.
+
+```typescript
+// BEFORE — class extending deprecated formatter
+import { SummaryFormatter, IFormatterOptions } from '@cucumber/cucumber';
+export class MyCustomFormatter extends SummaryFormatter {
+  constructor(options: IFormatterOptions) {
+    super(options);
+  }
+}
+
+// AFTER — use the Formatter base class with the envelope-based API
+import { Formatter, IFormatterOptions } from '@cucumber/cucumber';
+export class MyCustomFormatter extends Formatter {
+  constructor(options: IFormatterOptions) {
+    super(options);
+    // Handle messages via the new envelope-based API
+    this.on('envelope', (envelope) => {
+      if (envelope.testRunFinished) {
+        const { success } = envelope.testRunFinished;
+        this.log(`\nTest run ${success ? 'passed' : 'FAILED'}\n`);
+      }
+    });
+  }
+}
+```
+
+**3. `FORCE_COLOR` environment variable replaces color format option**
+
+The `colorsEnabled` format option (deprecated in v12.6.0) is replaced by the standard
+`FORCE_COLOR` environment variable, consistent with how Node.js CLI tools conventionally
+handle color output:
+
+```bash
+# OLD: colorsEnabled format option (deprecated since v12.6, removed in next major)
+# cucumber.js: formatOptions: { colorsEnabled: true }
+
+# NEW: use FORCE_COLOR environment variable
+FORCE_COLOR=1 npx cucumber-js          # Force color output
+FORCE_COLOR=0 npx cucumber-js          # Disable color output
+NO_COLOR=1    npx cucumber-js          # Alternative: NO_COLOR standard
+```
+
+In CI pipelines that previously relied on `colorsEnabled: false`, switch to `NO_COLOR=1`
+or let the formatter auto-detect (most CI environments set `NO_COLOR=1` implicitly).
+
+**4. Formatter output redesign for summary/progress/pretty formatters**
+
+The unreleased section notes a "redesigned output for summary, progress, progress bar
+and pretty formatters." Teams using these formatters for CI log parsing (grepping for
+specific output patterns) should verify their parsing scripts against the new output after
+upgrading. The HTML formatter and JSON formatter output format are not affected.
+
+**[community] Formatter migration timing**: These are `[Unreleased]` deprecations as of
+2026-05-12. If you upgrade to the next major version, run `npx cucumber-js` and look for
+deprecation warnings in the output. The warnings are emitted at run startup, not hidden in logs.
+
+---
+
+### playwright-bdd Upcoming Features (Next Release After v8.5.0)
+
+The playwright-bdd `[Unreleased]` section (as of 2026-05-12) documents significant incoming
+changes that TypeScript teams should track.
+
+**1. `docStringType` in the `$step` fixture**
+
+The next release exposes the DocString media type annotation (`"""json`, `"""yaml`, etc.)
+as `$step.docStringType` in playwright-bdd fixture-based step definitions. This closes
+the gap that currently requires manual content sniffing to distinguish content types:
+
+```typescript
+// playwright-bdd NEXT — docStringType via $step fixture
+import { createBdd } from 'playwright-bdd';
+const { Given } = createBdd();
+
+// The annotation """json is now accessible at runtime via $step.docStringType
+Given('I have the following payload:', async ({ $step }) => {
+  const rawContent = $step.docString ?? '';
+  const contentType = $step.docStringType;  // 'json' | 'yaml' | 'markdown' | undefined
+
+  if (contentType === 'json') {
+    // Confident parse — feature file author declared the type
+    return JSON.parse(rawContent);
+  } else if (contentType === 'yaml') {
+    // Dynamic import: import yaml from 'js-yaml'; yaml.load(rawContent);
+    throw new Error(`yaml-type DocStrings not yet implemented — annotate with """json or use plain text`);
+  } else {
+    // Treat as plain string (no annotation present)
+    return rawContent;
+  }
+});
+```
+
+This enables type-safe DocString handling without the step definition needing to inspect
+the content itself. It aligns playwright-bdd with `@cucumber/cucumber`'s existing
+`docString.mediaType` property, which was documented in iteration 24 as unavailable
+in playwright-bdd — now resolved in the next release.
+
+**2. AI agent skill for Gherkin feature file and step definition generation**
+
+The next release includes an "AI agent skill" for generating `.feature` files and step
+definition stubs from natural-language requirement descriptions. This extends the existing
+`Fix with AI` functionality (introduced in v8.1) from failure repair to full generation:
+
+```bash
+# Next playwright-bdd release — AI agent skill invocation (subject to change)
+# Generate feature file from requirement description
+npx playwright-bdd generate \
+  --requirement "User can apply a discount code at checkout" \
+  --output features/checkout/discount-code.feature
+
+# Generate matching step stubs
+npx playwright-bdd generate-steps \
+  --feature features/checkout/discount-code.feature \
+  --output src/steps/checkout.steps.ts
+```
+
+**[community] AI generation adoption caution**: The AI agent skill generates syntactically
+correct step definitions, but generated step implementations always require human review.
+Generated steps that interact with UI selectors will produce brittle implementations until
+a team member adds proper page object abstractions. The Three Amigos review process applies
+to AI-generated Gherkin exactly as it applies to AI-generated scenarios discussed earlier
+in this guide. Treat AI-generated output as scaffolding, not production step definitions.
+
+**3. Strict arity checks for step definitions (breaking change)**
+
+The next playwright-bdd release adds strict Cucumber-compatible arity checks for step
+definitions. This is a **breaking change** for step definitions whose parameter count does
+not match the Cucumber expression:
+
+```typescript
+// BREAKS in next playwright-bdd release:
+// Cucumber expression expects 1 parameter ({string}), but function accepts 2
+Given('I am logged in as {string}', async ({ page }, email: string, extraArg: string) => {
+  // extraArg is not a Cucumber parameter — strict arity will reject this at test startup
+  await page.goto('/login');
+});
+
+// CORRECT — arity matches the Cucumber expression:
+Given('I am logged in as {string}', async ({ page }, email: string) => {
+  await page.goto('/login');
+  await page.getByTestId('email').fill(email);
+});
+```
+
+Run `npx bddgen` after upgrading and look for arity warnings before the breaking change
+version lands in your CI pipeline.
+
+**4. Node.js 20+ and Playwright 1.60+ minimum (next release)**
+
+The next playwright-bdd release drops support for Node.js 18 and requires Playwright ≥ 1.60.
+Review your CI matrix before upgrading:
+
+```yaml
+# .github/workflows/bdd.yml — update Node and Playwright versions
+- uses: actions/setup-node@v4
+  with:
+    node-version: '20'            # Minimum for next playwright-bdd release
+    # node-version: '22'          # Recommended for new setups
+
+- name: Ensure minimum Playwright version
+  run: npm install @playwright/test@^1.60.0
+```
+
+---
+
+### playwright-bdd v8.4.2: Multiple Step Decorators on a Single Method
+
+`playwright-bdd` v8.4.2 added support for stacking multiple step decorators on a single class
+method. This is useful when the same step logic should respond to multiple Gherkin phrases —
+a common need when evolving phrasing across sprints or supporting synonym step text.
+
+**Before v8.4.2**, class-based step definitions required separate methods per Gherkin phrase:
+
+```typescript
+// playwright-bdd v8.4.1 and earlier — one method per step phrase (verbose duplication)
+import { createBdd } from 'playwright-bdd';
+import { Page } from '@playwright/test';
+const { Given, When, Then } = createBdd();
+
+export class AuthSteps {
+  @Given('I am a registered customer')
+  async loginA({ page }: { page: Page }) {
+    await this._authenticate(page, 'registered');
+  }
+
+  // Identical logic — different phrase forced a separate method before v8.4.2
+  @Given('I am logged in as a registered customer')
+  async loginB({ page }: { page: Page }) {
+    await this._authenticate(page, 'registered');
+  }
+
+  private async _authenticate(page: Page, role: string) {
+    // ...
+  }
+}
+```
+
+**After v8.4.2**, stack multiple decorators on a single method:
+
+```typescript
+// playwright-bdd v8.4.2+ — multiple decorators, one implementation
+import { createBdd } from 'playwright-bdd';
+import { Page } from '@playwright/test';
+const { Given, When, Then } = createBdd();
+
+export class AuthSteps {
+  // Two Gherkin phrases — one implementation: no duplication
+  @Given('I am a registered customer')
+  @Given('I am logged in as a registered customer')
+  async loginAsRegisteredCustomer({ page }: { page: Page }) {
+    await page.goto('/login');
+    await page.getByTestId('email').fill('registered@example.com');
+    await page.getByTestId('password').fill('TestPass123!');
+    await page.getByTestId('submit').click();
+    await page.waitForURL('/dashboard');
+  }
+
+  // Useful for phrasing evolution — old and new phrase work during transition
+  @Given('I am an admin user')
+  @Given('I am logged in as an administrator')  // new preferred phrasing
+  async loginAsAdmin({ page }: { page: Page }) {
+    await page.goto('/login');
+    await page.getByTestId('email').fill('admin@example.com');
+    await page.getByTestId('password').fill('AdminPass123!');
+    await page.getByTestId('submit').click();
+    await page.waitForURL('/admin/dashboard');
+  }
+
+  // Works with When and Then decorators too
+  @When('I complete the checkout')
+  @When('I finish the purchase')  // team prefers "finish" over "complete"
+  async completeCheckout({ page }: { page: Page }) {
+    await page.getByTestId('confirm-order').click();
+    await page.waitForURL(/\/order\/confirmation/);
+  }
+
+  @Then('I should see the confirmation page')
+  @Then('I should see an order confirmation')  // older feature files use this phrasing
+  async verifyConfirmation({ page }: { page: Page }) {
+    await expect(page.getByTestId('order-confirmation')).toBeVisible();
+  }
+}
+```
+
+`playwright.config.ts` for class-based steps:
+```typescript
+import { defineConfig, devices } from '@playwright/test';
+import { defineBddConfig } from 'playwright-bdd';
+
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'src/steps/**/*.ts',    // class files are auto-discovered
+});
+
+export default defineConfig({
+  testDir,
+  reporter: [['html', { outputFolder: 'reports/playwright-html' }]],
+  use: {
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+    screenshot: 'only-on-failure',
+    trace: 'on-first-retry',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+  ],
+});
+```
+
+**[community] Multiple decorators vs Cucumber expression alternation**: Decorator stacking
+(`@Given('phrase A') @Given('phrase B')`) produces more readable audit output than Cucumber
+expression alternation (`Given('phrase A|phrase B', ...)`). With stacking, each phrase
+appears as a separate entry in `--format usage` output — you can see usage counts for each
+phrase independently and detect when one variant is no longer used. With alternation, the
+combined pattern appears as one entry, masking dead variants.
+
+**[community] Step phrasing evolution without breakage**: The canonical use case for
+decorator stacking is zero-downtime Gherkin vocabulary migration. When the product team
+agrees to standardize on new step wording, add the new phrase as a second decorator and
+keep the old one. After all feature files are updated to use the new phrasing, remove the
+old decorator. This creates a safe migration path — no `Undefined step` CI failures during
+the transition period. Teams that rename steps without this technique experience a
+"rename cliff": all feature files must be updated atomically or CI breaks.

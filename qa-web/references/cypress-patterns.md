@@ -1,7 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt -->
-<!-- new in this iteration: cy.prompt() AI-powered natural language test steps (Cypress 15.13 beta), Cypress.stop() conditional fail-fast (Cypress 14.2), --posix-exit-codes and --pass-with-no-tests CLI flags (Cy 15.4/15.11), experimentalFastVisibility (Cy 15.8), experimentalRunAllSpecs for component testing (Cy 15.9), justInTimeCompile now default for webpack CT, Firefox WebDriver BiDi (Cy 14.1) CDP guard pattern, Module API expose+posixExitCodes options (Cy 15.10+), Cypress Studio default-enabled (Cy 15.4), passWithNoTests config option, 8 new community gotchas (cy.prompt() CI re-execution, Cypress.stop() afterEach scope, BiDi CDP guard, JIT compile memory, FastVisibility edge cases, pass-with-no-tests in monorepos, Studio @cypress/grep tag propagation, Brotli proxy impact) -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api -->
+<!-- new in this iteration: React SSR hydration bootstrap script (<script data-cy-bootstrap>, Cypress 15.11), Cypress.ElementSelector.defaults() selectorPriority with full attribute list and Studio/cy.prompt() integration (Cypress 15+), cy.intercept() delay >= 2^31 validation error (Cypress 15.13.1), <base target="_top"> iframe navigation break fix (15.14.2), cypress open memory leak from uncaughtException listener accumulation (15.14.1), allowCypressEnv:false gotcha with third-party plugins, 4 new community gotchas (86-89) -->
 
 ## Core Principles
 
@@ -6660,6 +6660,160 @@ afterEach(() => {
 
 **[community]** WHY: The browser launch overhead for component tests is proportionally larger than for E2E tests — each component spec launch starts Vite's dev server transaction, processes the module graph for the spec, and hydrates the test framework. For suites with 100+ component specs, this overhead adds 5-10 minutes to CI wall time. `experimentalRunAllSpecs` eliminates this by reusing the browser session. The isolation risk is lower for component tests than for E2E tests because each component is mounted fresh via `cy.mount()` — the browser's DOM is fully reset between specs by Cypress's automatic cleanup. The main risk is component-level global side effects (window event listeners, global CSS variables, browser API patches) that survive unmounting. Always clean these up in `afterEach` regardless of `experimentalRunAllSpecs`.
 
+### 112. React SSR Hydration Bootstrap Script (`<script data-cy-bootstrap>`) — Cypress 15.11+
+
+Cypress 15.11 introduced a manual bootstrap injection mechanism that solves React Server-Side Rendering (SSR) hydration mismatches in component tests. When Cypress renders a React component in its test harness, the server-rendered HTML and the client-side React tree can diverge, triggering `suppressHydrationWarning` noise or hard hydration errors.
+
+```typescript
+// cypress/support/component.ts — enable SSR hydration mode for React 18/19 apps
+import { mount } from 'cypress/react18';
+import './commands';
+
+// For Next.js 15+ or Remix apps with SSR hydration: add the bootstrap attribute
+// to the mount container so Cypress defers React hydration to the first render cycle
+Cypress.Commands.add('mount', (component, options = {}) => {
+  return mount(component, {
+    ...options,
+    // data-cy-bootstrap tells Cypress to inject a <script> that triggers React.hydrateRoot
+    // instead of React.createRoot, matching the SSR path
+    mountingOptions: {
+      ...(options as any).mountingOptions,
+      bootstrapScript: true,   // emits <script data-cy-bootstrap> into the mount container
+    },
+  });
+});
+```
+
+```typescript
+// cart-summary.cy.tsx — testing an SSR component that uses suppressHydrationWarning
+import { CartSummary } from './CartSummary';
+
+describe('CartSummary (SSR component)', () => {
+  it('hydrates correctly without mismatch warnings', () => {
+    cy.mount(<CartSummary initialItems={[{ id: '1', name: 'Widget', price: 9.99 }]} />);
+
+    // Previously: React would log "Text content did not match" hydration warnings
+    // With bootstrapScript: true, React.hydrateRoot is used — no mismatch
+    cy.get('[data-cy="cart-total"]').should('have.text', '$9.99');
+    cy.get('[data-cy="cart-item-count"]').should('have.text', '1 item');
+  });
+
+  it('handles dynamic timestamps that differ between server and client', () => {
+    // Components using Date.now() in server render but a locale string client-side
+    // previously broke hydration. The bootstrap script allows React to correct this
+    // during the hydration pass without throwing.
+    cy.mount(<CartSummary initialItems={[]} />);
+
+    cy.get('[data-cy="last-updated"]').should('be.visible');
+  });
+});
+```
+
+```typescript
+// For apps NOT using SSR: bootstrapScript is not needed (React.createRoot path)
+// Only enable when testing components from a Next.js App Router or Remix route
+
+// cypress.config.ts — no special config needed; bootstrapScript is per-mount
+import { defineConfig } from 'cypress';
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'next',   // or 'react'
+      bundler: 'webpack',  // Turbopack not yet supported for Cypress CT
+    },
+    specPattern: 'src/**/*.cy.{ts,tsx}',
+  },
+});
+```
+
+**[community]** WHY: React's `hydrateRoot` and `createRoot` differ in how they process the initial DOM. In a Cypress component test, there is no actual server-rendered HTML — Cypress injects the component into a blank DOM. When a component calls `suppressHydrationWarning` (typically date/time fields or user-agent-dependent content), React in `createRoot` mode ignores the mismatch silently, but React in `hydrateRoot` mode surfaces it as a warning that can mask real hydration bugs. The `data-cy-bootstrap` script injection signals Cypress to simulate the SSR entry point, making component tests for SSR apps more faithful to their production rendering path.
+
+### 113. `Cypress.ElementSelector.defaults()` — Custom Selector Priority for Studio and cy.prompt()
+
+`Cypress.ElementSelector` (renamed from `Cypress.SelectorPlayground` in Cypress 15.0) controls the selector algorithm used by Cypress Studio, `cy.prompt()`, and the element picker in `cypress open`. Configuring a custom `selectorPriority` ensures generated selectors match your team's conventions.
+
+```typescript
+// cypress/support/e2e.ts — configure element selector priority globally
+// This affects: Studio "Add Commands", cy.prompt() selector generation,
+// and the element picker crosshair in cypress open
+
+Cypress.ElementSelector.defaults({
+  // Priority order: first matching strategy wins
+  // Full list of accepted values:
+  // 'data-cy' | 'data-test' | 'data-testid' | 'data-qa'
+  // 'attribute:ATTR_NAME' (any custom data attribute)
+  // 'name' | 'id' | 'class' | 'tag' | 'attributes' | 'nth-child'
+  selectorPriority: [
+    'data-cy',          // first: our own data-cy attribute
+    'data-testid',      // second: data-testid (for third-party components)
+    'attribute:aria-label',  // third: accessible name (good for screen-reader labels)
+    'attribute:name',        // fourth: form element name attribute
+    'id',               // fifth: id (stable but often auto-generated)
+    'class',            // sixth: CSS class (fragile, last resort before nth-child)
+  ],
+});
+```
+
+```typescript
+// Example: what Studio generates for a button with our config vs. default config
+
+// Button markup:
+// <button data-cy="submit-order" data-testid="checkout-submit" id="btn-123" class="btn-primary">
+//   Place Order
+// </button>
+
+// With default selectorPriority:
+// → '[data-cy="submit-order"]'  (data-cy is first in default list too)
+
+// Without data-cy attribute on a third-party component:
+// <input aria-label="Search products" name="q" class="search-input search-input--lg" />
+
+// With our custom selectorPriority — aria-label picked (position 3):
+// → '[aria-label="Search products"]'
+
+// With Cypress default — class picked (unstable for styled components):
+// → '.search-input'
+```
+
+```typescript
+// cypress/support/component.ts — same defaults apply to component testing
+// Register early in the support file so Studio and cy.prompt() see the custom priority
+
+Cypress.ElementSelector.defaults({
+  selectorPriority: [
+    'data-cy',
+    'data-testid',
+    'attribute:aria-label',
+    'attribute:role',
+    'name',
+    'id',
+  ],
+  // onElement(el): override selection logic entirely for special cases
+  onElement(el: JQuery<HTMLElement>): string | null {
+    // Custom logic: prefer data-cy but fall back to aria-label for icon buttons
+    const dataCy = el.attr('data-cy');
+    if (dataCy) return `[data-cy="${dataCy}"]`;
+
+    const ariaLabel = el.attr('aria-label');
+    if (ariaLabel) return `[aria-label="${ariaLabel}"]`;
+
+    return null; // fall through to selectorPriority list
+  },
+});
+```
+
+```typescript
+// Verifying the configured selector in a test (useful for debugging Studio output):
+it('confirms selector strategy is applied', () => {
+  cy.visit('/checkout');
+  // The element picker in cypress open should now suggest data-cy selectors first
+  // cy.prompt() will prefer data-cy when generating selectors for AI-authored tests
+  cy.get('[data-cy="place-order-btn"]').should('exist');
+});
+```
+
+**[community]** WHY: If you don't configure `Cypress.ElementSelector.defaults()`, Studio and `cy.prompt()` generate selectors based on whatever comes first in the default priority (`data-cy, data-test, data-testid, data-qa, name, id, class, tag`). Teams that use a mix of `data-cy` and `data-testid` on different components (e.g., company components use `data-cy`, third-party MUI/Radix components use `data-testid`) benefit from explicitly listing both in priority order. The most impactful customization is adding `attribute:aria-label` before `class` — it prevents Studio from generating fragile CSS class selectors for icon buttons and SVG elements that lack data attributes.
+
 ---
 
 ## Additional Real-World Gotchas [community]
@@ -6679,5 +6833,13 @@ afterEach(() => {
 84. **Cypress Studio `@cypress/grep` tag propagation requires registerCypressGrep before Studio records** [community] — When using Cypress Studio to add commands to tests that are tagged with `@cypress/grep`, the `registerCypressGrep()` call in `cypress/support/e2e.ts` must be loaded before Studio initializes. If `registerCypressGrep` is imported conditionally (e.g., only in non-CI environments), Studio-enhanced tests may not have their `@tags` property recognized during `cypress open` recording sessions. Always register grep unconditionally in `support/e2e.ts`, and control the grep filter via CLI flags (`--env grep=@smoke`) rather than conditional imports.
 
 85. **Brotli-compressed API responses in Cypress proxy may appear empty in `cy.intercept()` handlers** [community] — Cypress 15.11 added Brotli decompression support in the Cypress proxy. However, if your API server sends Brotli-compressed responses and your intercepted `req.reply()` in `cy.intercept()` handler tries to read `res.body` before decompression completes, `res.body` may be a Buffer containing raw Brotli bytes instead of the parsed JSON. This surfaces as empty or garbled response bodies in intercept spy logs. Ensure you await full decompression by reading `res.body` only inside `req.continue(res => { ... })` — Cypress automatically decompresses the body before invoking the response handler. The issue only manifests when directly calling `req.reply()` with a passthrough and immediately reading the streamed body in the same synchronous tick.
+
+86. **`cy.intercept()` delay values ≥ 2³¹ (≈ 24.8 days) were silently ignored before Cypress 15.13.1** [community] — Prior to 15.13.1, passing a `delay` value greater than or equal to `2**31` milliseconds to a `cy.intercept()` stub caused the delay to be silently discarded — the response arrived immediately with no error. This was a `setTimeout` integer overflow: `setTimeout(fn, 2**31)` fires immediately in V8. In Cypress 15.13.1, a validation error is now thrown at stub registration time. If your test suite has any intercepts with large delay values (e.g., generated programmatically as `maxDelay * 1000`), ensure they stay below `2**31 - 1` (≈ 596 hours). WHY: any realistic network simulation delay is measured in seconds to minutes, not days; values above this threshold are almost always unintentional unit errors (seconds passed as milliseconds without multiplication correction).
+
+87. **Apps with `<base target="_top">` or `<base target="_parent">` break Cypress iframe navigation** [community] — Cypress runs tests inside an iframe. Applications that set a `<base target="_top">` or `<base target="_parent">` HTML element instruct the browser to load all un-targeted links and form submissions in the top-level frame, which navigates out of the Cypress test iframe entirely. This causes tests to fail silently: the page appears to navigate but the test runner loses the page and subsequent commands time out. The fix (Cypress 15.14.2) strips unsafe target attributes from base elements automatically. If you're on an older version, add a `cy.on('before:window:load', win => { win.document.querySelectorAll('base[target]').forEach(el => el.removeAttribute('target')); })` guard in `cypress/support/e2e.ts` as a temporary workaround until you upgrade.
+
+88. **Memory leak in `cypress open` from accumulating `uncaughtException` listeners** [community] — In versions before Cypress 15.14.1, each time a spec was re-run during `cypress open` (e.g., while watching files in development), an additional `uncaughtException` listener was registered on the Mocha runner without removing the previous one. After 20-30 re-runs of a complex spec, the Cypress app became sluggish and eventually consumed several gigabytes of memory, requiring a restart. The leak is fixed in 15.14.1. If you're on an older version and experience memory growth during active TDD sessions with `cypress open`, restart the runner every 30-50 re-runs as a stopgap.
+
+89. **`allowCypressEnv: false` blocks ALL `Cypress.env()` calls, including those in plugin and support files** [community] — When you set `allowCypressEnv: false` in `cypress.config.ts` to enforce migration from `Cypress.env()` to `cy.env()`, Cypress throws at test time for any remaining `Cypress.env()` call — including those inside third-party plugins, `cypress/support/e2e.ts`, or community recipes that haven't been updated. A common failure mode is enabling `allowCypressEnv: false` after migrating your own test code, then discovering that `@cypress/grep`'s tag filter, `cypress-axe`, or Cypress Studio internally use `Cypress.env()` to read configuration. Always audit with a grep: `grep -r "Cypress\.env(" cypress/` to find all callsites before setting the flag. As a migration bridge, use `allowCypressEnv: 'warn'` (logs deprecation warnings without throwing) to identify remaining usages without blocking CI.
 
 ---

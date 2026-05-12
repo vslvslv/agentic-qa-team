@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -8,6 +8,7 @@
      vitest.dev/blog/vitest-4.html (fetched 2026-05-12: Vitest 4 coverage API changes) |
      vitest.dev/blog/vitest-4-1 (fetched 2026-05-12: coverage.changed, agent reporter, htmlDir) |
      vitest.dev/config/coverage (fetched 2026-05-12: full config reference — autoUpdate, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks) |
+     github.com/vitest-dev/vitest/releases (fetched 2026-05-12: v4.1.4–v4.1.6 + v5.0.0-beta.2; V8 child_process/worker_threads coverage, Istanbul instrumenter option, agent skipFull, blob dir change) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -2587,6 +2588,53 @@ node -e "
 # If mutation scores change significantly after upgrade, the previous scores were inaccurate.
 ```
 
+### G42 — Vitest 5 (beta): V8 now tracks child_process and worker_threads — existing multi-process coverage gaps become visible  [community]
+Vitest 5.0.0-beta.2 (May 2026) added V8 coverage tracking for `node:child_process` and
+`node:worker_threads` contexts. Prior to this change, any TypeScript code executing in a
+spawned child process or worker thread was invisible to V8 coverage — those execution
+contexts ran outside Vitest's instrumentation boundary. **WHY it matters**: TypeScript
+projects that use `worker_threads` for CPU-bound tasks (parsing, compilation, encryption),
+or spawn child processes for CLI integrations, report inflated coverage numbers in Vitest
+4.x because the worker code is simply excluded from measurement. After upgrading to
+Vitest 5, branch and line coverage for worker modules may **decrease** (now measured
+for the first time), triggering threshold failures on code that was never actually covered.
+
+Treat the Vitest 5 upgrade as a coverage baseline reset for any project using
+`node:worker_threads` or `node:child_process`. Before upgrading:
+1. Identify source files that execute in worker contexts (`new Worker(...)`, `fork(...)`, `spawn(...)`).
+2. Note their pre-upgrade coverage numbers.
+3. After upgrading, compare — if coverage drops, the new numbers reflect reality; the old numbers were incomplete.
+4. Add targeted tests for worker-specific code paths before restoring thresholds.
+
+**Vitest 5 breaking changes that affect sharded coverage workflows** (v5.0.0-beta.2):
+- The blob reporter and `--merge-reports` default directory changed from `.vitest-tmp/` to
+  `.vitest/blob/`. If Pattern 22 hardcodes the blob output path, update the path after
+  upgrading to Vitest 5.
+- The `attachmentsDir` default changed from `.vitest-attachements/` to `.vitest/attachments/`
+  (typo in the old name corrected). CI jobs uploading coverage attachments by path must
+  be updated.
+
+### G43 — Vitest 4.1.5 Istanbul `instrumenter` option: required only when the default Istanbul pipeline is insufficient  [community]
+Vitest 4.1.5 added an experimental `coverage.instrumenter` option for the Istanbul
+provider. This factory function replaces the default `istanbul-lib-instrument` instrumenter
+with a custom implementation. **WHY it matters**: the default Istanbul instrumenter is
+correct for the vast majority of TypeScript projects; this option exists for niche cases
+where the default pipeline is insufficient — for example, experimental stage-3 decorator
+transforms that Istanbul 1.x cannot instrument correctly, or monorepos where a custom
+instrumenter already exists for a different toolchain.
+
+Misuse risk: teams sometimes reach for `instrumenter` to work around Istanbul coverage
+false-positives (phantom branches, decorator noise) rather than using the correct
+configuration — `ignoreClassMethods`, `excludeAfterRemap`, or `/* istanbul ignore next */`
+comments. Before writing a custom instrumenter:
+1. Check whether `excludeAfterRemap: true` (G39) fixes the phantom branch issue.
+2. Check whether `ignoreClassMethods` (G40) addresses decorator constructor noise.
+3. Check whether `verbatimModuleSyntax` is causing source-map degradation (G31).
+Custom instrumenters are difficult to maintain through Istanbul and Vitest upgrades — they
+receive `InstrumenterOptions` and must implement `instrumentSync()` and `lastSourceMap()`,
+meaning they absorb any interface changes in `istanbul-lib-instrument`. Reserve this
+escape hatch for toolchain integration scenarios, not coverage-noise suppression.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2664,6 +2712,13 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 - **`coverage.thresholds.autoUpdate` in CI**: disable `autoUpdate` in CI pipelines. It writes to
   the config file during the test run; only use it locally to ratchet thresholds upward after
   coverage improvements, then commit the updated config as part of the same PR.
+- **Vitest 5 upgrade coverage baseline reset**: Vitest 5.0 adds V8 coverage tracking for
+  `node:child_process` and `node:worker_threads` contexts — code that was invisible to coverage
+  in Vitest 4.x is now measured. Projects using worker threads or child processes should treat
+  the Vitest 5 upgrade as a coverage baseline reset event: re-measure after upgrading, then
+  restore thresholds based on the new (more accurate) numbers. Additionally, the blob reporter
+  default directory changes from `.vitest-tmp/` to `.vitest/blob/` — update CI sharding
+  workflows (Pattern 22) accordingly.
 
 ---
 
@@ -2697,4 +2752,6 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+/v4, percentage-based concurrency, testFiles option (9.5.1); v9.6.1 Vitest 4.1 hitcount fix |
 | Vitest 4 release notes | Official | https://vitest.dev/blog/vitest-4.html | Vitest 4 new features: stable Browser Mode, dynamic enableCoverage/disableCoverage API, expect.schemaMatching |
 | Vitest 4.1 release notes | Official | https://vitest.dev/blog/vitest-4-1 | Vitest 4.1 coverage.changed option, agent reporter for AI environments, coverage.htmlDir |
+| Vitest 4.1.5 release notes | Official | https://github.com/vitest-dev/vitest/releases/tag/v4.1.5 | Istanbul instrumenter option (experimental custom instrumenter factory); descriptive error when reports dir removed |
+| Vitest 5.0.0-beta.2 release notes | Official | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | V8 now tracks node:child_process and node:worker_threads contexts; blob/attachments dir defaults changed |
 | Vitest coverage config reference | Official | https://vitest.dev/config/coverage | Full coverage config: autoUpdate, changed, excludeAfterRemap, instrumenter, ignoreClassMethods, watermarks, reportOnFailure, processingConcurrency |

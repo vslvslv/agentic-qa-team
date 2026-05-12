@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.45–v1.57: --fail-on-flaky-tests, captureGitInfo, per-project workers, testConfig.tsconfig, testConfig.tag, WebServer wait), vitest.dev/guide/projects (workspace→projects rename in v3.2, defineProject API) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.53–v1.60: webServer.wait regex+named-capture, HTML Speedboard timeline, --last-failed flag, aria snapshot page-level, Screencast API), vitest.dev (v4.0: workspace removed+Vite6 required, v4.1: aroundEach/aroundAll hooks, --detect-async-leaks, coverage.changed, test tags --tags-filter, toMatchScreenshot), github.blog (custom runner images GA, OIDC custom properties) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -52,6 +52,13 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 32 | Per-project worker count | Playwright v1.52+: `project.workers` — heterogeneous parallelism per test level |
 | 33 | `testConfig.tsconfig` | Playwright v1.49+: single TypeScript config for all Playwright test files |
 | 34 | `defineProject` vs `defineConfig` | Vitest v3.2+: use `defineProject` in workspace files to prevent invalid root-only options |
+| 35 | `webServer.wait` regex | Playwright v1.57+: capture dynamic dev-server ports from stdout — no polling script needed |
+| 36 | `--last-failed` re-run | Playwright v1.44+: re-run only previously failing tests for fast retry in CI |
+| 37 | Vitest `aroundEach`/`aroundAll` | Vitest v4.1+: wrap tests inside a DB transaction or span — automatic rollback on failure |
+| 38 | `--detect-async-leaks` | Vitest v4.1+: fail CI on open handles / dangling async operations between tests |
+| 39 | Vitest test tags + `--tags-filter` | Vitest v4.1+: `@smoke`, `@slow` tags enable stage-based CI filtering without separate config files |
+| 40 | Vitest `coverage.changed` | Vitest v4.1+: report coverage only for files changed since base branch — faster PR coverage feedback |
+| 41 | HTML report Speedboard | Playwright v1.58+: execution-timeline view in merged shard reports — identifies critical path |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3054,6 +3061,13 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 | Global `workers` set without considering per-project memory requirements | Visual regression tests OOM the runner (200–400 MB per worker × 4 workers = 1.6 GB) | Use per-project `workers` (v1.52+) to serialize memory-intensive projects |
 | `defineConfig` used in Vitest workspace project files | Root-only options (`coverage`, `reporters`) silently ignored or throw at startup | Use `defineProject` in all per-package vitest config files referenced by `projects:` |
 | Vitest `projects` config without `name` on each project | Projects receive numeric default names; `--project` filter fails with ambiguous matches | Always set `name:` on every project — use the package name for clarity |
+| Vitest 4.0 upgrade without migrating from `vitest.workspace.ts` | `defineWorkspace` removed; remaining workspace file silently ignored — CI shows "0 tests" instead of an error | Delete `vitest.workspace.ts` and migrate all projects to `test.projects` in `vitest.config.ts` before upgrading |
+| Vitest 4.0 with Vite 5 still installed | Vitest 4.0 requires Vite 6+; peer dependency conflict causes runtime startup errors | Add a CI pre-check that verifies `vite` major version ≥ 6 before running tests |
+| Vitest `'basic'` reporter referenced after 4.0 upgrade | `'basic'` reporter removed in Vitest 4.0; CI fails with "Unknown reporter: basic" | Replace `reporters: ['basic']` with `reporters: ['tree']` in all Vitest configs |
+| Vitest `coverage.changed` without `fetch-depth: 0` | `git:origin/main` diff target unavailable in shallow clone; falls back to full-project coverage | Add `fetch-depth: 0` and `git fetch origin main` to the coverage CI step |
+| `--last-failed` used without `blob` reporter in first run | `--last-failed` reads blob report for failed-test list; other reporters don't produce this; silently runs full suite | Always include `blob` in the reporter list when planning to use `--last-failed` for retry workflows |
+| Custom runner image not rebuilt after Playwright upgrade | Browser binary version in image mismatches new `@playwright/test` version; tests fail with "executable not found" | Automate image rebuilds by triggering on `@playwright/test` version changes in `package-lock.json` |
+| `webServer.wait` regex without named capture group — dynamic port not injected | `wait.stdout` regex without `(?<name>...)` captures nothing; `process.env['SERVER_PORT']` is undefined | Use named capture groups in every `wait` regex: `/Listening on port (?<server_port>\d+)/` |
 
 ## Real-World Gotchas [community]
 
@@ -3199,6 +3213,18 @@ export default env;
 43. **Vitest v3.2 `workspace` deprecation causing `defineWorkspace is not a function` errors** [community]: Vitest v3.2 deprecated the `defineWorkspace` helper (and the `vitest.workspace.ts` / `vitest.workspace.js` discovery pattern) in favor of the `projects` array inside `vitest.config.ts`. Teams upgrading from Vitest v2.x or v3.1 to v3.2+ with existing `vitest.workspace.ts` files see `defineWorkspace is not a function` if they import from an old package path, or find their workspace config silently ignored. Migration: move workspace project definitions into `vitest.config.ts` under `test.projects`, replace `defineWorkspace` calls with the inline array syntax, and replace `defineConfig` in per-project files with `defineProject`.
 
 44. **Playwright `testConfig.tsconfig` omitting `@playwright/test` from types** [community]: The `tsconfig` option in `playwright.config.ts` (v1.49+) applies the specified TypeScript configuration to all test files. Teams that set this to a tsconfig file that does not include `"@playwright/test"` in its `types` array see IDE type errors for `test`, `expect`, `page`, and all other Playwright globals, even when tests run correctly at runtime. Playwright injects its runtime types automatically, but the TypeScript language server requires the explicit `types` declaration. Always add `"types": ["@playwright/test"]` to any tsconfig referenced by `testConfig.tsconfig`.
+
+45. **Vitest 4.0 silent "0 tests" after workspace migration** [community]: The removal of `defineWorkspace` in Vitest 4.0 causes a deceptive failure mode — if an old `vitest.workspace.ts` remains alongside a new `vitest.config.ts`, Vitest may discover both, prefer `vitest.config.ts` (which has no tests defined yet), and exit with "0 tests executed" and no error. CI shows green because there were no failures — there were simply no tests. Always verify the test count in CI output after a Vitest upgrade: a green run with 0 tests is a silent misconfiguration.
+
+46. **Playwright `webServer.wait` regex capturing wrong group due to un-anchored pattern** [community]: A `webServer.wait` regex like `/port (\d+)/` captures the port but without a named group, so it is not injected as an environment variable. Teams that use un-named capture groups (parentheses without `?<name>`) discover that `process.env['SERVER_PORT']` is always `undefined` — Playwright only injects named capture groups. The fix: add a name to every capture group: `/port (?<server_port>\d+)/`.
+
+47. **Vitest `aroundEach` not awaiting `runTest()` causing false-green test results** [community]: The `runTest` callback in `aroundEach` is async and must be awaited. If a developer writes `aroundEach(async runTest => { setup(); runTest(); cleanup(); })` without `await`, the test runs and the cleanup executes before the test completes — rollbacks happen mid-test, connections are closed under running assertions, and tests may produce false-green results because assertions fail silently. Always `await runTest()` inside `aroundEach`.
+
+48. **`--detect-async-leaks` first enabled in CI producing hundreds of failures** [community]: Teams that enable `--detect-async-leaks` for the first time on a large test suite see dozens or hundreds of failures simultaneously — every test file that creates servers, timers, or DB connections without cleanup is flagged. Running with `--bail=0` (continue on failure) is essential for the first pass: it collects the full set of leaking tests in one CI run rather than stopping at the first failure and requiring repeated runs. Fix all leaks before setting `--bail=1`.
+
+49. **Playwright HTML Speedboard tab missing because report was generated on a single runner** [community]: The Speedboard tab only appears in HTML reports generated by `npx playwright merge-reports` from multiple blob reports. HTML reports generated by `--reporter=html` on a single runner (no sharding, no merge step) do not include the Speedboard. Teams running a single-runner e2e suite that want execution timeline visibility must change their workflow to: (1) use `--reporter=blob` on the single runner, (2) run `npx playwright merge-reports --reporter html` as a post-step. This adds ~5 seconds and unlocks the timeline.
+
+50. **GitHub Actions custom runner image used in `runs-on` without `ghcr.io` package read permission** [community]: Custom runner images hosted on GitHub Container Registry (GHCR) require the workflow to have `packages: read` permission and the runner's GitHub App to have access to the package. Teams that build a custom image and reference it in `runs-on: [self-hosted, custom-image]` without configuring package access see the runner fail to pull the image with an opaque authentication error. Always add `permissions: packages: read` to workflows that reference GHCR-hosted custom images.
 
 ## Tradeoffs & Alternatives
 |---|---|---|---|
@@ -5230,11 +5256,711 @@ jobs:
 
 > [community] The primary practical difference between `defineProject` and `defineConfig` in a workspace file: `defineConfig` allows (and applies) the full root-level config including `coverage`, `reporters`, `snapshotResolver`, and `globalSetup`. In a project file this causes silent or explicit failures. `defineProject` is a strict subset — it only accepts project-scoped options. The Vitest team added `defineProject` specifically to solve the "why does my project config break coverage?" class of questions that accounted for 15–20% of GitHub issues in Vitest's tracker.
 
-## Key Resources
+| Vitest `defineProject` API | Official docs | https://vitest.dev/guide/projects | Type-safe per-package config in workspace; prevents root-only options in project files |
+| Playwright `--fail-on-flaky-tests` | Official docs | https://playwright.dev/docs/test-cli | CLI flag to exit code 1 when retried tests pass — strict flakiness gate |
 
-| Name | Type | URL | Why useful |
-|------|------|-----|------------|
-| Martin Fowler — Continuous Integration | Official article | https://martinfowler.com/articles/continuousIntegration.html | Foundational CI principles |
+### Playwright `webServer.wait` Regex for Dynamic Port Capture [community]
+
+Playwright v1.57 added a `wait` field to `testConfig.webServer` that accepts a regular expression matched against the dev server's stdout or stderr. When the regex contains named capture groups, the captured values are injected as environment variables — enabling tests to discover the server's dynamically assigned port without a separate polling script.
+
+> [community] Teams that used `reuseExistingServer: !process.env.CI` with a hardcoded `url` consistently hit a race condition: the server started on port 3000 locally but on a CI runner with a port conflict it bound to 3001, and tests silently targeted the wrong URL. The `wait` regex pattern eliminates the hardcoded port entirely — the server reports its own port and Playwright reads it directly from the startup log.
+
+```typescript
+// playwright.config.ts — dynamic port capture via webServer.wait (v1.57+)
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/e2e',
+  fullyParallel: true,
+  retries: process.env['CI'] ? 1 : 0,
+  forbidOnly: !!process.env['CI'],
+
+  webServer: {
+    // Start dev server; let OS assign a free port
+    command: 'node dist/server.js --port 0',
+    // Wait until stdout matches the pattern and capture the port number
+    // Named capture group `server_port` becomes process.env.SERVER_PORT
+    wait: {
+      stdout: /Listening on port (?<server_port>\d+)/,
+    },
+    // Use the captured env var — set automatically by Playwright
+    url: `http://localhost:${process.env['SERVER_PORT'] ?? 3000}/health`,
+    reuseExistingServer: !process.env['CI'],
+    timeout: 30_000,
+  },
+
+  use: {
+    // Tests read the same env var to build their base URL
+    baseURL: `http://localhost:${process.env['SERVER_PORT'] ?? 3000}`,
+    ...devices['Desktop Chrome'],
+    trace: 'on-first-retry',
+  },
+});
+```
+
+```yaml
+# .github/workflows/ci.yml — webServer.wait replaces wait-for-url polling step
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run build       # compile TypeScript to dist/
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      # Playwright starts the server, waits for the regex, injects SERVER_PORT, then runs tests
+      # No separate "wait-for-url" polling step needed
+      - run: npx playwright test
+        env:
+          CI: true
+```
+
+> [community] The `wait` regex approach solves the parallel-runner port-conflict problem in matrix CI: when 4 shard jobs run simultaneously on the same machine type, each starts its own dev server on a random OS-assigned port. Without `wait`, teams either hardcode different ports per shard (fragile) or add complex polling scripts. With `wait`, each runner captures its own assigned port independently, with zero coordination overhead.
+
+### Playwright `--last-failed` for Efficient CI Retry Workflows [community]
+
+Playwright v1.44 introduced the `--last-failed` CLI flag, which re-executes only the test cases that failed in the most recent local or CI run. Unlike `--retries` (which retries within a single run), `--last-failed` enables a second CI job that specifically targets the failing set from the previous job — achieving fast re-validation without running the full suite again.
+
+> [community] Teams with 400+ e2e tests that average 15% failure rate (mix of real defects and environment flakiness) report that `--last-failed` cuts their "re-run after fix" cycle from 25 minutes (full suite) to 3–4 minutes (just the previously failed tests). The critical implementation detail: the test results file must be persisted as an artifact between the first job and the retry job. Without artifact passing, `--last-failed` has nothing to read and falls back to running the full suite.
+
+```yaml
+# .github/workflows/ci-with-retry.yml — two-stage e2e: full run then targeted retry
+name: E2E with Retry
+
+on: [pull_request]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    outputs:
+      had-failures: ${{ steps.check.outputs.had-failures }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+
+      # Full suite run — blob reporter stores per-test results for --last-failed
+      - name: Run full e2e suite
+        id: e2e-run
+        run: npx playwright test --reporter=blob,github
+        continue-on-error: true  # capture results even if tests fail
+
+      # Upload results so retry job can read them
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-results
+          path: blob-report/
+          retention-days: 1   # only needed for the retry job in this workflow run
+
+      # Set output so retry job knows whether to run
+      - name: Check for failures
+        id: check
+        if: always()
+        run: |
+          if [ "${{ steps.e2e-run.outcome }}" = "failure" ]; then
+            echo "had-failures=true" >> $GITHUB_OUTPUT
+          else
+            echo "had-failures=false" >> $GITHUB_OUTPUT
+          fi
+
+  e2e-retry:
+    needs: e2e
+    # Only run if previous job had failures
+    if: needs.e2e.outputs.had-failures == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+
+      # Download results from the first run
+      - uses: actions/download-artifact@v4
+        with:
+          name: playwright-results
+          path: blob-report/
+
+      # Re-run ONLY the previously failed tests — fast targeted validation
+      - name: Re-run failed tests
+        run: npx playwright test --last-failed --reporter=github
+```
+
+> [community] The most important configuration for `--last-failed` in CI: pass `--reporter=blob` in the initial run. The blob reporter stores rich per-test metadata (including failure details) in a structured format that `--last-failed` uses to reconstruct the failed test list. Teams that use only `--reporter=github` (the inline annotation reporter) find that `--last-failed` cannot find its input and silently runs the full suite instead. Always use `blob` as one of the reporters when `--last-failed` will be used.
+
+### Vitest `aroundEach` / `aroundAll` for Transaction-Wrapped Integration Tests [community]
+
+Vitest v4.1 introduced `aroundEach` and `aroundAll` hooks — a wrapper-style alternative to the `beforeEach`/`afterEach` pair. Instead of separate setup and teardown functions, `aroundEach` receives a `runTest` callback that represents the test itself: code before `runTest()` is setup, code after is teardown. This enables integration tests to run inside an open database transaction that is automatically rolled back after each test, regardless of whether the test passes or throws.
+
+> [community] Teams using `beforeEach` + `afterEach` for transaction rollback consistently report the same defect: when `afterEach` receives the wrong connection (a new connection rather than the transaction-holding connection), the rollback fails silently and test data accumulates. `aroundEach` eliminates this class of defect by keeping the transaction object in the same lexical scope as both setup and teardown — the connection cannot be accidentally different because it is a closure variable.
+
+```typescript
+// tests/integration/database.setup.ts — aroundEach transaction wrapper (Vitest v4.1+)
+import { aroundEach } from 'vitest';
+import { createPool, type Pool, type PoolClient } from 'pg';
+
+// Shared pool for the entire test file
+const pool: Pool = createPool({ connectionString: process.env['DATABASE_URL'] });
+
+// Export so individual test files can import and use the connection
+export let testClient: PoolClient;
+
+// aroundEach: begin a transaction before each test, roll back after
+aroundEach(async (runTest) => {
+  // Setup: acquire connection and begin transaction
+  testClient = await pool.connect();
+  await testClient.query('BEGIN');
+
+  try {
+    // runTest() executes the actual test case — all DB writes go into the transaction
+    await runTest();
+  } finally {
+    // Teardown: always rollback, even if the test threw
+    // This runs in the same scope as testClient — guaranteed correct connection
+    await testClient.query('ROLLBACK');
+    testClient.release();
+  }
+});
+```
+
+```typescript
+// tests/integration/order-service.test.ts — uses aroundEach transaction isolation
+import { describe, it, expect } from 'vitest';
+import { testClient } from './database.setup';
+import { OrderService } from '../../src/services/order-service';
+
+describe('OrderService (transaction-isolated)', () => {
+  it('creates an order and stores it in the database', async () => {
+    const service = new OrderService(testClient);
+    const order = await service.create({ userId: 'user-1', total: 99.99 });
+
+    expect(order.id).toBeDefined();
+    const row = await testClient.query(
+      'SELECT * FROM orders WHERE id = $1', [order.id]
+    );
+    expect(row.rows[0].total).toBe('99.99');
+    // After this test completes, aroundEach rolls back — no cleanup needed
+  });
+
+  it('rejects an order with zero total', async () => {
+    const service = new OrderService(testClient);
+    await expect(service.create({ userId: 'user-1', total: 0 }))
+      .rejects.toThrow('Order total must be positive');
+    // Rollback is automatic via aroundEach even though this test expected a throw
+  });
+});
+```
+
+> [community] `aroundAll` is the suite-level equivalent: the `runSuite` callback runs all tests in the `describe` block. This is appropriate when the cost of transaction setup/teardown per test is too high — for example, when the setup involves a multi-step migration. One `aroundAll` wraps the entire suite in a single transaction; all tests share it and see each other's writes. Use with caution: tests are no longer independent, violating the "I" in FIRST principles. Prefer `aroundEach` for isolation unless setup cost justifies the tradeoff.
+
+### Vitest `--detect-async-leaks` for CI Flakiness Root-Cause Detection [community]
+
+Vitest v4.1 introduced the `--detect-async-leaks` flag, which causes the test runner to fail if any test leaves open asynchronous operations (timers, unresolved promises, database connections, HTTP server listeners) after it completes. Open handles are the most common root cause of non-deterministic test suite behavior in Node.js — a test that forgets to close a connection leaves the event loop alive, delaying the test runner's process exit and causing timing-dependent failures in later tests.
+
+> [community] Engineering teams that enable `--detect-async-leaks` on an existing test suite consistently report finding 3–15 tests with open handles on the first run. The most common culprits: `setTimeout` without `clearTimeout` in test code, `setInterval` in module-level code that isn't reset, and database pool connections that are created in a test but never closed. Fixing these leaks eliminates an entire class of "order-dependent" test flakiness that was previously attributed to infrastructure or test sequence.
+
+```yaml
+# .github/workflows/ci.yml — async leak detection in CI (Vitest v4.1+)
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # --detect-async-leaks: fail if any test leaves open handles
+      # Add this first without --bail to discover all leaks in one run
+      - run: npx vitest run --detect-async-leaks --reporter=verbose
+        name: Unit tests (async leak detection)
+```
+
+```typescript
+// vitest.config.ts — async leak detection in config (preferred over CLI flag in CI)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Fail if any test leaves open async operations — catches hidden flakiness root causes
+    detectOpenHandles: true,  // equivalent to --detect-async-leaks flag
+    // Combined with bail: 0 — report ALL leaks in one run rather than stopping at first
+    bail: 0,
+    pool: 'threads',
+    isolate: true,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+    },
+  },
+});
+```
+
+```typescript
+// Example: correctly closing a server to prevent async leak
+import { describe, it, expect, afterAll } from 'vitest';
+import { createServer, type Server } from 'http';
+
+describe('HTTP server tests', () => {
+  let server: Server;
+
+  // If beforeAll creates the server but afterAll is missing, --detect-async-leaks fails
+  beforeAll(() => {
+    server = createServer((req, res) => {
+      res.writeHead(200);
+      res.end('ok');
+    });
+    server.listen(0); // OS-assigned port
+  });
+
+  afterAll(() => {
+    // REQUIRED: close the server or --detect-async-leaks will fail this suite
+    server.close();
+  });
+
+  it('responds with 200', async () => {
+    const port = (server.address() as { port: number }).port;
+    const res = await fetch(`http://localhost:${port}/`);
+    expect(res.status).toBe(200);
+  });
+});
+```
+
+> [community] The `--detect-async-leaks` flag is particularly effective when combined with `--bail=0` on the first CI run after enabling it. `--bail=0` means "continue even after failures" — this surfaces all leaking tests in a single CI run rather than stopping at the first one. After fixing all leaks, switch to `--bail=1` (fail fast) for the ongoing CI gate.
+
+### Vitest Test Tags and `--tags-filter` for Stage-Based CI [community]
+
+Vitest v4.1 introduced native test tags — a way to label individual test cases or `describe` blocks with semantic tags (`@smoke`, `@slow`, `@db`, `@integration`) and filter which tests run using `--tags-filter` on the CLI. This replaces the common workaround of using separate config files or file-naming conventions to define CI stages.
+
+> [community] Teams that previously maintained three separate Vitest config files (`vitest.smoke.config.ts`, `vitest.unit.config.ts`, `vitest.integration.config.ts`) to control which tests ran per CI stage find that tag-based filtering eliminates the config maintenance overhead. The tags live with the tests, making the test's CI role self-documenting. The migration path is additive — tags are annotations, not restructuring.
+
+```typescript
+// vitest.config.ts — root config for tag-aware CI runs
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    pool: 'threads',
+    isolate: true,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      reporter: ['text', 'lcov', 'json-summary'],
+    },
+  },
+});
+```
+
+```typescript
+// src/services/order-service.test.ts — tests tagged for CI stage filtering
+import { describe, it, expect, vi } from 'vitest';
+import { OrderService } from './order-service';
+import type { OrderRepository } from '../repositories/order-repository';
+
+const mockRepo = {
+  save: vi.fn(),
+  findById: vi.fn(),
+} satisfies Partial<OrderRepository>;
+
+// @smoke: runs on every push (fast gate)
+describe('OrderService — smoke', { tags: ['@smoke'] }, () => {
+  it('creates an order with correct total', () => {
+    const service = new OrderService(mockRepo as unknown as OrderRepository);
+    const order = service.buildOrder({ items: [{ price: 10, qty: 2 }] });
+    expect(order.total).toBe(20);
+  });
+});
+
+// @integration: runs only on PR and main (requires DB)
+describe('OrderService — integration', { tags: ['@integration', '@db'] }, () => {
+  it('persists an order and retrieves it', async () => {
+    // ... real DB test
+    expect(true).toBe(true); // placeholder
+  }, { timeout: 30_000 });
+});
+
+// @slow: nightly only — long-running performance test
+it('processes 1000 orders within 2 seconds', { tags: ['@slow'] }, async () => {
+  // ... bulk processing test
+  expect(true).toBe(true);
+});
+```
+
+**GitHub Actions with tag-based stage filtering:**
+
+```yaml
+# .github/workflows/ci.yml — different test levels using tag filtering
+jobs:
+  smoke:
+    # Fast gate: push to any branch — only @smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx vitest run --tags-filter="@smoke"
+        name: Smoke tests (fast gate)
+
+  integration:
+    # PR gate: smoke + integration tests (no slow tests)
+    needs: smoke
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx vitest run --tags-filter="@smoke or @integration"
+        name: PR test suite (smoke + integration)
+
+  nightly-full:
+    # Nightly: all tests including slow ones
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # No filter = all tests; OR explicitly: @smoke or @integration or @slow
+      - run: npx vitest run --coverage
+        name: Full nightly test suite
+```
+
+> [community] The most powerful `--tags-filter` feature for team workflows: the logical operators. `"@integration and not @slow"` runs integration tests that are expected to be fast — a useful "PR extended gate" that skips known-slow integration tests while still catching most integration defects. Teams that combine `and`/`or`/`not` operators in CI flag definitions report cleaner PR feedback than teams using file-pattern matching, because the tag is co-located with the test and updated when the test's characteristics change.
+
+### Vitest `coverage.changed` for PR-Scoped Coverage Reporting [community]
+
+Vitest v4.1 added the `coverage.changed` option, which restricts coverage reporting to only the files changed since a specified base branch. Instead of a project-wide coverage report (which can show low coverage for legacy files irrelevant to the PR), `coverage.changed` narrows the report to the exact files the developer touched — giving a precise signal about whether new code is adequately tested.
+
+> [community] Teams that use global coverage thresholds on large codebases consistently face a perverse incentive: developers avoid touching poorly-covered legacy files to prevent their PR from failing the coverage gate. `coverage.changed` inverts this: coverage is measured only on the files you touched, so adding tests to an old file improves your PR's score. Teams that adopt this pattern report a 30–40% increase in test additions on PRs touching legacy code.
+
+```typescript
+// vitest.config.ts — coverage.changed for PR-targeted reporting
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/*.test.*',
+        'src/**/*.spec.*',
+        'src/generated/**',
+      ],
+      // Report coverage only for files changed vs. the base branch
+      // Value: 'git:main' compares HEAD to origin/main
+      changed: process.env['CI'] ? 'git:origin/main' : undefined,
+      // Thresholds apply to the changed-files subset, not the whole project
+      thresholds: {
+        lines: 80,
+        branches: 70,
+        // perFile: true applies per-file thresholds to the changed subset
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+**GitHub Actions step with PR coverage delta:**
+
+```yaml
+# .github/workflows/ci.yml — PR coverage report scoped to changed files
+  coverage-changed:
+    needs: unit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # required for git:origin/main comparison
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Fetch base branch so git diff works correctly
+      - run: git fetch origin main
+      # Run tests with coverage.changed — only changed files appear in report
+      - run: npx vitest run --coverage
+        name: Coverage (changed files only)
+        env:
+          CI: true
+
+      # Post the changed-file coverage summary as a PR comment
+      - name: Coverage PR comment
+        uses: davelosert/vitest-coverage-report-action@v2
+        if: always()
+        with:
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+```
+
+> [community] The `fetch-depth: 0` checkout is required for `coverage.changed: 'git:origin/main'` to work — `git diff origin/main` needs the base branch refs to be present. GitHub Actions defaults to a shallow clone (`fetch-depth: 1`) that doesn't include the remote branches. Teams that forget `fetch-depth: 0` see `coverage.changed` fall back to reporting all files (because the diff target doesn't exist), producing the same inflated report they were trying to avoid.
+
+### Vitest 4.x Migration: `workspace` Fully Removed [community]
+
+Vitest 4.0 completes the migration that started in v3.2: the `workspace` configuration option and `vitest.workspace.ts` discovery are **fully removed**. The `defineWorkspace` helper is no longer exported. Projects must be defined using the `projects` array inside `vitest.config.ts`. Additionally, Vitest 4.0 requires **Vite 6+** — Vite 5 is no longer supported.
+
+> [community] Teams upgrading from Vitest 3.x to 4.0 that have existing `vitest.workspace.ts` files encounter two distinct failure modes: (1) a `Cannot find export 'defineWorkspace'` error if the old import path is used, and (2) a silent no-op if the workspace file is present but Vitest 4.0 ignores it in favor of `vitest.config.ts`. Both cases cause all workspace projects to stop running — the full test suite appears to pass because there are simply no tests to execute. Always migrate `defineWorkspace` to `projects:` before upgrading to Vitest 4.0.
+
+**Migration from `vitest.workspace.ts` to Vitest 4.x `projects:` array:**
+
+```typescript
+// BEFORE (Vitest 3.x) — vitest.workspace.ts (REMOVED in v4.0)
+// import { defineWorkspace } from 'vitest/config';
+// export default defineWorkspace([...]);
+
+// AFTER (Vitest 4.x) — vitest.config.ts (replaces vitest.workspace.ts)
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  // Coverage must be at root level — same as before
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      include: ['packages/*/src/**/*.ts', 'packages/*/src/**/*.tsx'],
+      thresholds: { lines: 80, branches: 75 },
+    },
+
+    // Projects: replaces defineWorkspace() — same inline or file-reference syntax
+    projects: [
+      // Inline project (use defineProject for type safety in per-project files)
+      {
+        plugins: [react()],
+        test: {
+          name: 'ui',
+          root: './packages/ui',
+          include: ['packages/ui/src/**/*.test.tsx'],
+          environment: 'jsdom',
+          setupFiles: ['./packages/ui/tests/setup-dom.ts'],
+        },
+      },
+      // File reference — each file must export a defineProject config
+      './packages/core/vitest.config.ts',
+      './packages/api/vitest.config.ts',
+    ],
+  },
+});
+```
+
+**Vite 6 compatibility check for CI:**
+
+```yaml
+# .github/workflows/ci.yml — verify Vite version before running Vitest 4.x tests
+  pre-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Fail CI early with a clear message if Vite < 6 is installed
+      - name: Verify Vite 6+ for Vitest 4.x compatibility
+        run: |
+          VITE_VER=$(node -e "console.log(require('./node_modules/vite/package.json').version)")
+          MAJOR=$(echo "$VITE_VER" | cut -d. -f1)
+          if [ "$MAJOR" -lt 6 ]; then
+            echo "::error::Vitest 4.x requires Vite 6+. Installed: $VITE_VER. Run: npm install vite@latest"
+            exit 1
+          fi
+          echo "Vite $VITE_VER — compatible with Vitest 4.x"
+```
+
+> [community] The `'basic'` reporter was also removed in Vitest 4.0 (replaced by `'tree'`). Teams that reference `reporters: ['basic']` in their Vitest config see a "Unknown reporter: basic" error in CI. The `'tree'` reporter provides the same hierarchical output with improved formatting. Update any `reporters` config that references `'basic'` to `'tree'` as part of the Vitest 4.0 upgrade.
+
+### HTML Report Speedboard for CI Critical-Path Analysis [community]
+
+Playwright v1.58 added a **Speedboard tab** to the merged HTML report (produced by `npx playwright merge-reports`). The Speedboard shows a horizontal timeline of test execution across all shards — each test is a colored bar, positioned by start time and length-proportional to duration. The critical path (the longest sequential chain of tests) is highlighted, immediately revealing which test file or shard is the CI bottleneck.
+
+> [community] Teams managing sharded e2e suites report that the Speedboard cuts the time to diagnose "why did the sharded run take 18 minutes instead of the expected 12?" from 30+ minutes of log archaeology to under 2 minutes of reading the timeline. The critical path highlight directly identifies the slow shard and the slow test file within it. Before the Speedboard, teams had to compute this manually from JSON results — a barrier that prevented most teams from ever doing it.
+
+```typescript
+// playwright.config.ts — configuration for Speedboard-compatible sharded reports
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/e2e',
+  fullyParallel: true,
+  retries: process.env['CI'] ? 1 : 0,
+  forbidOnly: !!process.env['CI'],
+  captureGitInfo: process.env['CI'] ? { commit: true, diff: false } : false,
+
+  reporter: process.env['CI']
+    ? [
+        // blob reporter is required — merge-reports generates the Speedboard from blob data
+        ['blob', { outputDir: 'blob-report' }],
+        // github reporter for inline PR annotations (does NOT affect Speedboard)
+        ['github'],
+      ]
+    : [['html', { open: 'on-failure' }]],
+
+  use: {
+    ...devices['Desktop Chrome'],
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+});
+```
+
+```yaml
+# .github/workflows/e2e-sharded.yml — sharded suite producing Speedboard-enabled reports
+name: E2E Sharded (Speedboard)
+
+on: [pull_request]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }     # for captureGitInfo
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --shard=${{ matrix.shard }}/4
+        env: { CI: true }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+          retention-days: 7
+
+  merge-reports:
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports/
+          pattern: blob-report-*
+          merge-multiple: true
+      # merge-reports generates the HTML report including the Speedboard tab
+      - run: npx playwright merge-reports --reporter html ./all-blob-reports
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: html-report-${{ github.sha }}
+          path: playwright-report/
+          retention-days: 30
+```
+
+> [community] The Speedboard is only generated by `npx playwright merge-reports` — it is NOT available in single-machine HTML reports. Teams that run e2e on a single runner without sharding cannot access it. To get Speedboard access without sharding, use `--reporter=blob` on the single runner and then `npx playwright merge-reports` from a single shard artifact. This adds 30 seconds to the CI run but unlocks the timeline view for performance analysis. Teams that do this once after every slow CI investigation report finding actionable optimizations in 80% of cases.
+
+### GitHub Actions Custom Runner Images for Pre-Warmed CI Environments [community]
+
+GitHub Actions custom runner images (generally available March 2026) allow teams to build and publish custom Docker images that include pre-installed tools (Node.js, Playwright browsers, Docker images, test fixtures) and use them as the base environment for GitHub-hosted runners. Unlike standard `ubuntu-latest`, a custom image can pre-install all CI dependencies at build time — eliminating `npm ci`, browser downloads, and Docker pulls from the hot path of every CI run.
+
+> [community] Teams that adopt custom runner images for test-heavy CI pipelines report eliminating 60–80% of their cold-start installation overhead. A standard `ubuntu-latest` runner needs 45–90 seconds for `npm ci` + 30–60 seconds for `npx playwright install` + up to 60 seconds for Docker image pulls. A custom image with all these pre-baked reduces this to < 5 seconds (just extracting the image layers from the cache). The break-even point is roughly 50 CI runs per week — below that, the image maintenance cost exceeds the time savings.
+
+```yaml
+# .github/workflows/build-custom-runner.yml — build and push custom CI runner image
+name: Build Custom Runner Image
+
+on:
+  push:
+    paths:
+      - '.github/runner-image/Dockerfile'
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: .github/runner-image
+          push: true
+          tags: ghcr.io/${{ github.repository }}/ci-runner:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+```dockerfile
+# .github/runner-image/Dockerfile — custom runner with pre-installed Node, Playwright, Docker
+FROM ghcr.io/actions/actions-runner:latest
+
+# Install Node.js LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - \
+    && sudo apt-get install -y nodejs
+
+# Install Playwright and its browsers — baked into image, not downloaded per run
+RUN npm install -g playwright \
+    && npx playwright install chromium --with-deps
+
+# Pre-pull common Docker images for Testcontainers
+RUN docker pull postgres:16-alpine || true \
+    && docker pull redis:7-alpine || true
+```
+
+```yaml
+# .github/workflows/ci.yml — CI using custom pre-warmed runner image
+jobs:
+  e2e:
+    # Use custom runner image — Node, Playwright browsers, and Docker images pre-installed
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-runner:latest
+    steps:
+      - uses: actions/checkout@v4
+      # npm ci still runs but is faster with pre-installed global tools
+      - run: npm ci
+      # No browser install step needed — Playwright browsers are in the image
+      - run: npx playwright test
+        env: { CI: true }
+```
+
+> [community] The primary ongoing cost of custom runner images: keeping them up to date. When Playwright releases a new version with updated browser binaries, the image must be rebuilt. Teams that automate the rebuild (trigger on `package-lock.json` changes to Playwright's version) eliminate this maintenance burden. Teams that do not automate it discover the mismatch when `npx playwright install --with-deps` is needed again because the image's browser version doesn't match the `@playwright/test` version in `package.json`.
 | Martin Fowler — Test Pyramid | Official article | https://martinfowler.com/bliki/TestPyramid.html | Fail-fast ordering rationale |
 | GitHub Actions docs — Caching | Official docs | https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows | node_modules + browser caching |
 | GitHub Actions docs — Concurrency | Official docs | https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs | Concurrency group config |
@@ -5290,7 +6016,17 @@ jobs:
 | Playwright --only-changed flag | Official docs | https://playwright.dev/docs/test-cli | Run only spec files changed since a git ref — fast PR feedback gate |
 | Playwright Project Dependencies | Official docs | https://playwright.dev/docs/test-global-setup-teardown | Replaces globalSetup with traceable, fixture-aware setup projects |
 | Vitest Browser Mode | Official docs | https://vitest.dev/guide/browser/ | Real Chromium component tests within Vitest — alternative to Playwright CT |
-| Vitest Workspace (Projects) | Official docs | https://vitest.dev/guide/workspace | Monorepo test orchestration: run multiple Vitest configs in one process (workspace deprecated since v3.2 — use `projects` array) |
-| Playwright Release Notes (v1.45–v1.57) | Official docs | https://playwright.dev/docs/release-notes | --fail-on-flaky-tests, captureGitInfo, per-project workers, testConfig.tsconfig, testConfig.tag, WebServer wait |
+| Vitest Workspace (Projects) | Official docs | https://vitest.dev/guide/workspace | Monorepo test orchestration: run multiple Vitest configs in one process (workspace deprecated since v3.2 — use `projects` array; `defineWorkspace` removed in v4.0) |
+| Playwright Release Notes (v1.45–v1.60) | Official docs | https://playwright.dev/docs/release-notes | --fail-on-flaky-tests, captureGitInfo, per-project workers, testConfig.tsconfig, testConfig.tag, webServer.wait, --last-failed, HTML Speedboard, Screencast API |
 | Vitest `defineProject` API | Official docs | https://vitest.dev/guide/projects | Type-safe per-package config in workspace; prevents root-only options in project files |
 | Playwright `--fail-on-flaky-tests` | Official docs | https://playwright.dev/docs/test-cli | CLI flag to exit code 1 when retried tests pass — strict flakiness gate |
+| Playwright `webServer.wait` regex | Official docs | https://playwright.dev/docs/test-webserver | Named capture groups inject dynamic server port into `process.env` — eliminates polling scripts |
+| Playwright `--last-failed` flag | Official docs | https://playwright.dev/docs/test-cli | Re-run only failing tests from previous CI run — targeted retry without full suite |
+| Vitest `aroundEach` / `aroundAll` hooks | Official docs | https://vitest.dev/api/hooks | Wrapper hooks for transaction-bounded test isolation in integration suites (v4.1+) |
+| Vitest `--detect-async-leaks` | Official docs | https://vitest.dev/config/#detectopenhandles | Fail CI on open handles or dangling async ops — root-cause detection for flakiness |
+| Vitest test tags `--tags-filter` | Official docs | https://vitest.dev/guide/test-tags | Stage-based CI filtering: run only @smoke, @integration, or @slow tests per pipeline |
+| Vitest `coverage.changed` | Official docs | https://vitest.dev/config/#coverage-changed | Report coverage only for files changed vs. base branch — PR-scoped coverage signal |
+| Vitest 4.0 Release Notes | Official docs | https://github.com/vitest-dev/vitest/releases/tag/v4.0.0 | Breaking changes: `workspace` removed, Vite 6+ required, `'basic'` reporter removed |
+| Vitest 4.1 Release Notes | Official docs | https://github.com/vitest-dev/vitest/releases/tag/v4.1.0 | New features: aroundEach/aroundAll, async leak detection, coverage.changed, test tags, toMatchScreenshot |
+| Playwright HTML Speedboard | Official docs | https://playwright.dev/docs/test-reporters | Execution timeline tab in merged HTML reports (v1.58+) — critical-path analysis for sharded suites |
+| GitHub Actions custom runner images | Official docs | https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/customizing-github-hosted-runners | Pre-warmed CI environments with pre-installed Node, Playwright browsers, Docker images (GA March 2026) |

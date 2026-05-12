@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -40,6 +40,7 @@
      Iter 34 (2026-05-12): 100/100 (+0) — added Concatenate + ParamSpec decorator typing pattern, TypeVar bounds vs constraints deep-dive, map() strict= mode (Python 3.14), pathlib.info attribute, asyncio call-graph introspection, float.from_number() / complex.from_number(); community gotcha #30 (TypeVar bound vs constraint confusion); sourced from docs.python.org/3/library/typing.html + docs.python.org/3/whatsnew/3.14.html
      Iter 35 (2026-05-12): 100/100 (+0) — added dataclasses.KW_ONLY + field(doc=) + InitVar + weakref_slot patterns; TypeVar(infer_variance=True) (PEP 695); itertools.batched + math.sumprod (Python 3.12); typing.assert_type() for static testing; community gotcha #31 (TypeVar infer_variance misconception); sourced from docs.python.org/3/library/dataclasses.html + docs.python.org/3/whatsnew/3.12.html
      Iter 36 (2026-05-12): 100/100 (+0) — added compression.zstd module (Python 3.14) with zstd.compress/decompress/ZstdCompressor/train_dict; heapq max-heap functions heapify_max/heappop_max/heappush_max (Python 3.14) with running_median example; sys.remote_exec() + pdb -p PID zero-overhead debugging deep-dive; multiprocessing fork-safety patterns; community gotcha #32 (fork() + threads = deadlock); sourced from docs.python.org/3/library/heapq.html + docs.python.org/3/library/compression.zstd.html + docs.python.org/3/whatsnew/3.14.html
+     Iter 37 (2026-05-12): 100/100 (+0) — added asyncio.timeout()/timeout_at() structured timeout contexts (Python 3.11+); asyncio eager task execution with eager_start + create_eager_task_factory (Python 3.12+); community gotcha #33 (asyncio task GC — fire-and-forget reference loss); os.reload_environ() for syncing external env mutations (Python 3.14); sourced from docs.python.org/3/library/asyncio-task.html + docs.python.org/3/library/os.html + docs.python.org/3/whatsnew/3.14.html
 -->
 
 ## Core Philosophy
@@ -5376,5 +5377,222 @@ else:
 | `spawn` | No (fresh interpreter) | Yes | Slowest (imports re-run) | All platforms |
 
 **Rule:** Unless you specifically need `'fork'` (e.g., to inherit large numpy arrays cheaply), always use `'spawn'` or `'forkserver'`. In Python 3.14+ on Linux, `'forkserver'` is the default. On macOS and Windows, `'spawn'` remains the default.
+
+---
+
+## `asyncio.timeout()` — Structured Timeout Contexts (Python 3.11+)
+
+`asyncio.timeout()` replaces the error-prone `asyncio.wait_for()` pattern with a context-manager approach that composes cleanly with `TaskGroup` and supports dynamic rescheduling. Internally it raises `CancelledError` and converts it to `TimeoutError` on exit.
+
+```python
+import asyncio
+
+
+# ── Basic usage — replaces asyncio.wait_for() ────────────────────────────────
+async def fetch(url: str) -> bytes:
+    async with asyncio.timeout(10.0):       # 10-second deadline
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            return response.content
+
+
+# ── Dynamic rescheduling — deadline not known at context entry ────────────────
+async def adaptive_fetch(url: str, initial_budget: float) -> bytes:
+    async with asyncio.timeout(None) as cm:    # Start without deadline
+        # Compute deadline from config / feature flag / DB at runtime
+        deadline = asyncio.get_running_loop().time() + initial_budget
+        cm.reschedule(deadline)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+
+        if cm.expired():
+            # Timed out but we allowed the response body to finish reading
+            print("Warning: deadline exceeded but task completed")
+        return response.content
+
+
+# ── Composing timeout + TaskGroup ────────────────────────────────────────────
+async def fetch_all_with_deadline(urls: list[str]) -> list[bytes | None]:
+    results: list[bytes | None] = [None] * len(urls)
+
+    try:
+        async with asyncio.timeout(30.0):            # Global deadline for all fetches
+            async with asyncio.TaskGroup() as tg:
+                for i, url in enumerate(urls):
+                    async def _fetch(i=i, url=url):  # Capture loop variables
+                        results[i] = await fetch(url)
+                    tg.create_task(_fetch())
+    except TimeoutError:
+        print("Global deadline exceeded; partial results returned")
+
+    return results
+
+
+# ── asyncio.timeout_at() — absolute wall-clock deadline ─────────────────────
+async def operation_with_absolute_deadline():
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 20.0   # 20 seconds from now as absolute time
+
+    async with asyncio.timeout_at(deadline):
+        await asyncio.sleep(5)
+        await asyncio.sleep(5)
+        # Still within 20s; no timeout
+```
+
+**Why not `wait_for()`?** `asyncio.wait_for()` cancels the *entire* wrapped coroutine on timeout — it does not compose with `TaskGroup`, and rescheduling is impossible. `asyncio.timeout()` scopes only the block, cancels cleanly, and integrates with structured concurrency.
+
+---
+
+## Asyncio Eager Task Execution (Python 3.12+)
+
+By default, `asyncio.create_task()` schedules the coroutine to run on the **next event loop iteration**. With `eager_start=True`, the coroutine runs immediately until its first `await`. If it completes synchronously (cache hit, no I/O), no event loop scheduling overhead occurs. This can meaningfully reduce latency in I/O-heavy services where many tasks resolve without blocking.
+
+```python
+import asyncio
+from functools import lru_cache
+
+
+# ── eager_start=True — run synchronously until the first await ──────────────
+_cache: dict[str, bytes] = {}
+
+async def fetch_cached(url: str) -> bytes:
+    if url in _cache:
+        return _cache[url]                  # No await — completes synchronously
+    async with httpx.AsyncClient() as client:
+        data = (await client.get(url)).content
+        _cache[url] = data
+        return data
+
+
+async def main_eager():
+    # First call: goes to event loop (I/O needed)
+    task1 = asyncio.create_task(fetch_cached("https://example.com"), eager_start=True)
+    await task1
+
+    # Second call: cache hit — completes immediately, no loop scheduling
+    task2 = asyncio.create_task(fetch_cached("https://example.com"), eager_start=True)
+    # task2 is already done here if it resolved eagerly
+    if task2.done():
+        print("Cache hit — zero scheduling overhead")
+
+
+# ── Global eager factory — apply to all tasks in the event loop ──────────────
+async def main_with_factory():
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)
+
+    # Now ALL create_task() calls behave eagerly by default
+    task = asyncio.create_task(fetch_cached("https://example.com"))
+    await task
+
+
+# ── Custom factory with a specialised Task subclass ──────────────────────────
+class InstrumentedTask(asyncio.Task):
+    def __init__(self, coro, **kwargs):
+        super().__init__(coro, **kwargs)
+        print(f"Task created: {self.get_name()}")
+
+
+async def main_custom_factory():
+    loop = asyncio.get_running_loop()
+    factory = asyncio.create_eager_task_factory(InstrumentedTask)
+    loop.set_task_factory(factory)
+    await asyncio.create_task(asyncio.sleep(0))   # Logs "Task created: Task-1"
+```
+
+**When to use:** Enable eager execution at the service level (`set_task_factory`) when most tasks are cache-heavy or I/O-free. The single-threaded semantics are preserved — eager tasks still yield at every `await` — so existing code continues to work.
+
+---
+
+### 33. Asyncio Task Reference Garbage Collection  [community]
+
+**Problem:** `asyncio.create_task()` returns a `Task` object. If you discard that reference immediately (fire-and-forget), the garbage collector may collect and cancel the task mid-execution with a `Task was destroyed but it is pending!` warning. This is silent data loss.
+
+**Why:** CPython's GC uses reference counting. As soon as the local variable holding the task goes out of scope, the reference count drops to zero. The event loop only holds a *weak* reference to tasks, so the task can be collected at any `await` point.
+
+**Fix:** Maintain a strong reference to all background tasks using a module-level set, and register a done-callback to discard them automatically.
+
+```python
+import asyncio
+
+# ── BAD — fire-and-forget with GC risk ──────────────────────────────────────
+async def bad_background():
+    asyncio.create_task(long_running_job())   # Reference immediately lost
+    # Python may GC the task before it completes
+
+
+# ── GOOD — maintain strong reference; auto-remove when done ─────────────────
+_background_tasks: set[asyncio.Task] = set()
+
+def create_background_task(coro) -> asyncio.Task:
+    """Create a fire-and-forget task with GC protection."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)           # Strong reference
+    task.add_done_callback(_background_tasks.discard)  # Auto-cleanup
+    return task
+
+
+async def good_background():
+    create_background_task(long_running_job())   # Now GC-safe
+
+
+# ── ALSO GOOD — use TaskGroup when you want to wait for results ───────────────
+async def structured_background():
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(long_running_job())   # TaskGroup holds the reference
+    # All tasks done here
+```
+
+**Rule:** For any `create_task()` call whose return value is not `await`-ed, store the task in a long-lived container and register `add_done_callback` for cleanup.
+
+---
+
+## `os.reload_environ()` — Sync External Environment Changes (Python 3.14)
+
+`os.reload_environ()` refreshes `os.environ` and `os.environb` with environment variable changes that occurred **outside Python** (e.g., a library calling `setenv()`/`unsetenv()` via C extensions, or changes made by a parent process after fork). Prior to 3.14, there was no standard way to sync these changes.
+
+```python
+import os
+
+
+# ── Without reload — stale view of environment ───────────────────────────────
+# Imagine a C extension calls setenv("DB_URL", "postgres://...", 1)
+# os.environ["DB_URL"] still shows the old value in Python
+
+
+# ── With reload — pick up external changes ───────────────────────────────────
+os.reload_environ()
+
+db_url = os.environ.get("DB_URL", "sqlite:///:memory:")
+print(db_url)   # Now reflects the C extension's setenv() call
+
+
+# ── Practical: reload after subprocess that exports variables ─────────────────
+import subprocess
+
+subprocess.run(["bash", "-c", "export NEW_FLAG=1"], check=True)
+# subprocess runs in a child process; its exports DO NOT propagate to the parent
+# os.reload_environ() only helps for CURRENT PROCESS environment mutations
+# (e.g., via ctypes or a C extension calling setenv directly)
+
+
+# ── Thread safety warning ─────────────────────────────────────────────────────
+# os.reload_environ() is NOT thread-safe.
+# Calling it while another thread modifies os.environ can return an incomplete
+# or empty mapping. Use a threading.Lock around both the reload and the read.
+import threading
+
+_env_lock = threading.Lock()
+
+def safe_reload_and_get(key: str, default: str = "") -> str:
+    with _env_lock:
+        os.reload_environ()
+        return os.environ.get(key, default)
+```
+
+**Note:** `os.reload_environ()` only reflects mutations to the **current process's** environment block. Variables exported by a child subprocess do not flow back to the parent — that is a Unix process model limitation, not a Python limitation.
+
+---
 
 
