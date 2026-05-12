@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 24 | score: 100/100 | date: 2026-05-08 -->
+<!-- sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -10,6 +10,12 @@
        HasValue/Value, null-coalescing ??, GetValueOrDefault(), is-pattern safe extraction,
        lifted operators, boxing/unboxing behavior, Nullable.GetUnderlyingType(), and anti-patterns table
        sourced from learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/nullable-value-types
+     Iter 25 (2026-05-12): added Task.WhenAny — competitive race pattern for first-completed task
+       dispatch; added async exception handling with AggregateException unwrapping — sourced from
+       learn.microsoft.com/dotnet/csharp/asynchronous-programming/
+     Iter 26 (2026-05-12): added C# 14 User-Defined Compound Assignment Operators — void instance
+       operator +=/-=/*= etc for in-place mutation, instance increment operators, override/new modifiers —
+       sourced from learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/user-defined-compound-assignment
 -->
 
 ## Core Philosophy
@@ -874,6 +880,65 @@ public sealed class MetricsFlushService(
 builder.Services.AddHostedService<MetricsFlushService>();
 ```
 
+### `Task.WhenAny` — First-Completed Task Dispatch
+
+`Task.WhenAny` returns a `Task<Task>` that completes as soon as any one of the supplied tasks finishes. Use it when you want to process results as they arrive (competitive race), implement a timeout alongside real work, or drain a queue of tasks one at a time in completion order rather than submission order. After `WhenAny` resolves, **always `await` the completed inner task** to propagate exceptions — `WhenAny` itself never throws even if all tasks are faulted.
+
+```csharp
+// Pattern 1: process results as each task finishes (completion-order drain)
+public async Task ProcessAllAsync(
+    IReadOnlyList<int> ids,
+    CancellationToken ct)
+{
+    var pending = ids
+        .Select(id => _repository.GetAsync(id, ct))
+        .ToList();                        // materialize so all tasks start now
+
+    while (pending.Count > 0)
+    {
+        Task<Item> finished = await Task.WhenAny(pending);
+        pending.Remove(finished);
+
+        // await the inner task to surface any exception it may have thrown
+        Item item = await finished;
+        await _processor.HandleAsync(item, ct);
+    }
+}
+
+// Pattern 2: race a real operation against a timeout
+public async Task<string> FetchWithTimeoutAsync(
+    string url,
+    TimeSpan timeout,
+    CancellationToken ct)
+{
+    using var timeoutCts = new CancellationTokenSource(timeout);
+    using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+        ct, timeoutCts.Token);
+
+    Task<string> fetchTask = _httpClient.GetStringAsync(url, linked.Token);
+    Task<string> timeoutTask = Task.FromException<string>(
+        new TimeoutException($"Fetch of '{url}' exceeded {timeout.TotalSeconds}s"));
+
+    Task<string> delayTask = Task.Delay(timeout, ct)
+        .ContinueWith(_ => (string)null!, TaskContinuationOptions.OnlyOnRanToCompletion);
+
+    Task<string> winner = await Task.WhenAny(fetchTask, delayTask);
+    if (winner == delayTask)
+        throw new TimeoutException($"Fetch of '{url}' exceeded {timeout.TotalSeconds}s");
+
+    return await fetchTask;  // await original to get result or propagate exception
+}
+
+// Pattern 3: fan-out with WhenAll (preferred when order doesn't matter)
+// Use WhenAll when you need ALL results and don't care about order:
+var results = await Task.WhenAll(ids.Select(id => _repository.GetAsync(id, ct)));
+```
+
+**Key rules:**
+- `Task.WhenAny` does NOT cancel the losing tasks — you must cancel them yourself via `CancellationToken`.
+- `Task.WhenAny` never faults — always `await finished` inside the loop to surface faults.
+- Materialize the task list with `.ToList()` before passing to `WhenAny`; lazy LINQ sequences create tasks one at a time instead of starting them all concurrently.
+
 ---
 
 ## Language Idioms
@@ -1534,9 +1599,58 @@ public partial class Widget
 
 **Use case:** source generators that augment user-defined types. The user writes the declaring contract; the generator provides the implementation.
 
+### C# 14 — User-Defined Compound Assignment Operators
 
+C# 14 (.NET 10) lets types declare `void` **instance** operator methods for compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) and increment/decrement (`++`, `--`). The compiler prefers the instance form over the traditional pattern of `x = x + y`, enabling **in-place mutation** and eliminating unnecessary allocations for mutable types like `BigInteger`, tensor buffers, or custom numeric types.
 
-`Task.ContinueWith` predates the `async`/`await` keywords and requires manual error handling, nested lambdas, and `Unwrap()` calls to chain operations. `async`/`await` compiles to an equivalent state machine but reads like synchronous code. Use `ContinueWith` only in rare low-level scenarios (e.g., advanced scheduler control). The official docs explicitly recommend `async`/`await` for all new code.
+```csharp
+// Before C# 14: += synthesized as x = operator+(x, y) — allocates a new instance
+class Matrix
+{
+    public static Matrix operator +(Matrix x, Matrix y) => new Matrix(/* copy + add */);
+}
+var m = new Matrix();
+m += other;  // allocates a brand-new Matrix, assigns to m, old m is abandoned
+
+// C# 14: void instance operator += — mutates in place, no allocation
+class Matrix
+{
+    private double[] _data;
+
+    // Binary + still needed for immutable-style expressions: var c = a + b
+    public static Matrix operator +(Matrix x, Matrix y) => new Matrix(/* copy + add */);
+
+    // Instance += — in-place, no allocation
+    public void operator +=(Matrix other)
+    {
+        for (int i = 0; i < _data.Length; i++)
+            _data[i] += other._data[i];
+    }
+
+    // Instance ++ — in-place increment
+    public void operator ++()
+    {
+        for (int i = 0; i < _data.Length; i++)
+            _data[i]++;
+    }
+}
+
+Matrix m = new Matrix(rows: 512, cols: 512);
+m += delta;   // calls void operator += in-place — zero allocation
+++m;          // calls void operator ++ in-place — zero allocation
+```
+
+**Rules:**
+- The compound assignment operator must be an **instance method** with `void` return type and exactly one parameter.
+- The increment/decrement operator must be an **instance method** with `void` return type and no parameters.
+- The `static` modifier is **not** allowed on these forms (static form uses binary operator + assignment as before).
+- A `checked operator +=` requires a paired non-checked `operator +=`.
+- When both an instance `+=` and a static `+` are defined, `x += y` uses the instance form; `var z = x + y` still uses the static binary form.
+- The `override` and `new` modifiers allow derived types to override or shadow a base class compound operator.
+
+**When to use:** large mutable value types (`BigInteger`, `Matrix`, `Tensor`, custom fixed-point arithmetic). Do **not** use for types intended to be immutable — the classic static operator pattern is correct for records and value objects.
+
+ and requires manual error handling, nested lambdas, and `Unwrap()` calls to chain operations. `async`/`await` compiles to an equivalent state machine but reads like synchronous code. Use `ContinueWith` only in rare low-level scenarios (e.g., advanced scheduler control). The official docs explicitly recommend `async`/`await` for all new code.
 
 ```csharp
 // BAD: ContinueWith chains — nested, hard to read, error-prone

@@ -1,6 +1,6 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 12 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 13 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 | ISTQB CTFL 4.0 terminology applied -->
 
 ## Core Principles
 
@@ -1260,6 +1260,10 @@ describe('calculateTotal (property-based)', () => {
 
 19. **[community] `--noCheck` in TDD CI pipelines decouples type safety from test speed.** TypeScript 5.7's `--noCheck` flag enables separating the CI "type-check" job from the "build + test" job. TDD teams benefit by running the fast Vitest unit test suite (via esbuild, no full tsc compile) in parallel with `tsc --noEmit` for type checking. Neither job blocks the other, and the TDD feedback loop stays sub-60s even in large monorepos. Warning: using `--noCheck` in local development defeats TypeScript's purpose — restrict it to CI parallelisation only.
 
+20. **[community] DHH's "design damage" critique applies to TypeScript TDD too.** David Heinemeier Hansson's objection — that heavy isolation testing requires excessive interface indirection — is relevant in TypeScript projects where every collaborator gets an `interface`, an in-memory fake, and constructor injection. For simple CRUD services, this is genuine overhead. The practical resolution: apply full DI + typed fakes at the domain layer (business rules, pricing, state machines) where behaviour complexity justifies it, and use integration test cases with real infrastructure for thin persistence adapters where the "seam" adds more complexity than it removes.
+
+21. **[community] The "Is TDD Dead?" debate produced a durable framework for evaluating any testing approach.** Kent Beck's four dimensions — Frequency (how often tests run), Fidelity (how accurately they represent production), Overhead (time/complexity cost), and Lifespan (cost over the software's life) — apply to every testing decision, not just TDD. In TypeScript projects: unit test cases with fakes score high on Frequency and Lifespan but lower on Fidelity (the fake diverges from the real DB); integration test cases score high on Fidelity but lower on Frequency (slow). The framework prevents religious debates ("unit tests are always better") by making the tradeoff explicit. Apply it when choosing between TDD'd unit test cases and Testcontainers-based integration tests for a given TypeScript module.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2150,6 +2154,107 @@ jobs:
 
 **[community] Per-file coverage thresholds prevent coverage debt accumulation in critical modules.** Setting global 80% thresholds allows new files with 0% coverage to silently dilute the aggregate. Per-file thresholds on `src/domain/pricing/**` and `src/domain/auth/**` enforce TDD discipline precisely where it matters most.
 
+### TDD Test Investment Framework — Frequency, Fidelity, Overhead, Lifespan [community]
+
+The "Is TDD Dead?" video series (Kent Beck, Martin Fowler, DHH — 2014, still the most cited TDD debate) produced a practical four-dimension framework for evaluating whether to TDD a given module. The framework prevents ideological arguments and grounds decisions in measurable costs.
+
+| Dimension | Question | TypeScript TDD lever |
+|-----------|----------|---------------------|
+| **Frequency** | How often will this test case run and give feedback? | Unit test cases via Vitest (< 1s) vs integration with Testcontainers (30–60s) |
+| **Fidelity** | How accurately does the test case represent the production failure? | Typed in-memory fakes: high for domain logic, lower for DB-specific behaviour |
+| **Overhead** | What is the time and complexity cost to write and maintain? | DI + interfaces + fakes: justified for complex domain, excessive for thin adapters |
+| **Lifespan** | Over the software's life, does this test case pay back its cost? | Domain rule tests: long lifespan. Integration scaffolding: shorter, higher churn |
+
+**Applying the framework in TypeScript:**
+
+```typescript
+// Decision example: Should I TDD this with unit test cases or integration test cases?
+
+// MODULE A: PricingEngine — complex domain logic
+// Frequency: HIGH (run on every file save, < 100ms)
+// Fidelity: HIGH (pure function, no infrastructure dependency)
+// Overhead: LOW (no DI needed — pure function takes typed input)
+// Lifespan: HIGH (pricing rules change slowly; test cases remain valid for years)
+// → DECISION: TDD with unit test cases — all four dimensions strongly favour it.
+
+// pricing-engine.test.ts
+import { describe, it, expect } from 'vitest';
+import { applyTieredDiscount, PricingInput, PricingResult } from './pricing-engine.js';
+
+describe('applyTieredDiscount', () => {
+  it('applies 5% for subtotal 50–99', () => {
+    const input: PricingInput = { subtotal: 75, customerTier: 'standard' };
+    const result: PricingResult = applyTieredDiscount(input);
+    expect(result.discount).toBeCloseTo(3.75); // 5% of 75
+    expect(result.total).toBeCloseTo(71.25);
+  });
+
+  it('applies 10% for subtotal ≥ 100 on standard tier', () => {
+    const input: PricingInput = { subtotal: 150, customerTier: 'standard' };
+    const result = applyTieredDiscount(input);
+    expect(result.discount).toBeCloseTo(15);
+    expect(result.total).toBeCloseTo(135);
+  });
+
+  it('applies 15% for premium tier regardless of subtotal', () => {
+    const input: PricingInput = { subtotal: 40, customerTier: 'premium' };
+    const result = applyTieredDiscount(input);
+    expect(result.discount).toBeCloseTo(6);
+  });
+});
+
+// MODULE B: UserRepository (Postgres implementation)
+// Frequency: LOW (requires DB container — minutes to spin up in CI)
+// Fidelity: HIGH (tests real SQL, real indexes, real constraint behaviour)
+// Overhead: MEDIUM (Testcontainers setup, but shared across the test suite)
+// Lifespan: MEDIUM (SQL changes when schema evolves, but not on every refactor)
+// → DECISION: TDD the UserRepository *interface* with a typed fake (unit level),
+//   then write integration test cases against the PostgresUserRepository
+//   (contract tests). Do NOT try to TDD the SQL implementation line by line.
+```
+
+**Community signal:** The Beck/DHH/Fowler debate concluded that the methodology (TDD vs test-after) matters less than the outcome (self-testing code). Teams obsessing over TDD purity while neglecting integration fidelity — running only in-memory fakes, never testing against a real database — discover defects in production that a single Testcontainers-based integration test case would have caught in CI. Balance the four dimensions, not the ideological purity of the approach.
+
+---
+
+### Self-Testing Code — The Goal Behind TDD [community]
+
+Martin Fowler's "Self-Testing Code" principle is the reason TDD exists: if you can run a comprehensive automated test suite after any change and be confident the software works, you can refactor, upgrade dependencies, and ship with low risk. TDD is one technique for achieving this goal — but it is not the only one.
+
+**Why this matters:** Teams that abandon TDD often abandon self-testing code entirely, which is the real regression. The goal is a suite of test cases that gives fast, high-fidelity confidence after every change — whether those test cases were written test-first or test-after is secondary.
+
+```typescript
+// The self-testing code checklist — applicable to any TypeScript project
+// Each item can be achieved via TDD or other means; TDD makes most of them easier.
+
+// 1. Every business rule has at least one test case that fails when the rule is violated:
+it('rejects orders with negative quantities', () => {
+  const result = createOrder({ items: [{ sku: 'A', qty: -1, price: 10 }] });
+  expect(result.success).toBe(false);
+  expect(result.error).toMatch(/quantity/i);
+});
+
+// 2. Refactoring does not require test suite changes (tests on behaviour, not implementation):
+// BEFORE refactor: Cart.total() computed inline
+// AFTER refactor: Cart.total() delegates to CartCalculator
+// → No test cases need to change if they test cart.total() output, not internals.
+
+// 3. CI gate: suite must pass before merge — non-negotiable:
+// .github/workflows/ci.yml extract:
+// jobs:
+//   test:
+//     steps:
+//       - run: npx vitest run --coverage
+//       - run: npx tsc --noEmit
+// No merge without green.
+
+// 4. Test cases run in < 60 seconds for the unit suite:
+// If suite exceeds 60s, TDD's feedback loop breaks down.
+// Remedies: Vitest parallelisation, esbuild (not tsc), exclude slow integration tests from watch mode.
+```
+
+**[community] The most durable finding from the "Is TDD Dead?" debate:** All three participants agreed that self-testing code — whatever technique produces it — is the most impactful software quality practice available to a development team. DHH's objection was never to automated testing; it was to the specific ceremony of red-green-refactor being applied rigidly where it didn't fit. Teams that internalise the goal (self-testing code) over the method (strict TDD) build more pragmatic, sustainable test cultures.
+
 ---
 
 ## Key Resources
@@ -2171,3 +2276,6 @@ jobs:
 | Martin Fowler — Testing Guide | Article | https://martinfowler.com/testing/ | Production patterns, Test Cancer failure mode, self-testing code principles |
 | TypeScript 5.5 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html | Inferred type predicates — TDD-friendly filter functions with automatic narrowing |
 | TypeScript 5.7 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-7.html | `--noCheck` flag for CI parallelisation of type-check vs test jobs |
+| "Is TDD Dead?" video series | Video series | https://martinfowler.com/articles/is-tdd-dead/ | Kent Beck, DHH, Fowler debate; introduces Frequency/Fidelity/Overhead/Lifespan framework |
+| Self-Testing Code — Martin Fowler | Article | https://martinfowler.com/bliki/SelfTestingCode.html | The foundational goal behind TDD; explains why automated test suites matter more than methodology |
+| Google Testing Blog — "The Way of TDD" | Blog post | https://testing.googleblog.com/2026/03/the-way-of-tdd.html | 2026 Google TotT post on TDD practice and discipline |

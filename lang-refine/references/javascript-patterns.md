@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 40 | score: 100/100 | date: 2026-05-08 -->
+<!-- sources: official | community | mixed | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -2673,6 +2673,309 @@ EventEmitter.captureRejections = true;
 
 ---
 
+## ES2026 and Emerging Features
+
+### `Math.sumPrecise()` — Floating-Point Safe Summation (ES2026 / Baseline April 2026)
+
+`Math.sumPrecise()` sums an iterable of numbers using a high-precision algorithm that avoids the intermediate rounding errors that accumulate in a naive `+` loop. It accepts any iterable (arrays, generators, `Set`) and returns the nearest representable 64-bit float of the mathematically exact sum.
+
+```javascript
+// Classic floating-point pitfall — order of addition loses precision
+let sum = 0;
+const nums = [1e20, 0.1, -1e20];
+for (const n of nums) sum += n;
+console.log(sum); // 0 — WRONG (1e20 + 0.1 rounds to 1e20 mid-loop)
+
+// Math.sumPrecise — treats each intermediate result at full mathematical precision
+console.log(Math.sumPrecise([1e20, 0.1, -1e20])); // 0.1 — CORRECT
+
+// Works with any iterable
+console.log(Math.sumPrecise(new Set([1, 2, 3, 4, 5]))); // 15
+
+// Generator input — lazy; no intermediate array allocated
+function* measurements() {
+  yield 1.1; yield 2.2; yield 3.3;
+}
+console.log(Math.sumPrecise(measurements())); // 6.6
+
+// Still cannot overcome inherent float representation limits
+console.log(Math.sumPrecise([0.1, 0.2])); // 0.30000000000000004
+// 0.1 and 0.2 are already imprecise as 64-bit floats; sumPrecise sums
+// their precise IEEE 754 values exactly, but the values themselves are approximations.
+
+// Empty iterable returns -0 (consistent with the spec)
+console.log(Math.sumPrecise([]));   // -0
+console.log(1 / Math.sumPrecise([])); // -Infinity — confirms -0, not +0
+```
+
+**When to use it:** scientific / financial computations where you accumulate many floating-point values and the accumulation order depends on runtime data (e.g., reducing over a stream). For the `0.1 + 0.2 === 0.3` problem, use a decimal library — `sumPrecise` can't fix inherent representation limits of 64-bit floats.
+
+---
+
+### `Uint8Array` Base64 and Hex Methods (Baseline September 2025)
+
+The `Uint8Array` class now ships with built-in base64 and hex encoding/decoding. These replace the notoriously awkward `btoa`/`atob` + `String.fromCharCode` dance, and remove the need for the `buffer` npm package in the browser.
+
+```javascript
+// ── Encoding: binary → base64 ────────────────────────────────────────
+const bytes = new Uint8Array([202, 254, 208, 13]); // "cafed00d" in hex
+
+// Standard base64 (A-Z a-z 0-9 + /)
+console.log(bytes.toBase64()); // "yv7QDQ=="
+
+// URL-safe base64 (A-Z a-z 0-9 - _) — safe in URLs and filenames, no + or /
+console.log(bytes.toBase64({ alphabet: 'base64url' })); // "yv7QDQ"
+
+// Without padding characters (useful when the length is known or transmitted separately)
+console.log(bytes.toBase64({ omitPadding: true })); // "yv7QDQ"
+
+// ── Decoding: base64 → binary ────────────────────────────────────────
+const decoded = Uint8Array.fromBase64('yv7QDQ==');
+console.log(decoded); // Uint8Array [202, 254, 208, 13]
+
+// URL-safe variant — match alphabet to the encoding
+const urlDecoded = Uint8Array.fromBase64('yv7QDQ', { alphabet: 'base64url', lastChunkHandling: 'stop-before-partial' });
+
+// Strict mode — ensures no non-zero overflow bits (cryptographic use)
+Uint8Array.fromBase64('yv7QDQ==', { lastChunkHandling: 'strict' });
+
+// ── Hex encoding/decoding ─────────────────────────────────────────────
+const hex = bytes.toHex();         // "cafed00d"
+const back = Uint8Array.fromHex('cafed00d'); // Uint8Array [202, 254, 208, 13]
+
+// Practical: hashing with crypto.subtle + toHex (replaces manual Array.map)
+async function sha256hex(message) {
+  const encoded = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+  return new Uint8Array(hashBuffer).toHex(); // "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+}
+
+// ── Streaming: setFromBase64 writes into an existing buffer ──────────
+// Useful when receiving base64-encoded chunks from a network stream
+const buffer = new Uint8Array(1024);
+let offset = 0;
+
+for (const chunk of base64Chunks) {
+  const { written } = buffer.setFromBase64(chunk, { lastChunkHandling: 'stop-before-partial' });
+  // Or: buffer.subarray(offset).setFromBase64(chunk, {...}) to write at current offset
+  offset += written;
+}
+```
+
+**Why it matters:** `btoa(String.fromCharCode(...bytes))` silently fails for buffers larger than ~65k bytes (stack overflow from spread into `String.fromCharCode`). The new methods handle any size, support URL-safe alphabet, and are available in browsers, Node.js 22+, Deno, and Bun — no `Buffer` polyfill or npm package needed.
+
+---
+
+### `Iterator.concat()` — Sequence Multiple Iterables (Baseline March 2026)
+
+`Iterator.concat()` is a static method that produces a single lazy iterator by yielding all values from each input iterable in order. It extends the Iterator Helpers suite (already in the file) with a clean concatenation primitive.
+
+```javascript
+// ── Basic concatenation ───────────────────────────────────────────────
+const combined = Iterator.concat([1, 2, 3], new Set([4, 5]), 'abc');
+console.log([...combined]); // [1, 2, 3, 4, 5, 'a', 'b', 'c']
+
+// ── Mix any iterable type ─────────────────────────────────────────────
+function* odds() { yield 1; yield 3; yield 5; }
+const mixed = Iterator.concat(
+  [0, 2, 4],         // Array
+  odds(),             // Generator
+  new Set([6, 8]),    // Set
+);
+console.log(mixed.toArray()); // [0, 2, 4, 1, 3, 5, 6, 8]
+
+// ── Chain with other Iterator Helpers ────────────────────────────────
+// Find the first even number across multiple lazy sources
+const sources = Iterator.concat(
+  [1, 3, 5, 7],
+  [9, 10, 11, 12],
+);
+const firstEven = sources.find(n => n % 2 === 0); // 10 — stops early
+
+// ── Merge two Maps ────────────────────────────────────────────────────
+// Later entries win on key collision (right-hand side overwrites left)
+const defaults = new Map([['timeout', 3000], ['retries', 3]]);
+const overrides = new Map([['timeout', 5000], ['debug', true]]);
+const merged = new Map(Iterator.concat(defaults, overrides));
+// Map { timeout: 5000, retries: 3, debug: true }
+
+// ── Non-iterable iterators need Iterator.from() wrapper ───────────────
+const rawIter = { next: () => ({ value: 42, done: false }) }; // iterator, not iterable
+// Iterator.concat(rawIter);                   // ❌ TypeError
+Iterator.concat(Iterator.from(rawIter));       // ✅ wrap with Iterator.from
+```
+
+**`concat()` vs `flatMap()` for merging:**
+
+| Situation | Use |
+|-----------|-----|
+| Fixed list of iterables to join | `Iterator.concat(a, b, c)` |
+| Infinite number of iterables | `iter.flatMap(x => x)` — `concat` can't spread ∞ args |
+| Need to transform while concatenating | `iter.flatMap(fn)` |
+| Simple sequential read with early exit | `Iterator.concat(...)` + `.find()` / `.take()` |
+
+---
+
+### Decorators — TC39 Stage 3 (Transpiler-Ready, Native Landing)
+
+JavaScript Decorators are functions that annotate and modify class declarations and their members. They reached Stage 3 with a final, stable API that differs from legacy `experimentalDecorators` in TypeScript/Babel. The Stage 3 spec is implemented in Babel (`@babel/plugin-proposal-decorators` with `"version": "2023-11"`) and TypeScript 5.0+.
+
+```javascript
+// ── Method decorator: logging wrapper ────────────────────────────────
+function logged(fn, { kind, name }) {
+  if (kind !== 'method') return fn;
+  return function (...args) {
+    console.log(`${name}(${args.map(JSON.stringify).join(', ')})`);
+    const result = fn.call(this, ...args);
+    console.log(`${name} → ${JSON.stringify(result)}`);
+    return result;
+  };
+}
+
+class Calculator {
+  @logged
+  add(a, b) { return a + b; }
+}
+
+new Calculator().add(2, 3);
+// "add(2, 3)"
+// "add → 5"
+
+// ── Auto-accessor decorator: reactive property ────────────────────────
+// 'accessor' is a new keyword that generates a private backing field
+// plus a getter/setter pair — perfect for intercepting reads/writes.
+function reactive(_, { kind, name, addInitializer }) {
+  if (kind !== 'accessor') throw new Error('@reactive only works on accessors');
+  return {
+    get() { return this[`#${name}Backing`]; },
+    set(value) {
+      const old = this[`#${name}Backing`];
+      this[`#${name}Backing`] = value;
+      this.dispatchEvent?.(new CustomEvent('change', { detail: { name, old, value } }));
+    },
+  };
+}
+
+class Store extends EventTarget {
+  @reactive accessor count = 0; // generates private #count backing field
+}
+
+const store = new Store();
+store.addEventListener('change', e => console.log('changed:', e.detail));
+store.count = 5; // fires 'change' event
+
+// ── Class decorator: registration ────────────────────────────────────
+function customElement(tagName) {
+  return (Class, { addInitializer }) => {
+    addInitializer(function () {
+      customElements.define(tagName, this);
+    });
+    return Class;
+  };
+}
+
+@customElement('my-button')
+class MyButton extends HTMLElement {
+  connectedCallback() { this.textContent = 'Click me'; }
+}
+// customElements.get('my-button') === MyButton
+
+// ── Field decorator: validation ───────────────────────────────────────
+function nonNegative(_, { kind, name }) {
+  if (kind !== 'field') return;
+  return function (initialValue) {
+    if (initialValue < 0) throw new RangeError(`${name} must be >= 0`);
+    return initialValue;
+  };
+}
+
+class Inventory {
+  @nonNegative quantity = 10;   // OK
+  // @nonNegative quantity = -1; // RangeError at construction time
+}
+
+// ── bind decorator: auto-bind methods ────────────────────────────────
+// Solves `this` loss when passing class methods as callbacks (gotcha #6 above)
+function bind(fn, { name, addInitializer }) {
+  addInitializer(function () {
+    this[name] = fn.bind(this);
+  });
+}
+
+class Button {
+  @bind
+  handleClick() { console.log('clicked', this); }
+}
+
+const btn = new Button();
+document.addEventListener('click', btn.handleClick); // 'this' is the Button instance
+```
+
+**Key differences from legacy (`experimentalDecorators`):**
+- Decorators receive the element they decorate — not a property descriptor.
+- The `accessor` keyword is new language syntax (no legacy equivalent).
+- Decorators cannot modify the class while it's being constructed — only after.
+- Multiple decorators apply outermost-first for initialization, innermost-first for wrapping.
+
+**Community signal [community]:** Legacy TypeScript `experimentalDecorators` and Stage 3 decorators are **not** interchangeable. Migrating a large codebase requires carefully auditing all decorator usage — Angular and NestJS have specific migration guides. Do not mix both in the same project.
+
+---
+
+### `import defer` — Deferred Module Evaluation (Stage 3 / TypeScript 5.9+)
+
+`import defer` is a static import that loads the module from disk/network immediately but **defers execution** (and its side effects) until you first access a property of the namespace. It fills the gap between static `import` (loads + executes immediately) and dynamic `import()` (loads + executes on demand, returns a Promise).
+
+```javascript
+// ── Syntax — namespace import only ───────────────────────────────────
+import defer * as analytics from './analytics.js';
+import defer * as heavyLib  from './heavy-computation.js';
+// Module files are resolved and pre-loaded (bundlers can split them),
+// but their top-level code has NOT run yet.
+
+// App starts fast — no side effects from deferred modules yet
+startApp();
+
+// Side effects execute the first time any property is accessed
+button.addEventListener('click', () => {
+  heavyLib.compute(data); // ← analytics.js and heavy-computation.js execute NOW
+});
+
+// ── Practical: platform-conditional initialisation ─────────────────────
+import defer * as nodeUtils    from './platform/node.js';
+import defer * as browserUtils from './platform/browser.js';
+
+function init() {
+  if (typeof window !== 'undefined') {
+    browserUtils.setup(); // only browser module executes
+  } else {
+    nodeUtils.setup();    // only Node module executes
+  }
+}
+
+// ── Practical: feature flags (A/B variants) ────────────────────────────
+import defer * as variantA from './features/checkout-v1.js';
+import defer * as variantB from './features/checkout-v2.js';
+
+function loadCheckout(flag) {
+  const mod = flag === 'v2' ? variantB : variantA;
+  return mod.CheckoutComponent; // executes the chosen variant
+}
+```
+
+**`import defer` vs `import()` vs static `import`:**
+
+| | static `import` | `import defer` | `import()` |
+|---|---|---|---|
+| Load from disk/network | At parse time | At parse time | On `await import()` call |
+| Module execution | Immediately | On first property access | After `await` |
+| Returns | Binding | Namespace object | Promise\<namespace\> |
+| Works with bundlers | ✅ | ✅ (code-split) | ✅ (code-split) |
+| Top-level `await` in consumer | n/a | Not needed | Required |
+
+**Limitation:** Only namespace syntax (`* as name`) is allowed — named and default imports are not supported. Runtime support requires Node.js 22+, or TypeScript `--module preserve` / `esnext` plus a bundler.
+
+---
+
 ## Anti-Patterns Quick Reference
 
 | Anti-Pattern | Why It's Harmful | What to Do Instead |
@@ -2712,6 +3015,10 @@ EventEmitter.captureRejections = true;
 | Inconsistent sync/async callbacks ("Zalgo") | Non-deterministic execution order; calling code cannot reason about when side effects happen | Always be consistently async; use `async`/Promises which guarantee microtask delivery |
 | `async` handlers on `EventEmitter` without `captureRejections` | Async handler rejections bypass the emitter's `'error'` event; become unhandled rejections that crash the process | Use `new EventEmitter({ captureRejections: true })` or set `EventEmitter.captureRejections = true` |
 | Fixed port in tests (`app.listen(3000)`) | Port collisions under parallel CI workers or watch mode cause `EADDRINUSE` flakiness | Bind to port `0` in tests; read actual port from `server.address().port` after start |
+| `btoa(String.fromCharCode(...bytes))` for large buffers | Stack overflow on buffers > ~65 k bytes; silent failure on non-ASCII input | Use `Uint8Array.toBase64()` / `Uint8Array.fromBase64()` (Baseline 2025) |
+| Legacy `experimentalDecorators` mixed with Stage 3 decorators | Two incompatible decorator semantics in one project; Angular/NestJS migrations break | Decide on one: Stage 3 (TS 5.0+ with `"experimentalDecorators": false`) or legacy; never mix |
+| `import defer` named/default imports | Syntax error — only namespace import (`* as`) is supported | Use `import defer * as name from '...'`; for named access use `name.export` |
+| `Math.sumPrecise` for `0.1 + 0.2 === 0.3` | sumPrecise sums IEEE 754 values precisely, but 0.1 and 0.2 are already imprecise; result is still 0.30000000000000004 | Use a decimal library (decimal.js, big.js) for base-10 precision; sumPrecise solves magnitude-cancellation, not representation |
 
 ---
 

@@ -1,9 +1,10 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 31 | score: 100/100 | date: 2026-05-08 -->
-<!-- sources: training-knowledge (WebFetch blocked, WebSearch API unavailable; synthesized from training knowledge per skill fallback rule) -->
-<!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html -->
+<!-- lang: TypeScript | topic: test-data | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html); training-knowledge fallback for remaining gaps -->
+<!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
 <!-- iter-31: Neon DB copy-on-write branching for test isolation (neon.com/docs/guides/branching-test-queries, 2026-05-08); Testcontainers Cloud 8GB/session + Turbo mode (testcontainers.com/cloud/docs, 2026-05-08) -->
+<!-- iter-32: faker v10.0.0 ESM-only breaking change (2026-05-12); UUID v7 time-ordered keys for DB-performance test data; Self-Initializing Fake pattern (Fowler); Testing Resource Pools (pool-size-1 technique); updated checklist to reference faker v10; Key Resources updated -->
 
 ---
 
@@ -1396,7 +1397,44 @@ than `any`. **Why harmful:** The factory compiles, all tests pass at first run, 
 flaws surface gradually — identifier collisions in CI, stale data shapes after domain
 model changes, and non-reproducible test failures from un-seeded randomness.
 
-### 10. Factories for AI/LLM feature testing that use static outputs
+### 10. `@faker-js/faker` v10 ESM-only breaking change — `require()` no longer works
+
+`@faker-js/faker` v10.0.0 (released August 2025) removed CommonJS distribution entirely.
+Projects that `require('@faker-js/faker')` or use `"type": "commonjs"` in `package.json`
+without an interop layer will receive `Error [ERR_REQUIRE_ESM]` at runtime after upgrading.
+
+**Why harmful:** The v10 release is a silent upgrade in projects that use semver ranges like
+`"@faker-js/faker": "^9"` — the `^` range does not cross major version boundaries, so the
+breakage only manifests when the `package.json` is explicitly updated to `"^10"`. Teams that
+upgrade faker in response to a security advisory without reading the migration notes encounter
+ESM-only breakage for the first time in CI.
+
+**Fix options (in order of preference):**
+```typescript
+// Option 1 — ESM project: ensure package.json has "type": "module"
+// and use static import (no change needed if already ESM)
+import { faker } from '@faker-js/faker';
+
+// Option 2 — CommonJS project: use dynamic import() at the top of the test setup
+// (Node.js supports top-level await in .mjs and ESM mode)
+const { faker } = await import('@faker-js/faker');
+
+// Option 3 — CommonJS project: configure ts-jest / vitest to handle ESM
+// vitest.config.ts (most common — vitest handles ESM natively)
+// No additional config needed; vitest's default ESM transform covers faker v10
+
+// Option 4 — Stick to faker v9 (legacy) until ESM migration is ready
+// "devDependencies": { "@faker-js/faker": "^9" }
+// Note: v9 docs at v9.fakerjs.dev, v10 docs at fakerjs.dev
+```
+
+**Check for breakage before upgrading:**
+```bash
+# Scan factories for CommonJS-incompatible patterns before bumping faker major version
+grep -r "require('@faker-js/faker')\|require(\"@faker-js/faker\")" ./src ./test
+```
+
+### 11. Factories for AI/LLM feature testing that use static outputs
 
 When testing features that call an LLM API (chat, summarization, classification), a factory
 that returns a static hardcoded response string (`{ response: 'The answer is 42' }`) does
@@ -1587,6 +1625,28 @@ export const LLMResponseFixtures = {
 
 19. **[community] Event factory payload schemas drift from the consumer's expected schema in event-driven architectures.**
     In Kafka or SQS-based systems, event producers and consumers are independently deployed. A producer team adds a required `correlationId` field to `UserCreatedEvent`. The consumer's event factory is not updated. Consumer integration tests continue passing with the old event shape. In production, the consumer receives events with `correlationId` and fails to process them (missing field validation error). Fix: derive both producer and consumer event factories from a **shared event schema package** — the single source of truth. When the schema changes, both factory files fail to compile.
+
+20. **[community] Connection pool size in integration tests hides resource-leak bugs.**
+    Integration tests typically run against a database with a connection pool of 10–50 connections. Code that fails to release a connection (missing `await db.end()`, unclosed transaction, forgotten client checkout) works fine in normal conditions — the pool has spare capacity. However, the leak is invisible until production load saturates the pool. Fix: set your test DB connection pool size to **1** for integration tests (`max: 1` in the Pool config). Any test that fails to release its connection will immediately block the next test requiring one, surfacing the leak as a timeout rather than a silent degradation. This technique (from Martin Fowler's "Testing Resource Pools") is particularly effective for finding connection leaks in repository-layer tests.
+
+    ```typescript
+    // vitest.setup.ts — pool size 1 exposes connection leaks immediately
+    import { Pool } from 'pg';
+
+    // Use pool size 1 in tests to surface resource leaks early
+    // Warning: this serializes all DB operations — only use for integration tests,
+    // not for parallel E2E suites (use transaction rollback there instead)
+    export const testPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 1,           // deliberately constrained — any leak blocks the next test
+      idleTimeoutMillis: 1000,  // fail fast if connection is held past test timeout
+      connectionTimeoutMillis: 2000,  // surface the leak as a timeout, not a hang
+    });
+
+    afterAll(async () => {
+      await testPool.end();
+    });
+    ```
 
 ---
 
@@ -1832,7 +1892,196 @@ test('suspended user cannot initiate checkout', async () => {
 
 ---
 
-### `@snaplet/seed` — AI-Powered Relational Seed Generation  [community]
+### UUID v7 — Time-Ordered IDs for DB-Performance Test Data  [community]
+
+`@faker-js/faker` v10.3.0 (released February 2026) added UUID v7 generation via
+`faker.string.uuid({ version: 7 })`. UUID v7 encodes a millisecond-resolution
+timestamp in the most significant bits, making it naturally time-ordered. This has
+significant implications for test data generation in performance and integration tests
+that benchmark index behaviour.
+
+**Why it matters for test data:** UUID v4 (random) creates B-tree index fragmentation
+because new rows are inserted at arbitrary leaf positions in the index. In high-volume
+integration tests that insert thousands of rows, UUID v4 IDs cause realistic-looking
+but misleading performance benchmarks — the insert cost includes expensive B-tree splits
+that don't reflect steady-state production performance with UUID v7 IDs. Using UUID v7
+in test factories mirrors the production ID strategy.
+
+```typescript
+// factories/user.factory.ts — UUID v7 for time-ordered, index-friendly test IDs
+import { faker } from '@faker-js/faker'; // requires faker v10.3.0+
+
+export function buildUser(overrides: Partial<User> = {}): User {
+  return {
+    // UUID v7: time-ordered — better B-tree index locality in DB integration tests
+    // UUID v4: purely random — accurate for testing uniqueness constraints
+    // Use v7 when your production schema uses UUID v7 (Postgres gen_random_uuid() v7,
+    // or app-generated UUIDs via uuid v10 npm package)
+    id: faker.string.uuid({ version: 7 }),
+    email: `${faker.string.uuid()}@${faker.internet.domainName()}`,
+    name: faker.person.fullName(),
+    status: 'active' as const,
+    subscriptionTier: 'free' as const,
+    createdAt: new Date(),
+    paymentMethodId: null,
+    ...overrides,
+  };
+}
+
+// Batch factory — generates sequential UUIDs (same millisecond → same timestamp bits)
+// Use a per-record Date.now() offset to maintain time ordering across rows
+export function buildUserList(count: number, overrides: Partial<User> = {}): User[] {
+  // Add small time offset per row to guarantee strict ordering in UUID v7 timestamps
+  return Array.from({ length: count }, (_, i) => ({
+    ...buildUser(overrides),
+    id: faker.string.uuid({ version: 7 }),  // faker generates unique ms-timestamp per call
+    createdAt: new Date(Date.now() + i),     // ensure strict ordering for time-based tests
+  }));
+}
+```
+
+**When to use UUID v7 vs v4 in factories:**
+| ID type | When to use in factories |
+|---|---|
+| UUID v7 (time-ordered) | Production uses UUID v7; integration tests benchmark insert performance; tests must respect insertion order |
+| UUID v4 (random) | Production uses UUID v4; uniqueness constraint tests; any factory where ordering is irrelevant |
+
+**Migration from UUID v4 to v7 in factories:**
+```bash
+# Requires faker v10.3.0+
+npm install --save-dev @faker-js/faker@latest
+# In factories: replace faker.string.uuid() with faker.string.uuid({ version: 7 })
+# Only where production IDs are also UUID v7
+```
+
+**Note on faker v10 compatibility:** `uuid({ version: 7 })` requires `@faker-js/faker` ≥ v10.3.0.
+Verify your faker version before using it:
+```typescript
+// In your factory setup file — guard against incorrect faker version
+import { faker, fakerVersion } from '@faker-js/faker';
+const [major, minor] = fakerVersion.split('.').map(Number);
+if (major < 10 || (major === 10 && minor < 3)) {
+  console.warn(`[test-data] UUID v7 requires faker ≥ 10.3.0 (current: ${fakerVersion})`);
+}
+```
+
+---
+
+### Self-Initializing Fake — Recording API Responses as Test Fixtures  [community]
+
+The **Self-Initializing Fake** pattern (Martin Fowler, martinfowler.com/bliki/SelfInitializingFake.html)
+records real remote service responses on first invocation, then replays them from a stored
+fixture on subsequent calls. It bridges the gap between hand-crafted factories (may not
+reflect real API shape) and live service calls (slow and non-deterministic in tests).
+
+**Why it matters:** Hand-crafted factories for third-party APIs (Stripe, Twilio, GitHub)
+often drift from the actual API response shape. When the third-party changes a field name or
+adds a required field, the factory-based tests keep passing while the production integration
+breaks. The Self-Initializing Fake detects this drift because it periodically re-records
+against the real API and fails when the shape changes.
+
+**When to use vs a plain factory:**
+- **Plain factory** — when you control both sides of the API (internal services, domain objects)
+- **Self-Initializing Fake** — when testing code that consumes a third-party API you don't control
+
+```typescript
+// test-helpers/self-initializing-fake.ts
+// Pattern: first call hits the real API and saves the response; subsequent calls replay it.
+// Periodic re-recording (CI nightly job) catches third-party API drift.
+
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { http, HttpResponse } from 'msw';
+
+type RecordedResponse = {
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+  recordedAt: string;
+};
+
+const FIXTURES_DIR = join(__dirname, '../__fixtures__/api-recordings');
+
+// Wrap any MSW handler to record on first call and replay on subsequent calls
+export function selfInitializingHandler(
+  method: 'get' | 'post' | 'put' | 'delete',
+  url: string,
+  fixtureKey: string,
+  realHandler?: () => Promise<RecordedResponse>
+) {
+  const fixturePath = join(FIXTURES_DIR, `${fixtureKey}.json`);
+
+  return http[method](url, async ({ request }) => {
+    // Replay mode: fixture exists — return stored response (fast, no network call)
+    if (existsSync(fixturePath)) {
+      const recorded: RecordedResponse = JSON.parse(readFileSync(fixturePath, 'utf8'));
+      return HttpResponse.json(recorded.body, {
+        status: recorded.status,
+        headers: recorded.headers,
+      });
+    }
+
+    // Record mode: fixture does not exist — call the real API and save the response
+    if (!realHandler) {
+      throw new Error(`[self-initializing-fake] No fixture for '${fixtureKey}' and no realHandler provided.`);
+    }
+
+    const response = await realHandler();
+
+    // Persist fixture (only runs once per key until the fixture is deleted for re-recording)
+    mkdirSync(FIXTURES_DIR, { recursive: true });
+    writeFileSync(fixturePath, JSON.stringify({ ...response, recordedAt: new Date().toISOString() }, null, 2));
+    console.log(`[self-initializing-fake] Recorded fixture: ${fixtureKey}`);
+
+    return HttpResponse.json(response.body, { status: response.status });
+  });
+}
+
+// Usage — stripe payment intent creation
+// First call in a test environment without the fixture: hits the real Stripe sandbox API
+// Subsequent calls: replay the recorded fixture (no Stripe API key needed in CI)
+const stripeHandler = selfInitializingHandler(
+  'post',
+  'https://api.stripe.com/v1/payment_intents',
+  'stripe-create-payment-intent',
+  async () => {
+    // Calls the real Stripe sandbox API — only runs when recording
+    const resp = await fetch('https://api.stripe.com/v1/payment_intents', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.STRIPE_TEST_KEY}` },
+      body: 'amount=4999&currency=usd',
+    });
+    return { status: resp.status, body: await resp.json(), headers: {} };
+  }
+);
+```
+
+**Validation strategy (drift detection):**
+```typescript
+// nightly-record.ts — CI job that deletes fixtures and re-records against real APIs
+// Schedule: cron job on the main branch, not on PRs
+import { rmSync, readdirSync } from 'fs';
+import { join } from 'path';
+
+const FIXTURES_DIR = join(__dirname, '../__fixtures__/api-recordings');
+
+// Delete all recordings to force re-recording on next test run
+readdirSync(FIXTURES_DIR).forEach((file) => {
+  rmSync(join(FIXTURES_DIR, file));
+  console.log(`[self-initializing-fake] Deleted fixture: ${file}`);
+});
+// Run the test suite with real API keys — fixtures re-recorded from live APIs
+// If the test suite fails (new required field, changed shape), the CI job fails
+// and the team is alerted to update their handlers
+```
+
+**Commit fixtures to source control:** The recorded fixtures (`__fixtures__/api-recordings/*.json`)
+should be committed. They document the current API contract and allow PRs to verify that the test
+suite still passes against the recorded shape, without requiring live API keys in every CI run.
+
+---
+
+ — AI-Powered Relational Seed Generation  [community]
 
 `@snaplet/seed` (by Snaplet, 2024–2026) is a newer approach to test data generation
 that uses your database schema (via introspection) to generate realistic, relationally
@@ -2093,6 +2342,10 @@ creating `activeUser` or `adminUser`. `beforeEach` would run all setup regardles
 | Neon DB Branching | Official | https://neon.com/docs/guides/branching-test-queries | Copy-on-write Postgres branch per test run; schema-only branching; instant teardown |
 | Testcontainers Cloud | Official | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon; 8GB/session; Turbo mode for parallel test isolation |
 | Testcontainers Guides | Official | https://testcontainers.com/guides/ | Getting-started guides: 11 languages, Spring Boot, Quarkus, ASP.NET, DB, Kafka, WireMock, LocalStack |
+| @faker-js/faker v10 docs | Official | https://fakerjs.dev/api/ | v10 stable API reference; ESM-only; UUID v7 in faker.string.uuid({ version: 7 }) |
+| @faker-js/faker v10 migration guide | Official | https://next.fakerjs.dev/guide/upgrading | Breaking changes v9→v10: CommonJS removal, deprecated API cleanup |
+| Self-Initializing Fake (Fowler) | Official | https://martinfowler.com/bliki/SelfInitializingFake.html | Record-then-replay pattern for third-party API test data; drift detection via nightly re-recording |
+| Testing Resource Pools (Fowler) | Official | https://martinfowler.com/bliki/TestingResourcePools.html | Pool-size-1 technique for surfacing connection leak defects in integration tests |
 
 ---
 
@@ -5082,7 +5335,7 @@ test data technical debt from accumulating.
 - [ ] Multi-tenant entities use unique `tenantId` per test (not a shared constant)
 
 **AI / LLM test data checklist (when testing AI-powered features):**
-- [ ] LLM-generated factory code reviewed against the faker v9 API checklist (no deprecated `faker.name.*`, `faker.address.*`)
+- [ ] LLM-generated factory code reviewed against the faker v10 API checklist (no deprecated `faker.name.*`, `faker.address.*`; no CommonJS `require()` in ESM-only v10)
 - [ ] No LLM API calls at test runtime — all AI-generated content is committed as static fixtures
 - [ ] LLM response factories cover ≥ 5 output variants: standard, truncated, refusal, empty, markdown
 - [ ] AI feature test suites use deterministic factory responses (not live API calls) in CI

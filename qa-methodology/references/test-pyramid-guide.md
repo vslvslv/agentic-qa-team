@@ -1,12 +1,13 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 31 | score: 100/100 | date: 2026-05-04 -->
-<!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03) | new: howtheytest (108 companies real-world test strategies) -->
-<!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html -->
-<!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
+<!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
+<!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
+<!-- new (2026-05-12): Fowler 5-layer microservice strategy (component test level), Neon DB branch isolation, Vitest defineProject + extends API, Google "Construct with Collaborators" principle, "Fantastical Shapes" quality-over-ratio insight -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI.
 
 ---
 
@@ -535,7 +536,236 @@ describe('OrdersService Pact', () => {
 });
 ```
 
-### Mutation Testing with Stryker at the Unit Test Level
+### Vitest `defineProject` with Type-Safe Workspace Configuration  [community]
+
+Vitest's projects API (introduced as the successor to `defineWorkspace` in newer Vitest versions) provides `defineProject` for inline project configurations with TypeScript validation that rejects unsupported options at compile time. The `extends: true` option inherits root-level settings, preventing duplication. Use `--project` CLI flag to run individual levels in CI fail-fast order.
+
+```typescript
+// vitest.config.ts — root-level config using the projects API (Vitest 2.x+)
+// Use defineProject for per-project type safety; extends: true inherits root settings
+import { defineConfig, defineProject } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+    },
+    projects: [
+      defineProject({
+        // Unit tests: pure logic, no I/O, fast
+        extends: true,      // inherit root plugins (tsconfigPaths) and coverage config
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+          testTimeout: 5_000,
+        },
+      }),
+      defineProject({
+        // Integration tests: real DB/HTTP, isolated container or in-memory
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts', 'tests/integration/**/*.test.ts'],
+          environment: 'node',
+          testTimeout: 60_000,
+          pool: 'forks',    // separate process per file — prevents module-cache pollution
+        },
+      }),
+      defineProject({
+        // E2e tests: full stack via browser or HTTP; run last in CI
+        extends: true,
+        test: {
+          name: 'e2e',
+          include: ['e2e/**/*.e2e.test.ts'],
+          environment: 'node',
+          testTimeout: 120_000,
+          bail: 1,          // stop after first failure — expensive to run all
+        },
+      }),
+    ],
+  },
+});
+```
+
+CI fail-fast pipeline: `vitest run --project unit && vitest run --project integration && vitest run --project e2e`. The `defineProject` approach over inline objects catches configuration errors at TypeScript compile time — for example, attempting to set `coverage` inside a project config (which is root-only) will produce a compile error rather than a silent no-op. [official: vitest.dev/guide/projects]
+
+---
+
+### Fowler 5-Layer Microservice Test Strategy  [community]
+
+Martin Fowler's *Testing Strategies in a Microservice Architecture* (Toby Clemson, 2014; indexed in learning-sources 2026-05-12) extends the three-layer pyramid to five layers for microservice architectures. The additional layers — **component tests** and **contract tests** — address the unique challenge that each microservice has both internal logic *and* external API contracts that must be tested independently.
+
+The five layers from base to apex:
+
+| Layer | Scope | Tool | TypeScript example |
+|-------|-------|------|--------------------|
+| Unit | Single class/function, all dependencies stubbed | Vitest | `*.unit.test.ts` |
+| Integration | Real I/O to external stores (DB, cache, queue) | testcontainers + Vitest | `*.integration.test.ts` |
+| Component | The service as a whole, with external dependencies stubbed at the network boundary | Supertest + MSW | `*.component.test.ts` |
+| Contract | Provider/consumer API contract verification, decoupled from full service runtime | Pact | `*.pact.test.ts` |
+| End-to-end | Multiple services running together, user journey validation | Playwright | `e2e/*.e2e.test.ts` |
+
+The **component test level** is the key addition. It sits between integration and contract: the full service binary is exercised (DI container, middleware, routing, validation) but *all external network calls* are intercepted at the HTTP layer using MSW or Nock. This isolates the service's own behaviour from the availability or behaviour of its dependencies.
+
+```typescript
+// tests/component/orders.component.test.ts
+// Component test: full Express app in-process, external services stubbed at HTTP boundary
+// Uses supertest (exercises full routing stack) + MSW (stubs inventory-service HTTP calls)
+import { beforeAll, afterAll, afterEach, it, expect } from 'vitest';
+import request from 'supertest';
+import { setupServer } from 'msw/node';
+import { http, HttpResponse } from 'msw';
+import { buildApp } from '../../src/app.js';
+import { createTestDb, type TestDb } from '../helpers/db.js';
+import type { Express } from 'express';
+import type { CreateOrderInput, OrderResponse } from '../../src/orders/types.js';
+
+// Stub the external inventory-service dependency at the HTTP boundary
+const mswServer = setupServer(
+  http.get('http://inventory-service/items/:sku', ({ params }) => {
+    return HttpResponse.json({ sku: params['sku'], available: true, stock: 100 });
+  }),
+);
+
+let app: Express;
+let db: TestDb;
+
+beforeAll(async () => {
+  mswServer.listen({ onUnhandledRequest: 'error' });
+  db = await createTestDb();   // real DB (SQLite in-memory for component test speed)
+  app = buildApp({ db });      // full DI container, middleware, and routes
+});
+
+afterAll(async () => {
+  mswServer.close();
+  await db.destroy();
+});
+
+afterEach(() => {
+  mswServer.resetHandlers();
+  db.truncate('orders');
+});
+
+it('POST /orders integrates routing, validation, DB, and external inventory stub', async () => {
+  const input: CreateOrderInput = {
+    customerId: 'c1',
+    items: [{ sku: 'A1', qty: 2 }],
+  };
+
+  const res = await request(app)
+    .post('/orders')
+    .send(input)
+    .set('Accept', 'application/json');
+
+  const body = res.body as OrderResponse;
+  expect(res.status).toBe(201);
+  expect(body).toMatchObject<Partial<OrderResponse>>({ status: 'pending' });
+});
+
+it('returns 503 when inventory-service is unavailable', async () => {
+  // Override the stub to simulate downstream failure
+  mswServer.use(
+    http.get('http://inventory-service/items/:sku', () => {
+      return HttpResponse.error();
+    }),
+  );
+
+  const res = await request(app)
+    .post('/orders')
+    .send({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] });
+
+  expect(res.status).toBe(503);
+});
+```
+
+The component test level sits at the top of the automated test investment in a microservice: it catches the largest class of defects (routing, middleware, DI wiring, validation, serialisation) without the instability of a live external service. In a TypeScript NestJS service, the component test uses `@nestjs/testing`'s `TestingModule` with real TypeORM configuration (SQLite in-memory) and MSW interceptors for external HTTP dependencies. This closely mirrors the Honeycomb's "integrated test" concept but at the single-service boundary. [official: martinfowler.com/articles/microservice-testing/]
+
+---
+
+### Neon DB Branch-Per-Test-Run for Integration Test Isolation  [community]
+
+For TypeScript services deployed to cloud-native environments (Vercel, Railway, Render), Neon's copy-on-write Postgres branching provides an alternative to testcontainers for the integration test DB layer. Instead of spinning up a container, each CI run branches from a known schema snapshot — the branch is instant (copy-on-write, no data copy unless mutated), and is deleted after the test run. This eliminates container start-up time while retaining real Postgres semantics.
+
+```typescript
+// tests/helpers/neon-branch.ts — branch lifecycle helper for Neon integration tests
+// Requires: NEON_API_KEY, NEON_PROJECT_ID env vars (set in CI secrets)
+// npm install @neondatabase/serverless
+import { neon } from '@neondatabase/serverless';
+
+export interface NeonTestBranch {
+  branchId: string;
+  connectionString: string;
+  cleanup: () => Promise<void>;
+}
+
+export async function createTestBranch(branchName: string): Promise<NeonTestBranch> {
+  const apiKey = process.env['NEON_API_KEY'];
+  const projectId = process.env['NEON_PROJECT_ID'];
+
+  if (!apiKey || !projectId) {
+    throw new Error('NEON_API_KEY and NEON_PROJECT_ID must be set for integration tests');
+  }
+
+  // Create a branch via the Neon Management API
+  const createRes = await fetch(
+    `https://console.neon.tech/api/v2/projects/${projectId}/branches`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        endpoints: [{ type: 'read_write' }],
+        branch: { name: branchName, parent_id: 'main' },
+      }),
+    },
+  );
+
+  if (!createRes.ok) {
+    throw new Error(`Failed to create Neon branch: ${await createRes.text()}`);
+  }
+
+  const data = (await createRes.json()) as {
+    branch: { id: string };
+    endpoints: Array<{ host: string }>;
+    connection_uris: Array<{ connection_uri: string }>;
+  };
+
+  const branchId = data.branch.id;
+  const connectionString = data.connection_uris[0]!.connection_uri;
+
+  const cleanup = async (): Promise<void> => {
+    await fetch(
+      `https://console.neon.tech/api/v2/projects/${projectId}/branches/${branchId}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${apiKey}` } },
+    );
+  };
+
+  return { branchId, connectionString, cleanup };
+}
+
+// Usage in vitest integration test:
+// import { createTestBranch } from '../helpers/neon-branch.js';
+// let branch: NeonTestBranch;
+// beforeAll(async () => {
+//   branch = await createTestBranch(`test-run-${Date.now()}`);
+//   // Use branch.connectionString as DATABASE_URL for the test
+// }, 30_000);
+// afterAll(() => branch.cleanup());
+```
+
+When to use Neon branching vs testcontainers:
+- **Neon branching**: Cloud-native TypeScript projects already using Neon Postgres in production; want instant branch creation without Docker in CI; Vercel/Railway preview environments where Docker-in-Docker is unavailable.
+- **testcontainers**: On-premise CI (Jenkins, self-hosted GitHub Actions); need exact Postgres version parity; prefer self-contained tests with no external service dependency.
+
+The branch-per-CI-run pattern replaces the "container DB parity gap" anti-pattern (gotcha #20) — because the test branch is a real Neon Postgres instance (same engine, same constraints, same JSONB operators) at the exact schema state of the parent branch. [official: neon.com/docs/guides/branching-test-queries]
+
+---
 
 Mutation testing validates that your unit test cases are *effective* — not just that they pass, but that they detect real logic defects. Stryker Mutator (`@stryker-mutator/core`) supports TypeScript natively and integrates with Vitest. A high mutation score (>80%) confirms that the unit test layer is actually exercising all the business logic branches it claims to cover.
 
@@ -959,6 +1189,10 @@ export const orderFactory = Factory.define<Order>(() => ({
 
 21. **Same assertion repeated at three test levels triples CI time** [community] — When validation logic is asserted in a unit test case, an integration test case, *and* an e2e test case (e.g., "empty items array returns an error"), a single defect causes three test-level failures — making root-cause diagnosis harder, not easier. In TypeScript monorepos with Vitest workspace projects running all three levels in parallel, this triples the execution time for a single logical assertion. Fix: apply the "push down" rule: if a unit test case already asserts the rule, delete the integration and e2e test cases that replicate it. Reserve higher-level test cases for asserting that the rule is *integrated* into the full stack, not just that the rule exists. Reference: Fowler's "If a higher-level test spots an error and there's no lower-level test failing, you need to write a lower-level test" — the converse is equally true.
 
+22. **Pyramid-ratio obsession crowds out test quality improvement** [community] — Teams that enforce 70/20/10 as a hard gate spend engineering cycles moving test cases between directories to hit the ratio, rather than improving the expressiveness, clarity, and reliability of the tests themselves. Justin Searls (2021, cited by Fowler in "On the Diverse And Fantastical Shapes of Testing") captures this: "People love debating what percentage of which type of tests to write, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." In TypeScript projects, ratio compliance with low-quality mocks (as any casts, brittle assertions on implementation details) provides less value than a smaller set of well-structured, expressive test cases. Fix: treat ratio metrics as a diagnostic signal (is the shape grotesquely inverted?) rather than a compliance target; invest the saved engineering time in test review and documentation. [community: martinfowler.com/articles/2021-test-shapes.html]
+
+23. **Passing real collaborators at the wrong test level defeats isolation** [community] — Google Engineering (2026, "Construct with Collaborators, Call with Work") distinguishes between constructing objects with real collaborators (appropriate for integration and component test levels) vs. calling methods with real work (appropriate for unit tests where the work should be stubbed). Teams that violate this boundary — e.g., passing a live `OrdersService` with a real DB connection into a unit test — accidentally raise their unit tests to the integration test level, with all the attendant start-up cost and flakiness, without any of the explicit lifecycle management (beforeAll/afterAll, container cleanup) that integration tests require. Fix: in TypeScript, define collaborators as interfaces and inject real implementations at the integration test level; inject `vi.fn()` doubles at the unit test level. The structural signal: if your unit test's `beforeAll` connects to a database, it is an integration test and should be in `*.integration.test.ts`. [community: testing.googleblog.com — "Construct with Collaborators, Call with Work", May 2026]
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -979,6 +1213,7 @@ export const orderFactory = Factory.define<Order>(() => ({
 - **Testing Trophy (Kent C. Dodds):** For React/TypeScript frontends — integrate static analysis (TypeScript compiler) as the bottom layer, weight integration tests most.
 - **Google Small/Medium/Large:** Small (unit, no I/O), Medium (integration, limited I/O), Large (e2e, real network). Avoids theological debates about what "unit" means in a microservice context.
 - **Spotify Honeycomb:** For microservice meshes — service-level integrated tests replace both unit and classic integration tests.
+- **Fowler 5-Layer Microservice Pyramid:** Adds component tests (full service binary + stubbed external HTTP) and contract tests (Pact) as explicit layers between integration and e2e. Best for TypeScript backends with multiple independently deployed services. Maps directly to the five-level decomposition: unit → integration → component → contract → e2e.
 - **Contract Testing (Pact):** Adds a fourth layer between integration and e2e for independently deployed services; TypeScript's `@pact-foundation/pact` provides type-safe consumer contract generation.
 - **Trace-Based Testing (OpenTelemetry + Tracetest):** Replaces or complements integration test cases for distributed TypeScript services by asserting on emitted OpenTelemetry spans. Insertion point: same pyramid layer as integration tests. Best for services where internal span structure (DB calls, message publishes) matters as much as HTTP response shape.
 - **Observability-Driven Testing:** A philosophical complement — rather than adding more e2e test cases, invest in structured logging, distributed tracing, and error monitoring. The pyramid catches pre-deployment defects; observability catches post-deployment defects. Use both layers; optimise the split based on defect frequency per layer.
@@ -994,6 +1229,7 @@ The pyramid assumes: (1) test cases can be written and run independently, (2) un
 ### Adoption costs
 
 - **Testcontainers setup** adds 2–4 h of initial CI configuration and ongoing maintenance as container images are upgraded. TypeScript typings for testcontainers (`testcontainers` npm package includes `.d.ts` files) reduce the setup burden.
+- **Neon DB branch-per-run** eliminates container start-up time but adds a hard dependency on Neon's cloud API during CI. API failures (rate limits, network timeouts) can block the integration test level. Mitigation: set a generous timeout in `beforeAll` and fall back to SQLite in-memory if `NEON_API_KEY` is absent (local dev) or the Neon branch creation times out. Initial setup: 1–2 h (API key, project ID, helper script). Ongoing cost: branch deletion must be paired with test cleanup to avoid accumulating branches.
 - **MSW handler maintenance** in a large TypeScript frontend codebase requires tooling (schema codegen with `orval` or `swagger-typescript-api`) to stay non-brittle.
 - **Playwright configuration** (parallelism, retries, sharding) requires senior engineering time to tune; getting it wrong produces more flakiness than no e2e tests at all.
 - **Ratio monitoring** requires custom CI scripts or third-party tooling (Codecov, Datadog CI Visibility) to track over time.
@@ -1017,15 +1253,19 @@ The pyramid assumes: (1) test cases can be written and run independently, (2) un
 |------|------|-----|------------|
 | TestPyramid (Fowler) | Official | https://martinfowler.com/bliki/TestPyramid.html | Canonical definition and original rationale |
 | Practical Test Pyramid | Official | https://martinfowler.com/articles/practical-test-pyramid.html | Detailed layer-by-layer breakdown with code examples |
+| Microservice Testing Strategies (Fowler/Clemson) | Official | https://martinfowler.com/articles/microservice-testing/ | 5-layer pyramid: unit → integration → component → contract → e2e |
+| On the Diverse And Fantastical Shapes of Testing | Community | https://martinfowler.com/articles/2021-test-shapes.html | Pyramid vs honeycomb vs trophy debate; Justin Searls on quality > ratio |
 | Write Tests (Kent C. Dodds) | Community | https://kentcdodds.com/blog/write-tests | Testing Trophy origin; "write tests, not too many, mostly integration" |
 | Just Say No to More End-to-End Tests (Google) | Community | https://testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html | Production experience at scale; cost analysis of e2e over-investment |
 | Test Sizes (Google) | Community | https://testing.googleblog.com/2010/12/test-sizes.html | Small/Medium/Large taxonomy as practical alternative to pyramid |
 | Spotify Honeycomb | Community | https://engineering.atspotify.com/2018/01/testing-of-microservices/ | Microservice-specific reshape of the pyramid |
 | Testcontainers for Node | Tool | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Real integration tests against containerised dependencies; TypeScript typings included |
+| Neon DB Branch Testing | Tool | https://neon.com/docs/guides/branching-test-queries | Copy-on-write Postgres branch per test run; alternative to testcontainers for cloud-native TypeScript |
 | Playwright | Tool | https://playwright.dev/docs/intro | Modern e2e testing for TypeScript/Node; first-class TypeScript support |
 | React Testing Library | Tool | https://testing-library.com/docs/react-testing-library/intro/ | Integration-layer testing aligned with Testing Trophy |
 | MSW (Mock Service Worker) | Tool | https://mswjs.io/docs/ | Network boundary mocking; TypeScript handler types prevent handler drift |
 | Vitest | Tool | https://vitest.dev/guide/ | Fast Jest-compatible test runner with first-class TypeScript + ESM support; no Babel needed |
+| Vitest Projects API | Tool | https://vitest.dev/guide/projects.html | defineProject + extends API for type-safe workspace pyramid configuration |
 | supertest | Tool | https://github.com/ladjs/supertest | HTTP integration tests against Express/Fastify without a running server; `@types/supertest` available |
 | vitest-mock-extended | Tool | https://github.com/eratio08/vitest-mock-extended | Type-safe mock generation from TypeScript interfaces; prevents `as any` mock escapes |
 | orval | Tool | https://orval.dev/ | Generates type-safe MSW handlers and TypeScript API clients from OpenAPI schemas |

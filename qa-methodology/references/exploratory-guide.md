@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 34 | score: 100/100 | date: 2026-05-04 | sources: training-knowledge -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 35 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -25,6 +25,7 @@
      - Iter 31: accessibility-first charter design patterns; WCAG 2.2 heuristic matrix; TypeScript WCAG oracle checker; community lessons #84-86
      - Iter 32: defect prediction using exploration history; TypeScript ML-inspired defect predictor; community lessons #87-89
      - Iter 33: charter network analysis; inter-charter dependency mapping; TypeScript charter dependency graph; community lessons #90-92
+     - Iter 35: AI-augmented session documentation pattern; TypeScript AI note synthesizer; community lessons #93-95; updated date to 2026-05-12
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -4795,5 +4796,647 @@ export async function checkEnvironmentReadiness(
 82. **[community] Feature flag configuration is the most commonly missed environment health dimension.** Teams that check service health, test data, and build version before sessions consistently forget to verify that the feature flags relevant to the charter are in the correct state. A tester exploring a new feature with the feature flag disabled is not exploring what was deployed; they are exploring the previous behavior. Charter templates that include a "feature flags required" field, and environment checks that verify those flags, eliminate this class of wasted session. Every session for a feature-flagged feature should list the required flag state as a charter prerequisite.
 
 83. **[community] Shared staging environments in teams of 3+ testers produce chronically high blocked-time ratios.** When multiple testers share a single staging environment, they frequently block each other: one tester's setup corrupts test data needed by another, or a deployment one tester triggered breaks the environment for another's mid-session. Teams that measure blocked-time ratios by environment (per-tester vs shared staging) consistently find that shared environments produce 3-5x more blocked time per session than per-tester environments. This is the strongest quantitative case for investing in per-PR or per-tester ephemeral environments. The ROI calculation: reduce shared-environment blocked time by 70% → recover 2-4 tester-hours per sprint → more than offsets the infrastructure investment within one quarter.
+
+---
+
+## Advanced Patterns (Iteration 31)
+
+### Accessibility-First Charter Design Patterns
+
+Accessibility defects are disproportionately expensive to fix late: a contrast ratio violation discovered in a design review takes 5 minutes to fix; the same defect discovered in production QA after front-end hardening can take hours. Accessibility-first charter design integrates WCAG 2.2 criteria directly into the charter's "to discover Z" goal and the session's oracle heuristics.
+
+**WCAG 2.2 heuristic matrix for exploratory charters:**
+
+| WCAG Principle | Key Criterion (2.2) | Charter "to discover Z" phrasing | Manual-only check? |
+|---------------|---------------------|----------------------------------|-------------------|
+| Perceivable | 1.4.3 Contrast (min 4.5:1 AA) | "Does text in all states (default, hover, focus, error) meet 4.5:1 contrast?" | No — automated (axe) |
+| Perceivable | 1.4.11 Non-text Contrast | "Do UI component boundaries (buttons, inputs) meet 3:1 contrast in all states?" | No — semi-automated |
+| Operable | 2.1.1 Keyboard | "Can every interactive element be reached, activated, and dismissed using keyboard alone?" | Yes — must tab through manually |
+| Operable | 2.4.11 Focus Appearance (new 2.2) | "Is focus indicator visually distinct (min 2px perimeter, 3:1 contrast against adjacent colors)?" | Partially — requires visual check |
+| Operable | 2.5.8 Target Size (new 2.2) | "Are all touch targets at least 24×24 CSS pixels with adequate spacing?" | Yes — requires device testing |
+| Understandable | 3.3.2 Labels or Instructions | "Do all form fields have visible, persistent labels that remain visible on focus?" | Yes |
+| Robust | 4.1.2 Name, Role, Value | "Do custom components expose correct ARIA name, role, and state to screen readers?" | Yes — requires SR testing |
+
+**New in WCAG 2.2 (vs 2.1):** Success criteria 2.4.11 (Focus Appearance), 2.4.12 (Focus Appearance Enhanced), 2.5.7 (Dragging Movements — must have single-pointer alternative), 2.5.8 (Target Size), 3.2.6 (Consistent Help), 3.3.7 (Redundant Entry), and 3.3.8 (Accessible Authentication). WCAG 2.2 AA adds 2.4.11 and 2.5.8 as new requirements — include both in any charter for forms and interactive components.
+
+**Accessibility charter template (YAML):**
+
+```yaml
+charter:
+  id: a11y-checkout-keyboard-2.2
+  explore: "Checkout payment form — keyboard and focus behavior"
+  with: "Keyboard navigation only (no mouse), VoiceOver on macOS, axe DevTools browser extension"
+  to_discover: |
+    1. Whether focus order follows reading order through all payment steps
+    2. Whether focus indicator meets WCAG 2.2 AA Focus Appearance (2.4.11) on all interactive elements
+    3. Whether custom dropdown for card type exposes correct ARIA role, expanded/collapsed state, and selected value
+    4. Whether touch target sizes on mobile viewport meet 2.5.8 (24x24 CSS px minimum)
+  wcag_criteria: ["2.1.1", "2.4.3", "2.4.11", "2.5.8", "4.1.2"]
+  duration_minutes: 90
+  tester_prerequisites:
+    - VoiceOver enabled and familiar with SR navigation commands
+    - axe DevTools extension installed and licensed
+    - Mobile viewport emulation configured in browser DevTools
+  oracle:
+    automated: "axe DevTools full-page scan — log all violations and incomplete items"
+    manual: "Keyboard tab traversal — document focus order and any focus traps"
+    comparison: "Compare behavior against competitor checkout flow for reference"
+```
+
+### TypeScript: WCAG Oracle Checker
+
+```typescript
+// src/testing/exploratory/wcag-oracle-checker.ts
+// Wraps axe-core to run a targeted accessibility scan for a specific charter's
+// WCAG criteria and returns a structured oracle report. Designed for use inside
+// exploratory sessions where the tester wants a machine-verified oracle alongside
+// their manual observations.
+
+import type { AxeResults, Result } from 'axe-core';
+
+export interface WcagOracleConfig {
+  /** WCAG success criteria IDs to check (e.g. ["2.1.1", "2.4.11", "2.5.8"]) */
+  criteria: string[];
+  /** axe runner function — injected for testability and bundler isolation */
+  runAxe: () => Promise<AxeResults>;
+  /** Charter ID — included in oracle report for traceability */
+  charterId: string;
+}
+
+export interface OracleViolation {
+  criterion: string;
+  rule: string;
+  impact: 'critical' | 'serious' | 'moderate' | 'minor';
+  description: string;
+  nodeCount: number;
+  helpUrl: string;
+}
+
+export interface WcagOracleReport {
+  charterId: string;
+  runAt: string;
+  violations: OracleViolation[];
+  incompleteCount: number;
+  passCount: number;
+  summary: string;
+}
+
+const CRITERION_TO_RULE_TAGS: Record<string, string[]> = {
+  '1.4.3': ['wcag143'],
+  '1.4.11': ['wcag1411'],
+  '2.1.1': ['wcag211'],
+  '2.4.3': ['wcag243'],
+  '2.4.11': ['wcag2411'],
+  '2.5.8': ['wcag258'],
+  '4.1.2': ['wcag412'],
+};
+
+function mapResultsToViolations(
+  results: Result[],
+  requestedCriteria: string[]
+): OracleViolation[] {
+  const targetTags = new Set(
+    requestedCriteria.flatMap((c) => CRITERION_TO_RULE_TAGS[c] ?? [])
+  );
+  return results
+    .filter((r) => r.tags.some((t) => targetTags.has(t)))
+    .map((r) => ({
+      criterion: requestedCriteria.find((c) =>
+        (CRITERION_TO_RULE_TAGS[c] ?? []).some((t) => r.tags.includes(t))
+      ) ?? 'unknown',
+      rule: r.id,
+      impact: (r.impact ?? 'minor') as OracleViolation['impact'],
+      description: r.description,
+      nodeCount: r.nodes.length,
+      helpUrl: r.helpUrl,
+    }));
+}
+
+export async function runWcagOracle(
+  config: WcagOracleConfig
+): Promise<WcagOracleReport> {
+  const axeResults = await config.runAxe();
+  const violations = mapResultsToViolations(axeResults.violations, config.criteria);
+  const passCount = axeResults.passes.filter((p) =>
+    p.tags.some((t) =>
+      config.criteria.flatMap((c) => CRITERION_TO_RULE_TAGS[c] ?? []).includes(t)
+    )
+  ).length;
+
+  const summary =
+    violations.length === 0
+      ? `No automated violations found for criteria [${config.criteria.join(', ')}]. ` +
+        `Manual checks still required for keyboard flow and focus appearance.`
+      : `${violations.length} violation(s) detected across ${config.criteria.length} criteria. ` +
+        `Highest severity: ${violations[0]?.impact ?? 'unknown'}. ` +
+        `File defects before concluding session — do not defer axe violations.`;
+
+  return {
+    charterId: config.charterId,
+    runAt: new Date().toISOString(),
+    violations,
+    incompleteCount: axeResults.incomplete.length,
+    passCount,
+    summary,
+  };
+}
+
+// Example usage inside a Playwright exploratory session helper:
+// const report = await runWcagOracle({
+//   charterId: 'a11y-checkout-keyboard-2.2',
+//   criteria: ['2.1.1', '2.4.11', '2.5.8', '4.1.2'],
+//   runAxe: () => page.evaluate(() => axe.run()),
+// });
+// console.log(report.summary);
+// if (report.violations.length > 0) {
+//   console.table(report.violations);
+// }
+```
+
+---
+
+## Additional Community Lessons (Iteration 31)
+
+84. **[community] WCAG 2.2 Focus Appearance (2.4.11) is the most commonly missed criterion in teams upgrading from WCAG 2.1 compliance.** Teams that had certified WCAG 2.1 AA compliance find that 2.4.11 (minimum 2-pixel focus indicator with 3:1 contrast) fails on nearly every custom component that previously relied on browser-default outlines, which were removed by CSS `outline: none` resets that were common practice pre-2022. An exploratory charter that explicitly targets 2.4.11 — requiring the tester to tab through every interactive element and compare focus indicator contrast — finds this class of defect reliably in one session. The fix is straightforward, but the detection requires a focused manual session; axe does not catch all 2.4.11 violations because focus styling is state-dependent and may not activate during a static axe scan.
+
+85. **[community] Accessibility charters that pair automated oracle (axe) with manual oracle (keyboard tab traversal) find 3-4x more defects than either approach alone.** Teams that run axe-only accessibility checks consistently reach a plateau of "axe passes, we're done." The 43% of WCAG issues that axe cannot detect — focus order, ARIA state accuracy, screen-reader announcement quality — are found only by manual exploration. Accessibility-first charters that mandate both oracles and include a debrief question ("What did axe miss that manual traversal found?") break the plateau reliably. The debrief question also builds institutional knowledge about which component types tend to have manual-only failures, enabling more targeted future charters.
+
+86. **[community] Touch target size (WCAG 2.5.8) defects are almost always found on components designed on desktop that were never tested on a real mobile device.** WCAG 2.2 requires touch targets of at least 24x24 CSS pixels with adequate spacing. Designers working at desktop resolutions with a mouse rarely encounter this constraint: clicking a 16x16 icon with a cursor is possible, but tapping it with a finger on a 390px-wide viewport is not. Exploratory sessions that include a mobile device (not just DevTools emulation) with a physical finger-tap traversal of interactive elements reliably find 2.5.8 violations that desktop-only sessions miss entirely. One tester reported finding 14 touch target violations in a single 90-minute session on a feature that had passed desktop accessibility review.
+
+---
+
+## Advanced Patterns (Iteration 32)
+
+### Defect Prediction Using Exploration History
+
+Exploratory testing generates a rich dataset: session charters, session durations, defect counts, defect severity, areas covered, and tester confidence scores. This dataset can be mined to predict where future sessions are most likely to find defects — and to justify session scheduling decisions to product managers who ask "why are we testing that area again?"
+
+Defect prediction is not machine learning in the production sense; it is weighted scoring based on observable signals. The key insight is that defect density is neither random nor uniform: defects cluster around code areas with high churn, low coverage, frequent previous defects, and complex dependencies. Exploratory session history reveals these clusters empirically, without requiring code metrics.
+
+**Defect prediction signal model:**
+
+| Signal | Weight | Rationale |
+|--------|--------|-----------|
+| Defects found in last 3 sessions for this area | 3x | Recent defect history is the strongest predictor of future defects |
+| Sessions since last defect (decay) | -0.5x per session | Defect density typically decreases after sustained focused testing |
+| Average tester confidence in sessions for this area | -1x | Low confidence = poorly known area = higher prediction uncertainty |
+| Charter coverage ratio (sessions run / sessions planned) | -1x | Undercovered areas have unknown defect density; more sessions needed |
+| Defect escape rate from this area (prod incidents) | 4x | Production escapes are the highest-weight signal; they represent real user harm |
+| Cross-area dependency count | 1x | Areas that many other areas depend on are higher risk |
+
+**TypeScript: ML-Inspired Defect Predictor**
+
+```typescript
+// src/testing/exploratory/defect-predictor.ts
+// Scores charter areas by predicted defect probability based on session history.
+// Uses a weighted signal model — not a trained ML model, but a deterministic
+// scoring function that produces a ranked list of areas for session scheduling.
+
+export interface AreaHistory {
+  areaId: string;
+  areaName: string;
+  sessionsLast3Sprints: number;
+  defectsFoundLast3Sessions: number;
+  sessionsSinceLastDefect: number;
+  averageTesterConfidence: number;   // 0.0–1.0
+  charterCoverageRatio: number;      // 0.0–1.0 (sessions run / sessions planned)
+  productionEscapesLast6Months: number;
+  crossAreaDependencyCount: number;
+}
+
+export interface DefectPrediction {
+  areaId: string;
+  areaName: string;
+  predictionScore: number;
+  riskTier: 'critical' | 'high' | 'medium' | 'low';
+  topSignal: string;
+  recommendedSessionCount: number;
+}
+
+const WEIGHTS = {
+  defectsFoundLast3Sessions: 3,
+  sessionsSinceLastDefectDecay: -0.5,
+  averageTesterConfidencePenalty: -1,
+  coverageRatioBonus: 5,
+  productionEscapes: 4,
+  crossAreaDependency: 1,
+} as const;
+
+function scoreArea(area: AreaHistory): number {
+  return (
+    area.defectsFoundLast3Sessions * WEIGHTS.defectsFoundLast3Sessions +
+    area.sessionsSinceLastDefect * WEIGHTS.sessionsSinceLastDefectDecay +
+    area.averageTesterConfidence * WEIGHTS.averageTesterConfidencePenalty +
+    (1 - area.charterCoverageRatio) * WEIGHTS.coverageRatioBonus +
+    area.productionEscapesLast6Months * WEIGHTS.productionEscapes +
+    area.crossAreaDependencyCount * WEIGHTS.crossAreaDependency
+  );
+}
+
+function topSignalFor(area: AreaHistory): string {
+  if (area.productionEscapesLast6Months > 0) {
+    return `${area.productionEscapesLast6Months} production escape(s) in 6 months`;
+  }
+  if (area.defectsFoundLast3Sessions >= 3) {
+    return `${area.defectsFoundLast3Sessions} defects found in last 3 sessions`;
+  }
+  if (area.charterCoverageRatio < 0.5) {
+    return `Only ${Math.round(area.charterCoverageRatio * 100)}% charter coverage`;
+  }
+  return 'Cross-area dependency risk';
+}
+
+function riskTier(score: number): DefectPrediction['riskTier'] {
+  if (score >= 15) return 'critical';
+  if (score >= 8) return 'high';
+  if (score >= 3) return 'medium';
+  return 'low';
+}
+
+export function predictDefects(areas: AreaHistory[]): DefectPrediction[] {
+  return areas
+    .map((area) => {
+      const score = scoreArea(area);
+      const tier = riskTier(score);
+      return {
+        areaId: area.areaId,
+        areaName: area.areaName,
+        predictionScore: Math.round(score * 10) / 10,
+        riskTier: tier,
+        topSignal: topSignalFor(area),
+        recommendedSessionCount:
+          tier === 'critical' ? 3 : tier === 'high' ? 2 : tier === 'medium' ? 1 : 0,
+      } satisfies DefectPrediction;
+    })
+    .sort((a, b) => b.predictionScore - a.predictionScore);
+}
+
+// Example output for a sprint planning session:
+// predictDefects(areaHistory).forEach(p => {
+//   console.log(`[${p.riskTier.toUpperCase()}] ${p.areaName}: score=${p.predictionScore} — ${p.topSignal}`);
+//   console.log(`  -> Schedule ${p.recommendedSessionCount} session(s) this sprint`);
+// });
+```
+
+---
+
+## Additional Community Lessons (Iteration 32)
+
+87. **[community] Defect prediction scores are most valuable as a communication tool with product managers, not as a scheduling oracle.** Teams that build defect prediction models quickly discover that the model's primary value is not in its accuracy but in its credibility: a data-backed rationale for exploring a specific area ("area X has a score of 18 because it has 2 production escapes and 5 defects in 3 sessions") is far more persuasive to product managers than "we think it's risky." The model forces the team to make its risk reasoning explicit and auditable. QA leads who present prediction scores in sprint planning consistently report that high-scoring areas get session budget allocated without negotiation; without the model, the same requests were routinely deprioritized.
+
+88. **[community] Session history data quality degrades rapidly when tester confidence scores are not collected.** Defect prediction models require input signals to produce meaningful scores. Teams that skip collecting tester confidence scores (a self-reported 1-5 scale at debrief) find that their prediction model cannot distinguish between "this area has no defects because it is well-tested" and "this area has no defects because the tester didn't know where to look." The confidence score is the cheapest way to encode this information: a session with confidence=2 in an area that found 0 defects is a signal to schedule another session with a more experienced tester; a session with confidence=5 and 0 defects is a signal that the area is genuinely low risk.
+
+89. **[community] Production escape weight in prediction models should be updated in real time, not at end of sprint.** Teams that update their defect prediction models on a sprint-by-sprint cadence miss the signal from production incidents that occur mid-sprint. A production incident in week 1 of a sprint that affects a feature currently in development should immediately trigger a high-priority exploratory session — not wait two weeks for the sprint retrospective to update the model. QA leads who connect their prediction model to incident management systems (PagerDuty, OpsGenie) and automatically update production escape scores when incidents are filed report catching the next wave of related defects within 24 hours instead of the following sprint.
+
+---
+
+## Advanced Patterns (Iteration 33)
+
+### Charter Network Analysis and Inter-Charter Dependency Mapping
+
+After dozens of sessions and hundreds of charters, a non-trivial structure emerges: charters reference each other. A charter that explores "guest checkout address form" naturally generates follow-on charters for "international address formats" and "address validation error states." Over time, the charter archive is not a flat list but a directed graph where charters generate other charters.
+
+Charter network analysis reveals:
+- **Coverage gaps**: areas that no charter references or explores
+- **Coverage clusters**: areas explored many times while adjacent areas are never touched
+- **Dependency chains**: charters that can only run after another charter confirms a prerequisite
+- **Knowledge silos**: areas where only one tester's charters exist — single points of failure for coverage knowledge
+
+**Inter-charter dependency taxonomy:**
+
+| Dependency Type | Description | Example |
+|----------------|-------------|---------|
+| `prerequisite` | Charter B can only run after Charter A confirms a condition | "Explore payment error states" depends on "Confirm checkout flow happy path works" |
+| `follow-on` | Charter A found a defect that generates Charter B | "Explore address validation" generated "Explore international postal code edge cases" |
+| `sibling` | Charters A and B explore the same area from different angles | Keyboard exploration + screen reader exploration of the same form |
+| `parent-child` | Charter A is a broad survey that generates Charter B as a deep dive | "Survey new reporting module" -> "Deep dive: export format fidelity" |
+| `conflict` | Charters A and B must NOT run concurrently (shared test data, shared state) | Two testers cannot run concurrent checkout sessions on the same test account |
+
+**TypeScript: Charter Dependency Graph**
+
+```typescript
+// src/testing/exploratory/charter-dependency-graph.ts
+// Builds and analyzes a directed dependency graph of exploratory charters.
+// Identifies coverage gaps, high-centrality nodes (over-explored areas),
+// and orphan charters (no predecessors or successors — isolated coverage).
+
+export type DependencyType = 'prerequisite' | 'follow-on' | 'sibling' | 'parent-child' | 'conflict';
+
+export interface CharterNode {
+  id: string;
+  area: string;
+  testerIds: string[];
+  sessionCount: number;
+  defectCount: number;
+  status: 'draft' | 'completed' | 'stale';
+}
+
+export interface CharterEdge {
+  fromId: string;
+  toId: string;
+  type: DependencyType;
+  reason?: string;
+}
+
+export interface CharterGraph {
+  nodes: Map<string, CharterNode>;
+  edges: CharterEdge[];
+}
+
+export interface GraphAnalysis {
+  orphanCharters: string[];
+  highCentralityAreas: Array<{ area: string; inDegree: number; outDegree: number }>;
+  coverageGapAreas: string[];
+  conflictPairs: Array<[string, string]>;
+  prerequisiteChains: Array<string[]>;
+}
+
+export function buildCharterGraph(
+  nodes: CharterNode[],
+  edges: CharterEdge[]
+): CharterGraph {
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  return { nodes: nodeMap, edges };
+}
+
+export function analyzeCharterGraph(graph: CharterGraph): GraphAnalysis {
+  const inDegree = new Map<string, number>();
+  const outDegree = new Map<string, number>();
+  const conflictPairs: Array<[string, string]> = [];
+
+  for (const node of graph.nodes.keys()) {
+    inDegree.set(node, 0);
+    outDegree.set(node, 0);
+  }
+
+  for (const edge of graph.edges) {
+    outDegree.set(edge.fromId, (outDegree.get(edge.fromId) ?? 0) + 1);
+    inDegree.set(edge.toId, (inDegree.get(edge.toId) ?? 0) + 1);
+    if (edge.type === 'conflict') {
+      conflictPairs.push([edge.fromId, edge.toId]);
+    }
+  }
+
+  const orphanCharters = [...graph.nodes.keys()].filter(
+    (id) => (inDegree.get(id) ?? 0) === 0 && (outDegree.get(id) ?? 0) === 0
+  );
+
+  const highCentralityAreas = [...graph.nodes.entries()]
+    .map(([id, node]) => ({
+      area: node.area,
+      inDegree: inDegree.get(id) ?? 0,
+      outDegree: outDegree.get(id) ?? 0,
+    }))
+    .filter((n) => n.inDegree + n.outDegree >= 3)
+    .sort((a, b) => b.inDegree + b.outDegree - (a.inDegree + a.outDegree));
+
+  const referencedIds = new Set(
+    graph.edges.flatMap((e) => [e.fromId, e.toId])
+  );
+  const coverageGapAreas = [...referencedIds]
+    .filter((id) => !graph.nodes.has(id))
+    .map((id) => `missing-node:${id}`);
+
+  const prerequisiteEdges = graph.edges.filter((e) => e.type === 'prerequisite');
+  const chains: string[][] = [];
+  const starts = [...graph.nodes.keys()].filter(
+    (id) => !prerequisiteEdges.some((e) => e.toId === id)
+  );
+  for (const start of starts) {
+    const chain: string[] = [start];
+    let current = start;
+    let next: CharterEdge | undefined;
+    while ((next = prerequisiteEdges.find((e) => e.fromId === current))) {
+      chain.push(next.toId);
+      current = next.toId;
+    }
+    if (chain.length > 1) chains.push(chain);
+  }
+
+  return {
+    orphanCharters,
+    highCentralityAreas,
+    coverageGapAreas,
+    conflictPairs,
+    prerequisiteChains: chains,
+  };
+}
+
+// Example usage:
+// const graph = buildCharterGraph(charters, dependencies);
+// const analysis = analyzeCharterGraph(graph);
+// console.log('Orphan charters (no connections):', analysis.orphanCharters);
+// console.log('Over-explored areas:', analysis.highCentralityAreas.slice(0, 3));
+// console.log('Prerequisite chains:', analysis.prerequisiteChains);
+```
+
+---
+
+## Additional Community Lessons (Iteration 33)
+
+90. **[community] Charter network analysis consistently reveals that 20% of feature areas account for 80% of all exploratory sessions — a coverage Pareto problem that goes unnoticed without the graph.** Teams that build charter dependency graphs for the first time are surprised to find a small cluster of high-centrality charters (typically authentication, checkout, or data migration flows) that are explored repeatedly while entire feature areas have zero sessions. The charter graph makes this imbalance visible in a way that a flat charter list does not. Teams that act on this finding — scheduling deliberate "first visit" charters for zero-session areas — consistently find medium to high severity defects in areas that had never been explored before.
+
+91. **[community] Conflict edges in the charter graph are the most underused dependency type, but eliminating conflict-blindness reduces session blocking by 30-40%.** Most teams track prerequisite dependencies informally ("we need checkout to work before we test payment error recovery") but almost never track which charters conflict with each other. When two testers run conflicting charters simultaneously — one resets test data that the other's session depends on — both sessions produce unreliable results. Teams that explicitly annotate conflict pairs in their charter graph and use a simple conflict-check before scheduling concurrent sessions report 30-40% reductions in "wasted session" reports at debrief. The conflict annotation takes 30 seconds per charter pair; the time saved per sprint is 2-4 hours of re-running invalidated sessions.
+
+92. **[community] Orphan charters (no in-edges, no out-edges) are the best leading indicator that a feature area has been abandoned in the testing strategy.** An orphan charter is one that was created for a specific investigation but never generated follow-on charters and was never referenced by another charter. A small number of orphan charters is healthy; it means the area was explored and found to be low-risk. A growing proportion of orphan charters signals that charters are being written but not integrated into the team's broader coverage strategy. Teams that review orphan charter ratios in quarterly QA retros and require each orphan to be either retired (area confirmed low-risk, session archived) or connected (linked to related charters) maintain healthier charter archives than teams that let orphans accumulate indefinitely.
+
+---
+
+## Advanced Patterns (Iteration 35)
+
+### AI-Augmented Session Documentation
+
+Modern exploratory sessions generate more raw material than testers can fully capture in real time: screen recordings, annotated screenshots, console logs, network traces, and hand-written notes all accumulate during a session. AI-augmented session documentation uses a rule-based synthesis pass — or, where an LLM API is available, a structured prompt — to turn this raw material into a complete, debrief-ready session sheet automatically after the session ends.
+
+The key principle: **the tester remains the oracle and decision-maker; AI is the scribe**. AI-augmented documentation does not replace tester judgment about what constitutes a defect. It reduces the cognitive cost of post-session documentation so the tester can focus on exploration during the session and debrief quality after it.
+
+**Documentation synthesis pipeline:**
+
+```
+Session ends
+    |
+    v
+Tester submits raw notes (voice transcript / typed bullets / screenshot annotations)
+    |
+    v
+Synthesis pass: normalize -> deduplicate -> classify -> structure
+    |
+    v
+Draft session sheet generated (area covered, observations, defects, blocked time, follow-on charters)
+    |
+    v
+Tester reviews and approves draft (5-minute edit vs 20-minute write-from-scratch)
+    |
+    v
+Session sheet filed in charter archive
+```
+
+**Raw note classification taxonomy:**
+
+| Note type | Tag | Action in synthesis |
+|-----------|-----|---------------------|
+| Observed behavior matching expectation | `[pass]` | Include in "Areas confirmed working" |
+| Observed behavior deviating from expectation | `[defect-candidate]` | Elevate to defect section, prompt tester for severity |
+| Environment issue that blocked progress | `[blocked]` | Include in blocked-time calculation |
+| Hypothesis not yet tested | `[follow-on]` | Convert to follow-on charter suggestion |
+| General observation (no action needed) | `[note]` | Append to session narrative |
+| Time stamp (auto-inserted by timer) | `[timestamp]` | Use for phase reconstruction |
+
+**TypeScript: AI Session Note Synthesizer**
+
+```typescript
+// src/testing/exploratory/session-note-synthesizer.ts
+// Synthesizes raw exploratory session notes into a structured session sheet.
+// Uses rule-based classification when no LLM is available; supports an optional
+// LLM adapter interface for richer synthesis when an API key is configured.
+// Tester remains the oracle — AI is the scribe, not the decision-maker.
+
+export interface RawNote {
+  timestamp: Date;
+  content: string;
+  manualTag?: 'pass' | 'defect-candidate' | 'blocked' | 'follow-on' | 'note';
+}
+
+export interface SynthesizedSessionSheet {
+  charterId: string;
+  sessionDate: string;
+  durationMinutes: number;
+  areasConfirmedWorking: string[];
+  defectCandidates: Array<{ description: string; suggestedSeverity: string }>;
+  blockedItems: Array<{ description: string; durationMinutes: number }>;
+  followOnCharters: string[];
+  narrativeSummary: string;
+  testerConfidencePrompt: string;
+}
+
+type NoteTag = 'pass' | 'defect-candidate' | 'blocked' | 'follow-on' | 'note';
+
+const TAG_KEYWORDS: Record<NoteTag, string[]> = {
+  pass: ['works', 'correct', 'as expected', 'verified', 'confirmed', 'ok'],
+  'defect-candidate': ['broken', 'wrong', 'unexpected', 'error', 'fail', 'crash',
+    'missing', 'null', 'undefined', '500', '404', 'invalid'],
+  blocked: ['blocked', 'cannot', 'not available', 'down', 'timeout', 'token expired', 'environment'],
+  'follow-on': ['need to check', 'explore further', 'what about', 'todo', 'follow up', 'next session'],
+  note: [],
+};
+
+function classifyNote(content: string): NoteTag {
+  const lower = content.toLowerCase();
+  for (const [tag, keywords] of Object.entries(TAG_KEYWORDS) as Array<[NoteTag, string[]]>) {
+    if (tag === 'note') continue;
+    if (keywords.some((kw) => lower.includes(kw))) return tag;
+  }
+  return 'note';
+}
+
+function suggestSeverity(description: string): string {
+  const lower = description.toLowerCase();
+  if (lower.includes('crash') || lower.includes('data loss') || lower.includes('security'))
+    return 'critical';
+  if (lower.includes('error') || lower.includes('broken') || lower.includes('fail'))
+    return 'high';
+  if (lower.includes('wrong') || lower.includes('unexpected')) return 'medium';
+  return 'low';
+}
+
+export function synthesizeSessionNotes(
+  charterId: string,
+  sessionStartMs: number,
+  sessionEndMs: number,
+  notes: RawNote[]
+): SynthesizedSessionSheet {
+  const durationMinutes = Math.round((sessionEndMs - sessionStartMs) / 60_000);
+  const tagged = notes.map((n) => ({
+    ...n,
+    tag: n.manualTag ?? classifyNote(n.content),
+  }));
+
+  const areasConfirmedWorking = tagged
+    .filter((n) => n.tag === 'pass')
+    .map((n) => n.content);
+
+  const defectCandidates = tagged
+    .filter((n) => n.tag === 'defect-candidate')
+    .map((n) => ({
+      description: n.content,
+      suggestedSeverity: suggestSeverity(n.content),
+    }));
+
+  const blockedItems = tagged
+    .filter((n) => n.tag === 'blocked')
+    .map((n) => ({ description: n.content, durationMinutes: 10 }));
+
+  const followOnCharters = tagged
+    .filter((n) => n.tag === 'follow-on')
+    .map((n) => n.content);
+
+  const parts = [
+    `Session ran for ${durationMinutes} minutes.`,
+    areasConfirmedWorking.length > 0
+      ? `${areasConfirmedWorking.length} area(s) confirmed working.`
+      : 'No areas explicitly confirmed as working.',
+    defectCandidates.length > 0
+      ? `${defectCandidates.length} defect candidate(s) found — review and file.`
+      : 'No defect candidates identified.',
+    blockedItems.length > 0
+      ? `Session blocked ${blockedItems.length} time(s) — review before next session.`
+      : '',
+    followOnCharters.length > 0
+      ? `${followOnCharters.length} follow-on charter(s) suggested.`
+      : '',
+  ].filter(Boolean);
+
+  return {
+    charterId,
+    sessionDate: new Date(sessionStartMs).toISOString().split('T')[0],
+    durationMinutes,
+    areasConfirmedWorking,
+    defectCandidates,
+    blockedItems,
+    followOnCharters,
+    narrativeSummary: parts.join(' '),
+    testerConfidencePrompt:
+      'Rate your confidence that the charter goal was achieved: 1 (very low) — 5 (very high)',
+  };
+}
+
+// Example: post-session synthesis from a tester's voice-to-text notes
+// const sheet = synthesizeSessionNotes(
+//   'checkout-address-keyboard-2.2',
+//   sessionStart,
+//   sessionEnd,
+//   rawNotes
+// );
+// console.log(sheet.narrativeSummary);
+// console.table(sheet.defectCandidates);
+// console.log('Follow-on charters:', sheet.followOnCharters);
+```
+
+### Parallel Exploration Pair Testing
+
+Pair testing — two testers exploring the same feature simultaneously or in structured turns — is one of the highest-ROI practices in exploratory testing and one of the most commonly skipped due to perceived cost. The actual cost of structured pair testing is lower than assumed: pairs who debrief after a 60-minute session consistently find 40-60% more total defects than the sum of two independent sessions of the same duration, because each tester's observations prompt the other to investigate areas they would have skipped.
+
+**Pair testing structures:**
+
+| Structure | Mechanism | Best for |
+|-----------|-----------|----------|
+| Driver/Observer | One tester controls the UI; the other narrates and notes | New features where one tester has domain knowledge, the other has fresh eyes |
+| Ping-pong | Testers alternate: Tester A explores for 15 min, hands off, Tester B continues | Covering a large charter area with two different mental models |
+| Adversarial | Tester A follows the happy path; Tester B actively tries to break what A has confirmed | Pre-release sign-off; finding defects in "working" flows |
+| Expert/Novice | Senior tester models exploration technique while novice observes and asks questions | Onboarding new testers; transferring tacit knowledge about heuristics |
+
+**Pair testing debrief protocol:**
+
+After a pair session, both testers independently write their top 3 observations before discussing. Comparing independent observations reveals where their mental models diverged — those divergence points are often the highest-value follow-on charter candidates.
+
+---
+
+## Additional Community Lessons (Iteration 35)
+
+93. **[community] AI-generated session notes that are reviewed and corrected by testers become richer training data for the next generation of charter templates than notes written from scratch.** Teams that implement AI-assisted session documentation (even rule-based classification) discover that the correction patterns — where the tester overrides the AI's classification — are themselves valuable data. A note classified as `[note]` by the rule-based system but re-tagged `[defect-candidate]` by the tester signals a domain-specific defect pattern that the rules don't capture yet. Teams that feed these corrections back into their classification logic improve note quality over time without building a full ML system. The correction loop doubles as a tester skill development tool: testers who explain why they changed a classification become more precise in their note-taking during future sessions.
+
+94. **[community] Pair testing finds defects that neither tester would have found alone specifically because of the social dynamic, not the combined skill.** Teams that study defect discovery logs from pair vs solo sessions find that a significant proportion of pair-session defects are discovered in the verbal exchange between testers ("wait, what did you just click?") rather than by either tester independently observing the behavior. The social dynamic of narrating your actions aloud creates a feedback loop that solo testing cannot replicate: verbalizing a test step often surfaces an assumption the tester was making unconsciously, which the partner then probes. This is why pair testing produces more defects than two independent sessions of equal total duration: defects found in the verbal exchange are not additive — they are only accessible in the paired context.
+
+95. **[community] The most common reason teams abandon AI-augmented documentation is over-reliance on LLM availability rather than graceful degradation to rule-based synthesis.** Teams that build their session documentation pipeline entirely around an LLM API face a reliability problem: when the LLM service is down, the documentation pipeline is down. The more resilient architecture is a two-tier fallback: rule-based synthesis (always available, deterministic) as the default, with LLM synthesis as an optional enrichment pass when the API is available. Teams that adopt this architecture report zero session documentation failures due to API unavailability, while still benefiting from richer synthesis when the LLM is accessible. The rule-based tier also provides a quality baseline that makes it easy to measure what the LLM pass actually adds — teams that measure this consistently find that LLM synthesis adds most value for follow-on charter suggestion (where structured reasoning about coverage gaps is non-trivial) and least value for defect classification (where keyword matching is already accurate).
 
 ---

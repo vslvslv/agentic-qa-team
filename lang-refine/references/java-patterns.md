@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 21 | score: 100/100 | date: 2026-05-08 -->
+<!-- sources: official (Oracle JDK 21 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs) | mixed | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -1775,6 +1775,63 @@ public class EmailSender implements NotificationSender {
 ```
 **WHY:** A missing `@Override` on `equals(Object)` is a classic Java trap — developers write `equals(MyClass other)` (an overload) instead of `equals(Object other)` (the override), and the wrong method is silently called in collections. `@Override` turns this runtime bug into a compile-time error.
 
+**31. Stateful Lambdas in Parallel Streams Cause Data Races [community]**
+The Java Stream specification requires that behavioral parameters (lambdas in `map`, `filter`, `peek`, etc.) be **stateless** — they must not depend on or modify mutable state outside the lambda. Violating this is safe on sequential streams but causes non-deterministic data races on `parallelStream()`. The root cause is that developers test with sequential streams and promote to parallel without reading the non-interference contract. Fix: ensure all lambdas in a stream pipeline are purely functional (depend only on their input); collect results using `Collectors` instead of mutating an external list.
+
+```java
+// BAD — mutable accumulator shared across parallel stream threads; data race
+List<String> results = new ArrayList<>();
+items.parallelStream()
+    .filter(s -> s.length() > 3)
+    .forEach(s -> results.add(s));   // ArrayList is not thread-safe; races here
+
+// ALSO BAD — synchronized wrapper removes parallelism benefit; adds contention
+List<String> sync = Collections.synchronizedList(new ArrayList<>());
+items.parallelStream().forEach(sync::add);
+
+// GOOD — collect() handles thread-safety internally; works correctly in parallel
+List<String> results = items.parallelStream()
+    .filter(s -> s.length() > 3)
+    .collect(Collectors.toList());   // thread-safe collector; correct and fast
+
+// GOOD — stateless lambda referencing only the parameter
+List<String> upper = items.parallelStream()
+    .map(String::toUpperCase)        // stateless: depends only on the element
+    .filter(s -> !s.isBlank())
+    .toList();
+```
+**WHY:** The Java Stream runtime is free to split a parallel stream across threads in any order. `ArrayList.add()` has no synchronisation — two threads calling it concurrently can corrupt the internal array, causing silent data loss or `ArrayIndexOutOfBoundsException` that only appears under load. The correct fix is to use `collect()`, not `synchronizedList`, because synchronised wrappers serialise all access and eliminate the parallelism gain.
+
+**32. ORM Lazy Loading N+1 Query Problem [community]**
+When using JPA/Hibernate with default lazy loading, fetching a parent collection and then accessing a child association inside a loop emits one SQL query for the parent list and N additional queries — one per child element. The root cause is that lazy associations load on first access, and most developers don't notice until production load reveals thousands of queries per request. Fix: use JPQL `JOIN FETCH` or JPA `EntityGraph` to load associations in a single query; enable `spring.jpa.show-sql=true` in dev to detect N+1 during testing.
+
+```java
+// BAD — N+1 query pattern: 1 query for orders + N queries for customers
+List<Order> orders = em.createQuery("SELECT o FROM Order o", Order.class)
+    .getResultList();
+
+for (Order order : orders) {
+    // Each call to order.getCustomer() fires a separate SELECT — N hits to DB
+    System.out.println(order.getCustomer().getName());
+}
+
+// GOOD — JOIN FETCH loads customer in a single query
+List<Order> orders = em.createQuery(
+    "SELECT o FROM Order o JOIN FETCH o.customer", Order.class)
+    .getResultList();
+
+// GOOD — JPA EntityGraph: declarative eager loading, no JPQL rewrite
+@EntityGraph(attributePaths = {"customer", "lineItems"})
+@Query("SELECT o FROM Order o WHERE o.status = :status")
+List<Order> findByStatusWithDetails(@Param("status") String status);
+
+// GOOD — detect N+1 in tests with Hibernate statistics
+SessionFactory sf = emf.unwrap(SessionFactory.class);
+sf.getStatistics().setStatisticsEnabled(true);
+// After test: assert sf.getStatistics().getQueryExecutionCount() == 1
+```
+**WHY:** A page that renders 100 orders will fire 101 database queries with lazy loading and 1 with `JOIN FETCH`. At 1ms per query, that is the difference between a 1ms and 100ms response. Hibernate's default `FetchType.LAZY` is the right choice for fields you often don't need — but you must explicitly opt into eager loading when you know you'll access the association, not rely on the proxy to fetch it for you.
+
 ---
 
 ## Anti-Patterns Quick Reference
@@ -1815,6 +1872,8 @@ public class EmailSender implements NotificationSender {
 | Modifying collection during for-each loop | `ConcurrentModificationException` at runtime | Use `removeIf()`, `Iterator.remove()`, or collect-then-remove pattern |
 | Unclosed `Files.lines()` stream | Leaks file descriptors; crashes under load with "Too many open files" | Wrap in `try-with-resources`; use `Files.readAllLines()` for small files |
 | `String.format()` in log messages | Always builds string even when log level is disabled; adds GC pressure | Use SLF4J parameterised logging `log.debug("msg {}", arg)` |
+| Stateful lambda in `parallelStream()` | Data race on shared mutable state; non-deterministic results or corruption | Use `collect(Collectors.toList())` — collector handles thread-safety internally |
+| ORM lazy loading in a loop (N+1) | 1 + N database queries per request; invisible until production load | Use `JOIN FETCH` or `@EntityGraph` to load associations in a single query |
 
 ---
 

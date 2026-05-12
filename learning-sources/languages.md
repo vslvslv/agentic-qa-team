@@ -1,5 +1,5 @@
 # Learning Sources: Programming Languages
-<!-- updated: 2026-05-08 | entries: 70 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-12 | entries: 78 | skill-version: 1.12.0.0 -->
 
 Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 
@@ -59,6 +59,14 @@ Used by: `lang-refine` (Phase 1a primary), `qa-refine` (code examples)
 | REST Assured | https://rest-assured.io/ | official-docs | Java | 2026-05-08 | ⭐ REST API testing DSL for Java; BDD-style given/when/then; v6.0 requires Java 17+, Spring 7, Jackson 3 |
 | TypeScript Mapped Types | https://www.typescriptlang.org/docs/handbook/2/mapped-types.html | official-docs | TypeScript | 2026-05-08 | ⭐ Create new types by iterating type properties; keyof/in syntax; modifiers (+/-readonly/optional); key remapping |
 | C# Nullable Value Types | https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/nullable-value-types | official-docs | C# | 2026-05-08 | ⭐ T? syntax, HasValue/Value, null-coalescing ??, lifted operators, boxing/unboxing, pattern matching with is |
+| TypeScript Template Literal Types | https://www.typescriptlang.org/docs/handbook/2/template-literal-types.html | official-docs | TypeScript | 2026-05-12 | ⭐ String type transformations — `${A}${B}`, intrinsic string utilities, conditional inference in template positions |
+| TypeScript Utility Types | https://www.typescriptlang.org/docs/handbook/utility-types.html | official-docs | TypeScript | 2026-05-12 | ⭐ Built-in helpers — Partial/Required/Readonly/Record/Pick/Omit/Exclude/Extract/ReturnType/Awaited etc. |
+| C# Pattern Matching | https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/patterns | official-docs | C# | 2026-05-12 | ⭐ All pattern forms: declaration, type, constant, relational, logical, property, positional, list, var, discard |
+| C# LINQ | https://learn.microsoft.com/en-us/dotnet/csharp/linq/ | official-docs | C# | 2026-05-12 | ⭐ Language-integrated query — query syntax, method syntax, deferred execution, IQueryable, PLINQ |
+| Go — Effective Go | https://go.dev/doc/effective_go | official-docs | Go | 2026-05-12 | ⭐ Official style + idioms guide — formatting, commentary, data, interfaces, goroutines, channels, errors |
+| Go — Testing Flags | https://go.dev/blog/testing-flags | official-docs | Go | 2026-05-12 | ⭐ Go test flags: -run, -bench, -count, -parallel, -race; go test vs go test ./...; test binary flags |
+| Java Streams API | https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/package-summary.html | official-docs | Java | 2026-05-12 | ⭐ Java 21 Streams — sequential/parallel, collect, flatMap, reduce; Stream.gather() (preview Java 22+) |
+| Rust Clippy | https://doc.rust-lang.org/clippy/ | official-docs | Rust | 2026-05-12 | ⭐ Official Rust linter — 700+ lints across correctness, style, complexity, perf; pedantic / nursery categories |
 
 ---
 

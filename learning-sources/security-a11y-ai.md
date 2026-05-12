@@ -1,5 +1,5 @@
 # Learning Sources: Security, Accessibility & AI/Agent Testing
-<!-- updated: 2026-05-08 | entries: 61 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-12 | entries: 70 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skills
 
@@ -33,6 +33,15 @@ Used by: `qa-security` (supplemental), `qa-a11y` (supplemental), all refine skil
 | OWASP Top 10 for LLM Applications | https://owasp.org/www-project-top-10-for-large-language-model-applications/ | research/standard | AI/LLM security | 2026-05-07 | 📄 2025 edition — Prompt Injection, Excessive Agency, Unbounded Consumption, System Prompt Leakage |
 | OWASP GenAI LLM Top 10 Guide | https://genai.owasp.org/llm-top-10/ | research/standard | AI/LLM security | 2026-05-07 | 📄 600+ contributors — threat categories, mitigations, red teaming guidance for GenAI systems |
 | microsoft/PyRIT | https://github.com/microsoft/PyRIT | github-repo | AI red-teaming | 2026-05-07 | 3.8k stars — Python Risk Identification Tool; adversarial probing for GenAI systems; active MS research |
+| OWASP Cheat Sheet Series | https://cheatsheetseries.owasp.org/ | official-docs | security testing | 2026-05-12 | ⭐ 📄 98+ cheat sheets — XSS, SQLi, CSRF, auth, secrets, TLS, Docker, K8s; community-maintained |
+| OWASP AI Security & Privacy Guide | https://owasp.org/www-project-ai-security-and-privacy-guide/ | official-docs | AI/LLM security | 2026-05-12 | 📄 ⭐ Threat modelling for ML: adversarial attacks, data poisoning, model theft, privacy leakage, AI SDLC |
+| OWASP SAMM | https://owaspsamm.org/ | research/standard | security maturity | 2026-05-12 | 📄 Software Assurance Maturity Model v2.0 — 5 business functions, 15 practices, maturity 0–3; assessment tool |
+| NIST SSDF — SP 800-218 | https://csrc.nist.gov/publications/detail/sp/800-218/final | research/standard | security / SDLC | 2026-05-12 | 📄 Secure Software Development Framework — 4 groups: Prepare, Protect, Produce, Respond; maps to EO 14028 |
+| Snyk Docs | https://docs.snyk.io/ | official-docs | SCA / secrets / IaC | 2026-05-12 | ⭐ Developer-first security: SCA (Open Source), SAST (Snyk Code), secrets, IaC, container scanning; 4M+ devs |
+| Semgrep Docs | https://semgrep.dev/docs/ | official-docs | SAST | 2026-05-12 | ⭐ OSS SAST — custom rules, taint analysis, autofixes; 30+ languages; IDE + CI; maps to OWASP/CWE/NIST |
+| TruffleHog Product | https://trufflesecurity.com/trufflehog | official-docs | secrets scanning | 2026-05-12 | ⭐ 800+ secret detectors with active verification; git/S3/Slack/Jira sources; enterprise + OSS editions |
+| Deque axe-core API | https://www.deque.com/axe/core-documentation/api-documentation/ | official-docs | accessibility | 2026-05-12 | ⭐ Full axe.run() API — context, options, rules, results schema; integration patterns for Playwright/Selenium |
+| DeepEval Docs | https://docs.confident-ai.com/ | official-docs | LLM evaluation | 2026-05-12 | ⭐ pytest-compatible LLM eval framework — 20+ metrics, RAG evaluation, agent tracing, red-teaming, CI integration |
 
 ---
 

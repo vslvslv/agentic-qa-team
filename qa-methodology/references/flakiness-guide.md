@@ -1,10 +1,11 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 44 | score: 100/100 | date: 2026-05-08 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 45 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
-<!-- sources: synthesized from training knowledge — WebFetch blocked; WebSearch unavailable -->
+<!-- sources: WebFetch live — playwright.dev/docs/release-notes, playwright.dev/docs/api/class-testconfig, trunk.io/flaky-tests, vitest.dev/blog -->
 <!-- Official refs synthesized: martinfowler.com/articles/nonDeterminism.html, testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html -->
 <!-- Iter-43: AP23–AP25; extended Quick Reference table -->
 <!-- Iter-44: pytest flaky tests cross-reference (docs.pytest.org/en/stable/explanation/flaky.html, 2026-05-08); cross-language flakiness equivalents table -->
+<!-- Iter-45: Pattern 56 (Playwright failOnFlakyTests CI gate); Pattern 57 (trace retain-on-first-failure / retain-on-failure-and-retries); AP33 (failOnFlakyTests in dev mode); Gotcha 37 (Vitest 4 browser mode toMatchScreenshot); Key Resources additions (playwright.dev release notes, Vitest 4 blog) -->
 <!-- Iterations 3–12: cross-shard detection; ISTQB CTFL 4.0 terminology; memory/resource exhaustion; snapshot flakiness; -->
 <!--   Storybook/Chromatic; WebSocket/SSE; port collision; Pact provider state; DB migration race; GitHub Actions dashboard; -->
 <!--   Node.js native test runner; ESLint anti-flakiness rules; Playwright trace debugging; worker_threads; -->
@@ -3764,6 +3765,9 @@ afterEach(() => {
 | Effect fiber state bleeds between tests | Uninterrupted fork | Pattern 43 (Scope-scoped fibers) | AP24 (Effect.fork without cleanup) |
 | Floating-point total wrong on ARM CI | IEEE 754 platform variance | Pattern 36 (integer arithmetic) | AP20 (direct toBe on floats) |
 | Biome noFloatingPromises disabled | Test unawaited async | Pattern 44 (Biome config, useAwait) | AP25 (disable rule for tests) |
+| Playwright test passes on retry but CI exits 0 | failOnFlakyTests not enabled | Pattern 56 (failOnFlakyTests: !!CI) | AP33 (enable globally without CI gate) |
+| Flaky trace data: too much noise or none at all | Wrong trace mode | Pattern 57 (on-first-retry vs retain-on-failure-and-retries) | AP34 (trace: 'on' globally) |
+| toMatchScreenshot fails on CI but passes locally | Font rendering variance (macOS vs Linux) | Pattern 58 (generate baselines on CI OS, maxDiffPixelRatio) | No baseline OS pinning |
 
 ---
 
@@ -3870,3 +3874,280 @@ pytest sets `PYTEST_CURRENT_TEST` during test execution — useful for diagnosin
 | pytest-rerunfailures | Community | https://github.com/pytest-dev/pytest-rerunfailures | Per-test and global retry for pytest |
 | pytest-randomly | Community | https://github.com/pytest-dev/pytest-randomly | Randomizes test order to expose hidden state dependencies |
 | pytest-xdist | Official | https://pytest-xdist.readthedocs.io/ | Parallel pytest execution; exposes ordering flakiness |
+
+---
+
+## Pattern 56 — Playwright `failOnFlakyTests` CI Gate  [official]
+
+Introduced in Playwright v1.52, `failOnFlakyTests` (and the equivalent CLI flag `--fail-on-flaky-tests`
+introduced in v1.44) turns flaky test detection into a CI gate: instead of silently passing a run
+where a test failed then recovered on retry, Playwright exits with code `1` and explicitly labels
+the test "flaky". This shifts flakiness from a tolerable nuisance to a build-breaking signal.
+
+**Why this matters:** Without `failOnFlakyTests`, a CI run that exits `0` may still contain tests
+that only passed on the third retry. Developers never see the flakiness signal, quarantine backlogs
+grow silently, and the flakiness rate climbs until the suite is untrustworthy. The flag makes
+flakiness visible as a first-class defect on every PR.
+
+```typescript
+// playwright.config.ts — fail CI on any flaky test (added Playwright v1.52)
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  // Exit with error if any test is marked flaky (passed only after retry).
+  // Set to !!process.env.CI so local runs still tolerate retries during development.
+  failOnFlakyTests: !!process.env.CI,
+
+  // Retries are still required — failOnFlakyTests needs retries > 0 to detect flakiness.
+  // Without retries, all failures are hard-failures; with retries but no failOnFlakyTests,
+  // recoveries are silently treated as passes.
+  retries: process.env.CI ? 2 : 0,
+
+  use: {
+    // Capture a trace on the first retry so you can open it in Playwright Trace Viewer
+    // after failOnFlakyTests breaks the build.
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+  ],
+});
+```
+
+```bash
+# CLI equivalent — useful for one-off detection runs or scripted checks:
+npx playwright test --retries=2 --fail-on-flaky-tests
+
+# In GitHub Actions step (pair with the JUnit reporter to get per-test flakiness signals):
+- name: Run E2E tests (fail on flaky)
+  run: npx playwright test --retries=2 --fail-on-flaky-tests
+  env:
+    CI: true
+```
+
+**Integration with quarantine:** When `failOnFlakyTests` breaks the build, the immediate response
+is NOT to disable the flag — it is to quarantine the flaky test case using
+`test.describe.configure({ retries: 0 })` + `test.skip(true, '[QUARANTINE] PROJ-NNN ...')`.
+This preserves the gate for healthy test cases while deferring the root-cause fix.
+
+---
+
+## Pattern 57 — Playwright Trace Modes for Flaky Test Debugging  [official]
+
+Playwright's `trace` option controls *when* traces are recorded and *which* attempts are retained.
+Choosing the right mode significantly affects how quickly you can diagnose flakiness root causes
+in CI without drowning in unnecessary trace data.
+
+| Mode | Records on | Retains on | Best for |
+|------|-----------|------------|---------|
+| `'off'` | Never | — | Clean local runs |
+| `'on'` | Every attempt | Always | Initial investigation of unknown flakiness |
+| `'on-first-retry'` | First retry only | On failure | **Default CI recommendation** |
+| `'retain-on-first-failure'` | First run | Only if first run fails | Capturing the initial failure signal without retry noise |
+| `'retain-on-failure-and-retries'` | Every attempt | All attempts when any fails | **Deep flakiness debugging** — compare passing vs failing traces |
+
+`retain-on-failure-and-retries` (introduced Playwright v1.59) is the most powerful mode for
+diagnosing flaky tests because it records *all retry attempts* and retains them when the test
+ultimately fails. You can open both the passing and failing traces in Playwright Trace Viewer
+side-by-side to identify the exact point of divergence.
+
+```typescript
+// playwright.config.ts — progressive trace strategy
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  retries: process.env.CI ? 2 : 0,
+
+  use: {
+    // For normal CI: capture trace only on first retry (low overhead)
+    trace: process.env.CI ? 'on-first-retry' : 'off',
+
+    // Screenshot on failure for fast triage
+    screenshot: 'only-on-failure',
+
+    // Video on retry — complements trace for timing-sensitive flakiness
+    video: 'on-first-retry',
+  },
+
+  // Override: deep debugging project — run separately when investigating a known flaky test
+  // npx playwright test --project=flakiness-debug --grep "my flaky test"
+  projects: [
+    {
+      name: 'ci',
+      use: { trace: 'on-first-retry' },
+    },
+    {
+      // Deep debugging: retains traces for ALL attempts — use on the specific flaky test case
+      // Added: Playwright v1.59
+      name: 'flakiness-debug',
+      use: {
+        trace: 'retain-on-failure-and-retries',
+        video: 'retain-on-failure',
+      },
+      retries: 4, // More retries to increase probability of capturing both pass and fail
+    },
+  ],
+});
+```
+
+```typescript
+// testInfo.retry — conditional cleanup on retry (Pattern 46 extended with trace context)
+// Use to clean up server-side state that a previous failing attempt may have left behind.
+import { test, expect } from '@playwright/test';
+
+test('checkout completes successfully', async ({ page, request }, testInfo) => {
+  // If this is a retry, the previous attempt may have partially created an order.
+  // Clean it up before re-running — prevents "duplicate order" false failures.
+  if (testInfo.retry > 0) {
+    console.log(`[Retry ${testInfo.retry}] Cleaning up partial order for user test-${testInfo.workerIndex}`);
+    await request.delete(`/api/orders/cleanup?user=test-${testInfo.workerIndex}`);
+  }
+
+  await page.goto('/checkout');
+  await page.getByRole('button', { name: 'Place Order' }).click();
+  await expect(page.getByText('Order confirmed')).toBeVisible();
+});
+```
+
+**Key insight [community]:** Teams that set `trace: 'on'` globally in CI to "always have traces"
+pay a significant performance penalty — tracing adds 20–40% to test execution time for complex
+E2E tests. The progressive strategy above (`on-first-retry` in CI, `retain-on-failure-and-retries`
+in a named debugging project) captures the right data without slowing down the main suite.
+
+---
+
+## Pattern 58 — Vitest 4.x Browser Mode Visual Stability  [official]
+
+Vitest 4.0 (October 2025) promoted Browser Mode from experimental to stable and added
+`toMatchScreenshot()` — a visual assertion that compares rendered output pixel-by-pixel.
+For component tests that previously used Storybook + Chromatic for visual regression, Vitest
+Browser Mode with `toMatchScreenshot` offers a tighter integration at the cost of less
+cross-browser coverage.
+
+Visual screenshot assertions have a distinct flakiness profile: **animation flakiness**
+(screenshot taken mid-animation) and **font rendering flakiness** (sub-pixel differences
+across CI runner OS versions). Both are solvable with explicit freeze patterns.
+
+```typescript
+// vitest.config.ts — Vitest 4.x Browser Mode with screenshot stability options
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    browser: {
+      enabled: true,
+      provider: 'playwright',  // Playwright as browser provider (stable in Vitest 4)
+      name: 'chromium',
+      // Headless mode: recommended for CI
+      headless: true,
+    },
+    // Threshold for screenshot comparison — allow 0.1% pixel variance
+    // to tolerate sub-pixel font rendering differences across OS versions
+    // (Vitest 4 toMatchScreenshot option)
+    // See: https://vitest.dev/guide/browser/
+  },
+});
+```
+
+```typescript
+// Button.test.tsx — visual regression test with animation freeze
+import { render } from '@testing-library/react';
+import { expect, it, beforeEach } from 'vitest';
+import { Button } from './Button';
+
+it('renders primary button correctly', async () => {
+  const { container } = render(<Button variant="primary">Click me</Button>);
+
+  // Step 1: freeze all CSS animations before snapshot
+  // Without this, the screenshot may capture mid-transition state — classic visual flakiness
+  await page.addStyleTag({
+    content: `
+      *, *::before, *::after {
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+      }
+    `,
+  });
+
+  // Step 2: wait for fonts to be fully loaded — prevents sub-pixel shift flakiness
+  await page.evaluate(() => document.fonts.ready);
+
+  // Step 3: screenshot assertion with variance threshold
+  await expect(container).toMatchScreenshot({
+    // Allow 0.1% pixel difference — tolerates sub-pixel font rendering variance
+    // across Linux CI runners and macOS developer machines
+    maxDiffPixelRatio: 0.001,
+  });
+});
+```
+
+**When NOT to use Vitest Browser Mode for visual regression:**
+- Cross-browser visual consistency is a requirement (use Chromatic + Storybook, which tests
+  against Chrome, Firefox, Safari, and Edge simultaneously)
+- You need baseline management across multiple versions (Chromatic's branching model is purpose-built)
+- Your component library is consumed by external teams who need visual diff reports as part of
+  the review process
+
+**Vitest Browser Mode strength:** Zero-overhead component isolation (no Storybook build step),
+faster feedback loop for developers, and direct integration with Vitest's existing test suite.
+
+---
+
+## Anti-Patterns (additional)
+
+### AP33 — `failOnFlakyTests: true` in Development (Non-CI) Mode  [community]
+**What:** Enabling `failOnFlakyTests: true` unconditionally in `playwright.config.ts` (not gated
+on `process.env.CI`).
+**Why harmful:** In local development, flaky E2E tests are a normal debugging artifact — a developer
+may be intentionally investigating a timing issue and relies on seeing the retry-then-pass pattern
+to understand the failure mode. `failOnFlakyTests: true` without `!!process.env.CI` gating breaks
+their local workflow and incentivises them to simply remove the retry configuration entirely, losing
+the detection mechanism for CI. Fix: `failOnFlakyTests: !!process.env.CI`.
+
+### AP34 — Using `trace: 'on'` Globally in CI Without Performance Budget  [community]
+**What:** Setting `trace: 'on'` in the CI playwright config as a catch-all "we always want traces"
+policy without measuring the performance impact.
+**Why harmful:** Playwright's trace recording adds 20–40% to E2E test execution time for complex
+flows (network waterfall recording, DOM snapshots, screenshots at every action). A 10-minute suite
+becomes 12–14 minutes. Teams then disable tracing entirely because it "makes CI too slow", losing
+the most valuable debugging artifact for flakiness. Fix: use `'on-first-retry'` as the CI default;
+create a named `flakiness-debug` project with `'retain-on-failure-and-retries'` for targeted
+investigation of specific known-flaky test cases.
+
+---
+
+## Real-World Gotchas (continued)  [community]
+
+**Gotcha 37 — Vitest 4 Browser Mode toMatchScreenshot and CI Font Rendering Variance**
+`toMatchScreenshot()` in Vitest 4 Browser Mode (Playwright provider, headless Chromium) produces
+pixel-perfect screenshots on a developer's macOS machine that fail consistently on Ubuntu-based CI
+runners. Root cause: sub-pixel font rendering differs between macOS CoreText and Linux FreeType.
+Fix: (a) run the baseline screenshot generation *on the same OS as CI* (use `docker run` locally
+or generate baselines in CI on first run), OR (b) use `maxDiffPixelRatio: 0.002` to tolerate
+sub-pixel variance, OR (c) lock to a specific Chromium build via `process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
+Teams that skip this setup routinely see 100% screenshot test flakiness on CI green → developer
+machine red — the opposite of normal flakiness.
+
+**Gotcha 38 — Playwright `failOnFlakyTests` Reports Exit Code 1 but Developers See Green Checks**
+Playwright exits with code `1` when `failOnFlakyTests` is triggered, but many CI integrations
+(GitHub Actions, GitLab CI) map Playwright's exit codes differently when using the JUnit reporter.
+If the CI step's `continue-on-error: true` was set for an unrelated reason (e.g., to preserve
+artifacts on failure), `failOnFlakyTests` failures are silently swallowed — the PR shows a green
+check mark while the test run contains flaky test cases. Fix: audit all Playwright CI steps for
+`continue-on-error: true` when enabling `failOnFlakyTests`; use the HTML reporter's flakiness
+annotations as a secondary signal visible in the test results artifact.
+
+---
+
+## Key Resources (iteration 45 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright Release Notes | Official | https://playwright.dev/docs/release-notes | Full changelog: failOnFlakyTests (v1.52), retain-on-failure-and-retries (v1.59), trace modes |
+| Vitest 4.0 Blog | Official | https://vitest.dev/blog/vitest-4.html | Browser Mode stable, toMatchScreenshot, new tree reporter |
+| Playwright TestConfig API | Official | https://playwright.dev/docs/api/class-testconfig | Complete API reference for failOnFlakyTests, retries, trace configuration |

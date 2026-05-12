@@ -1,5 +1,5 @@
 # Learning Sources: QA Tools
-<!-- updated: 2026-05-08 | entries: 155 | skill-version: 1.12.0.0 -->
+<!-- updated: 2026-05-12 | entries: 167 | skill-version: 1.12.0.0 -->
 
 Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobile`
 
@@ -171,3 +171,15 @@ Used by: `qa-refine` (Phase 1a primary), `qa-web`, `qa-api`, `qa-perf`, `qa-mobi
 | wiremock/wiremock | https://github.com/wiremock/wiremock | github-repo | API mocking | 2026-05-08 | 7.2k stars — API mock testing; request matching, templating, fault injection; 6M+ downloads/mo |
 | mswjs/msw | https://github.com/mswjs/msw | github-repo | API mocking | 2026-05-08 | 🌟 17.9k stars — network-level request interception; REST, GraphQL, WebSocket; browser + Node.js |
 | browserbase/stagehand | https://github.com/browserbase/stagehand | github-repo | AI browser automation | 2026-05-08 | 🌟 22.6k stars — natural language + code hybrid browser automation; act()/agent()/extract(); self-healing |
+| cypress-io/cypress-realworld-app | https://github.com/cypress-io/cypress-realworld-app | github-repo | Cypress | 2026-05-12 | Official Cypress real-world demo app — full payment API test suite with auth, feed, data seeding |
+| postmanlabs/httpbin | https://github.com/postmanlabs/httpbin | github-repo | API testing | 2026-05-12 | 6.7k stars — HTTP request/response echo service for API testing; headers, status, auth, redirects |
+| Step CI Docs | https://docs.stepci.com/ | official-docs | API testing / CI | 2026-05-12 | ⭐ YAML-driven API workflow testing: contracts, load tests, CI integration; REST/GraphQL/gRPC |
+| tRPC Client Testing | https://trpc.io/docs/client/testing | official-docs | tRPC / TypeScript | 2026-05-12 | ⭐ tRPC mock router, type-safe client stubs, vitest + msw integration patterns |
+| Playwright Test Assertions | https://playwright.dev/docs/test-assertions | official-docs | Playwright | 2026-05-12 | ⭐ Full expect() API — web-first assertions, toBeVisible/Enabled/Checked/Focused, soft assertions, custom matchers |
+| Playwright Debug | https://playwright.dev/docs/debug | official-docs | Playwright | 2026-05-12 | ⭐ PWDEBUG env, VS Code breakpoints, Playwright Inspector, verbose API logs, page.pause() patterns |
+| Playwright Frames | https://playwright.dev/docs/frames | official-docs | Playwright | 2026-05-12 | ⭐ Interact with iframes — frameLocator(), contentFrame(), nested frame traversal, strict mode in frames |
+| Playwright Downloads | https://playwright.dev/docs/downloads | official-docs | Playwright | 2026-05-12 | ⭐ waitForEvent('download'), download.path(), download.saveAs(); parallel download test patterns |
+| Playwright Pages | https://playwright.dev/docs/pages | official-docs | Playwright | 2026-05-12 | ⭐ Multi-tab/window control — context.newPage(), page events, popup handling, runAndWaitForNewPage |
+| Vitest Config Reference | https://vitest.dev/config/ | official-docs | Vitest / TypeScript | 2026-05-12 | ⭐ Complete config reference — environment, coverage, browser, pool, benchmark, inline snapshots, alias |
+| Vitest Test API Reference | https://vitest.dev/api/ | official-docs | Vitest / TypeScript | 2026-05-12 | ⭐ Full test/describe/expect API — lifecycle hooks, test.concurrent, test.each, vi.fn/spy/mock, soft assertions |
+| k6 HTTP/2 Protocol | https://grafana.com/docs/k6/latest/using-k6/protocols/http2/ | official-docs | k6 / HTTP2 | 2026-05-12 | ⭐ HTTP/2 multiplexing in k6 — automatic upgrade, cleartext H2C, stream metrics, connection reuse |

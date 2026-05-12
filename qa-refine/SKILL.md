@@ -228,7 +228,8 @@ Pages to fetch (append to base URL):
 - `https://grafana.com/docs/k6/latest/using-k6/protocols/grpc/`    (gRPC unary + streaming + reflection)
 - `https://grafana.com/docs/k6/latest/results-output/`             (summary, real-time, JSON/InfluxDB/cloud)
 - `https://grafana.com/docs/k6/latest/using-k6/modules/`           (module types, Webpack bundling, TS native support)
-<!-- See also: qa-perf/references/k6-patterns.md — verified against k6 v1.7.1; v2.0.0-rc1 breaking changes documented including: externally-controlled executor removed, CLI commands removed, browser_web_vital_fid → browser_web_vital_inp, options.ext.loadimpact → options.cloud, --no-summary → --summary-mode=disabled -->
+- `https://grafana.com/docs/k6/latest/using-k6/protocols/http-2/`  (HTTP/2 automatic upgrade, r.proto check, multiplexing, GOAWAY)
+<!-- See also: qa-perf/references/k6-patterns.md — verified against k6 v1.7.1; v2.0.0-rc1 breaking changes documented including: externally-controlled executor removed, CLI commands removed, browser_web_vital_fid → browser_web_vital_inp, options.ext.loadimpact → options.cloud, --no-summary → --summary-mode=disabled; HTTP/2 section added covering r.proto verification, multiplexing VU sizing, TCP HOL blocking, GOAWAY (1610) diagnosis -->
 
 **Detox (JS only):**
 - `https://wix.github.io/Detox/docs/guide/design-principles`
@@ -239,7 +240,7 @@ Pages to fetch (append to base URL):
 - `https://wix.github.io/Detox/docs/config/overview`
 - `https://wix.github.io/Detox/docs/introduction/typescript`
 
-**See also:** `qa-mobile/references/detox-patterns.md` (JavaScript/TypeScript) — includes patterns for: matcher priority, auto-sync, waitFor, beforeEach reset, CI animation disable, artifact collection, advanced gestures (adjustSliderToPosition, longPressAndDrag, tapAtPoint, multiTap, pinch), accessibility testing (toHaveLabel, toHaveToggleValue), TypeScript setup, captureViewHierarchy for debugging, `--debug-synchronization` CLI flag, `--reuse` flag (local only), testRunner.retries vs jest retryTimes, dark mode testing (device.setAppearance), Handoff/Spotlight (device.sendUserActivity), feature-flag variant testing, Bridgeless Mode (RN 0.74+), multi-app install/uninstall, 30 [community] gotchas including whileElement scroll overshoot, notification lifecycle states, and missing `-c` configuration flag.
+**See also:** `qa-mobile/references/detox-patterns.md` (JavaScript/TypeScript) — includes patterns for: matcher priority, auto-sync, waitFor, beforeEach reset, CI animation disable, artifact collection, advanced gestures (adjustSliderToPosition, longPressAndDrag, tapAtPoint, multiTap, pinch), accessibility testing (toHaveLabel, toHaveToggleValue), TypeScript setup, captureViewHierarchy for debugging, `--debug-synchronization` CLI flag, `--reuse` flag (local only), testRunner.retries vs jest retryTimes, dark mode testing (device.setAppearance), Handoff/Spotlight (device.sendUserActivity), feature-flag variant testing, Bridgeless Mode (RN 0.74+), multi-app install/uninstall, iOS PickerView (`scrollPickerViewToRowIndex`), `jestExpect` alias to avoid Jest/Detox expect collision, `element.scroll()` with `startPositionX`/`startPositionY`, 32 [community] gotchas including whileElement scroll overshoot, notification lifecycle states, missing `-c` configuration flag, `adjustSliderToPosition` Android silent no-op, and duplicate testID on wrapper+inner component.
 
 **Appium / WebDriverIO — URL set depends on TARGET_LANG:**
 
@@ -251,7 +252,7 @@ Pages to fetch (append to base URL):
 | C# | `https://appium.io/docs/en/2.0/guides/` + `https://github.com/appium/dotnet-client` README |
 | Ruby | `https://appium.io/docs/en/2.0/guides/` + `https://github.com/appium/ruby_lib` README |
 
-**See also:** `qa-mobile/references/appium-wdio-patterns.md` (TypeScript) — 156+ sections, 171+ [community] gotchas including: W3C Actions API replacing touchAction, WDIO v9 BiDi (Shadow DOM auto-pierce, fake timers), browser.mock() CDP limitations on cloud providers, mobile:pressButton complete iOS reference (home/lock/siri/volume), Android AVD CI launch with -no-snapshot, parallel port management (wdaLocalPort iOS/systemPort Android), appium:newCommandTimeout session keepalive, TypeScript 'using' keyword for resource management, app version fixture management (installApp/removeApp/queryAppState), appium:webviewConnectRetries + ensureWebviewsHavePages, cookie injection for WebView auth state, element.getProperty() vs getAttribute() for live React DOM, file upload via pushFile+DataTransfer, TypeScript capability interface extension via declaration merging, @wdio/shared-store-service device pool pattern, and WDIO specs/exclude/suite selective CI execution.
+**See also:** `qa-mobile/references/appium-wdio-patterns.md` (TypeScript) — 163+ sections, 187+ [community] gotchas including: W3C Actions API replacing touchAction, WDIO v9 BiDi (Shadow DOM auto-pierce, fake timers), browser.mock() CDP limitations on cloud providers, mobile:pressButton complete iOS reference (home/lock/siri/volume), Android AVD CI launch with -no-snapshot, parallel port management (wdaLocalPort iOS/systemPort Android), appium:newCommandTimeout session keepalive, TypeScript 'using' keyword for resource management, app version fixture management (installApp/removeApp/queryAppState), appium:webviewConnectRetries + ensureWebviewsHavePages, cookie injection for WebView auth state, element.getProperty() vs getAttribute() for live React DOM, file upload via pushFile+DataTransfer, TypeScript capability interface extension via declaration merging, @wdio/shared-store-service device pool pattern, WDIO specs/exclude/suite selective CI execution, browser.emulate() (clock/geolocation/device BiDi), WDIO v9 migration breaking changes (getElement()/toHaveText(stringContaining)/isDisplayed({withinViewport})/Node20), trackSelectorPerformance beta selector profiler, scrollIntoView() native mobile v9 options (maxScrolls/platform defaults), Allure v3 ALLURE_TESTPLAN_PATH test plan filtering, and @wdio/appium-service appiumArgs CI best practices with Appium readiness healthcheck.
 
 **Cypress (JS/TS only):**
 - `https://docs.cypress.io/guides/core-concepts/introduction-to-cypress`
@@ -259,11 +260,15 @@ Pages to fetch (append to base URL):
 - `https://docs.cypress.io/api/commands/session`
 - `https://docs.cypress.io/api/commands/intercept`
 - `https://docs.cypress.io/api/commands/selectfile`
+- `https://docs.cypress.io/api/commands/press`                  (cy.press() — Cy 14.3+, native keyboard events, Tab-order)
+- `https://docs.cypress.io/api/commands/env`                    (cy.env() — Cy 15.10+, async secure env var access)
 - `https://docs.cypress.io/guides/end-to-end-testing/testing-strategies`
 - `https://docs.cypress.io/guides/component-testing/overview`
 - `https://docs.cypress.io/guides/cloud/introduction`   (Smart Orchestration, parallel CI, MCP integration)
+- `https://docs.cypress.io/app/references/migration-guide`      (Cy 14 → 15 breaking changes: exitCode, Vite ESM, Firefox BiDi)
+- `https://docs.cypress.io/app/continuous-integration/github-actions`  (matrix parallelization, Cypress Cloud; updated Apr 2026)
 
-**See also:** `qa-web/references/cypress-patterns.md` (TypeScript/JavaScript) — 66+ patterns including Shadow DOM, GraphQL intercept, CDP throttling, cy.all(), WebKit testing, Smart Orchestration, Cypress Cloud MCP integration, and 35+ [community] gotchas
+**See also:** `qa-web/references/cypress-patterns.md` (TypeScript/JavaScript) — 100+ patterns including Shadow DOM, GraphQL intercept, CDP throttling, cy.all(), WebKit testing, Smart Orchestration, Cypress Cloud MCP integration, cy.press() Tab-order tests, cy.env() async secure vars, Cypress.expose() public config, Cypress 15 breaking changes (exitCode/Vite ESM/Firefox CDP/Node.js 22), Angular 21 zoneless CT, cy.readFile() query promotion, TypeScript 6 + Vite 8 setup, and 70+ [community] gotchas
 
 **Selenium — language-independent docs (fetch for all `TARGET_LANG`):**
 - `https://www.selenium.dev/documentation/webdriver/`

@@ -1,5 +1,5 @@
 # Learning Sources: QA Methodology
-<!-- updated: 2026-05-08 | entries: 41 | skill-version: 1.16.0.0 | last-refine-run: 2026-05-08 -->
+<!-- updated: 2026-05-12 | entries: 48 | skill-version: 1.16.0.0 | last-refine-run: 2026-05-12 -->
 
 Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 
@@ -71,3 +71,10 @@ Used by: `qa-methodology-refine` (Phase 1a primary), `qa-audit`
 | Neon DB — Test Branching | https://neon.com/docs/guides/branching-test-queries | official-docs | test-data / databases | 2026-05-08 | ⭐ Copy-on-write Postgres branch per test run; schema-only branching for sensitive data; instant teardown |
 | pytest Flaky Tests | https://docs.pytest.org/en/stable/explanation/flaky.html | official-docs | flakiness | 2026-05-08 | ⭐ Root causes (state, assertions, threads); quarantine via xfail; pytest-rerunfailures; randomisation plugins |
 | Testcontainers Guides | https://testcontainers.com/guides/ | official-docs | test-infrastructure | 2026-05-08 | ⭐ Practical guides: 12 language ecosystems; Spring Boot, Quarkus, ASP.NET; DB, Kafka, WireMock, LocalStack |
+| pytest Parametrize | https://docs.pytest.org/en/stable/how-to/parametrize.html | official-docs | test-framework | 2026-05-12 | ⭐ @pytest.mark.parametrize deep dive — indirect, marks, stacking, IDs, fixture interplay |
+| Cucumber Anti-Patterns | https://cucumber.io/docs/guides/anti-patterns/ | official-docs | bdd | 2026-05-12 | ⭐ Official BDD pitfalls: imperative steps, conjunctive steps, testing implementation not behaviour |
+| Martin Fowler — Microservice Testing | https://martinfowler.com/articles/microservice-testing/ | blog | test-pyramid | 2026-05-12 | 📰 Canonical guide — 5-layer microservice test strategy: unit→integration→component→contract→E2E |
+| Martin Fowler — TDD | https://martinfowler.com/bliki/TestDrivenDevelopment.html | blog | tdd | 2026-05-12 | 📰 Authoritative TDD definition; red-green-refactor cycle; debate on test-first economics |
+| Martin Fowler — Shift Left Testing | https://martinfowler.com/articles/shift-left-testing.html | blog | shift-left | 2026-05-12 | 📰 Shift-left taxonomy; continuous testing; QA role transformation; cost-of-defect curve |
+| Martin Fowler — Test Double | https://martinfowler.com/bliki/TestDouble.html | blog | test-doubles | 2026-05-12 | 📰 Canonical taxonomy: Dummy, Fake, Stub, Spy, Mock — when to use each and interaction testing |
+| nektos/act | https://github.com/nektos/act | github-repo | ci-cd-testing | 2026-05-12 | 🌟 73k stars — run GitHub Actions locally; full workflow parity; Docker runner for CI-as-code testing |

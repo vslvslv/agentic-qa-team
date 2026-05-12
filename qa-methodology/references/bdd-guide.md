@@ -1,6 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 21 | score: 100/100 | date: 2026-05-04 | sources: training-knowledge -->
-<!-- WebFetch and WebSearch unavailable; synthesized from training knowledge + TypeScript patterns reference | new: pytest plugin writing guide -->
+<!-- lang: TypeScript | topic: bdd | iteration: 22 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 22 additions: two new official anti-patterns from cucumber.io/docs/guides/anti-patterns/ (Feature-Coupled Step Definitions, Conjunction Steps); discovery-first BDD model from cucumber.io/docs/bdd/ — both sources added to learning-sources catalog 2026-05-12 -->
 
 ## Core Principles
 
@@ -11,6 +11,14 @@ BDD rests on three foundational pillars:
 1. **Shared understanding**: All stakeholders — developers, QA, and product owners — collaborate to define what "done" means before writing a single line of code. This is why BDD produces better software than TDD alone: TDD tells you when code is correct; BDD tells you when the team agreed on what "correct" means.
 2. **Executable specifications**: Feature files written in Gherkin serve as both documentation and automated tests, ensuring documentation never drifts from reality. A passing feature file is proof, not promise — unlike a wiki entry, it cannot lie about what the system does today.
 3. **Outside-in development**: Teams start from the user's perspective, working inward from business scenarios toward implementation details. This prevents the common failure mode of building technically correct software that does not solve the actual business problem.
+
+**The three BDD practices in sequence (official model):** Cucumber's official guidance names the three practices as **Discovery → Formulation → Automation**. This ordering is not incidental — it is the correct adoption sequence. Teams that jump straight to Automation (writing Gherkin and step definitions) without establishing Discovery (collaborative example workshops) produce test suites that look like BDD but deliver none of its communication benefit. The official guidance states explicitly: "If you're new to BDD, Discovery is the right place to start. You won't get much joy from the other two practices until you've mastered Discovery."
+
+| Practice | What happens | Output |
+|---|---|---|
+| **Discovery** | Structured workshops (Three Amigos, Example Mapping) surface concrete examples from real business rules | Agreed-upon examples, resolved ambiguities, open question list |
+| **Formulation** | Examples are expressed in Gherkin (Given-When-Then) — human-readable and machine-executable | `.feature` files reviewable by all stakeholders |
+| **Automation** | Step definitions connect Gherkin to executable test code; CI runs them on every build | Living documentation: passing tests = proven behavior |
 
 The key insight of BDD is that software failures are often not technical failures — they are communication failures. A study by the Standish Group repeatedly finds that the top causes of project failure are unclear requirements, stakeholder misalignment, and changing scope — not code quality. By forcing a concrete, example-driven conversation before development, BDD surfaces misunderstandings at the cheapest point: before code is written.
 
@@ -911,6 +919,120 @@ Then the React state should have isLoading set to false
 ```
 
 **Fix**: Assert what the user can observe: UI elements, API responses, emails, redirects.
+
+### 6. Feature-Coupled Step Definitions [official]
+
+**Problem**: Step definitions organized by feature file rather than by domain concept. This makes steps impossible to reuse across features, leading to explosive duplication as the suite grows.
+
+```typescript
+// ❌ Anti-pattern: feature-specific step definition files
+// edit_work_experience_steps.ts
+Given('I have a CV and I am on the edit work experience page', async function () {
+  const employee = new Employee('Sally');
+  await employee.createCV();
+  await this.page.goto(`/employees/${employee.id}/work-experience/new`);
+});
+
+// edit_languages_steps.ts — near-duplicate, different feature
+Given('I have a CV and I am on the edit languages page', async function () {
+  const employee = new Employee('Sally');
+  await employee.createCV();
+  await this.page.goto(`/employees/${employee.id}/languages/new`);
+});
+```
+
+Both steps share identical CV-creation logic but cannot reuse it because they are feature-coupled. When `Employee.createCV()` changes signature, both must be updated independently.
+
+```typescript
+// ✅ Fix: organize step definitions by domain concept
+// employee.steps.ts — reusable across all features that involve employees
+Given('I have an employee named {string}', async function (this: CustomWorld, name: string) {
+  this.employee = new Employee(name);
+});
+
+Given('the employee has a CV', async function (this: CustomWorld) {
+  await this.employee.createCV();
+  this.attach(`Created CV for employee ${this.employee.id}`, 'text/plain');
+});
+
+// navigation.steps.ts — reusable navigation steps
+Given('I am on the {string} page for the employee', async function (this: CustomWorld, section: string) {
+  const sectionPaths: Record<string, string> = {
+    'edit work experience': 'work-experience/new',
+    'edit languages': 'languages/new',
+    'edit profile': 'profile/edit',
+  };
+  const path = sectionPaths[section];
+  if (!path) throw new Error(`Unknown employee section: "${section}"`);
+  await this.page.goto(`/employees/${this.employee.id}/${path}`);
+});
+```
+
+The refactored scenario:
+```gherkin
+# Works for any employee feature — no duplication
+Scenario: Employee adds work experience
+  Given I have an employee named "Sally"
+  And the employee has a CV
+  And I am on the "edit work experience" page for the employee
+  When I add a new work experience entry
+  Then the work experience should appear on the employee profile
+```
+
+**Why it hurts**: Feature-coupled steps create a maintenance multiplier. When a common precondition changes (authentication mechanism, data model, URL structure), the change must be applied to every feature-specific step file independently. Teams with 20+ feature files report spending entire sprint cycles on test maintenance after a single refactor.
+
+**Rule of thumb**: If a step appears in more than one feature file, it belongs in a domain-concept step file, not a feature file. A domain-concept file groups steps by what they operate on (employees, orders, payments), not by which feature test they were first written for.
+
+### 7. Conjunction Steps [official]
+
+**Problem**: Combining multiple distinct preconditions or actions into a single step using conjunctions ("and", "with", "then"). This creates steps that are highly specific and cannot be composed into other scenarios.
+
+```gherkin
+# ❌ Anti-pattern: conjunction step — all-or-nothing precondition
+Given I have shades and a brand new Mustang
+Given the user is logged in and has admin permissions and is on the dashboard
+When I click the submit button and wait for the response and see the confirmation
+```
+
+```typescript
+// ❌ Anti-pattern: step definition — cannot reuse either precondition alone
+Given('I have shades and a brand new Mustang', async function (this: CustomWorld) {
+  this.accessories = ['shades'];
+  this.vehicle = new Car('Mustang', { year: 2024 });
+  // Both preconditions coupled — cannot test "user has shades but no car"
+});
+```
+
+```gherkin
+# ✅ Fix: atomic steps — each precondition is independently composable
+Given I have shades
+And I have a brand new Mustang
+
+Given the user is logged in
+And the user has admin permissions
+And the user is on the dashboard
+
+When I submit the form
+Then I should see a confirmation message
+```
+
+```typescript
+// ✅ Fix: atomic step definitions — each independently reusable
+Given('I have shades', function (this: CustomWorld) {
+  this.accessories.push('shades');
+});
+
+Given('I have a brand new {word}', async function (this: CustomWorld, vehicleModel: string) {
+  this.vehicle = new Car(vehicleModel, { year: new Date().getFullYear() });
+});
+
+// "I have shades" now reusable in beach scenarios, fashion tests, photo tests
+// "I have a brand new {word}" reusable with any vehicle model
+```
+
+**When conjunction steps are appropriate**: A step that naturally reads as a single concept in the business domain is acceptable even if it involves two related setups — `Given I am a logged-in customer with items in my cart` is a single business state (ready-to-checkout customer), not two unrelated conjunctions. The test: could each part of the conjunction plausibly appear *without* the other part in a different scenario? If yes, split them.
+
+**Why it hurts at scale**: Conjunction steps grow with the product. When a new scenario needs "shades" but not the "Mustang," the author writes a new conjunction step `Given I have shades and a bicycle`, adding yet another non-reusable step. After 6 months, teams have hundreds of near-duplicate steps that differ only in their conjunction combinations — making the step library a labyrinth rather than a vocabulary.
 
 ---
 
@@ -2213,6 +2335,7 @@ if (result.wipPercentage > 10) process.exit(1); // Fail CI if @wip > 10%
 
 - [Cucumber documentation](https://cucumber.io/docs/bdd/) — canonical BDD reference
 - [Gherkin reference](https://cucumber.io/docs/gherkin/reference/) — full keyword specification
+- [Cucumber anti-patterns guide](https://cucumber.io/docs/guides/anti-patterns/) — official pitfalls: feature-coupled steps, conjunction steps, testing implementation not behaviour
 - [@cucumber/cucumber npm package](https://www.npmjs.com/package/@cucumber/cucumber) — official JS/TS package (v11+)
 - [playwright-bdd](https://github.com/vitalets/playwright-bdd) — Playwright-native BDD runner for TypeScript
 - [Example Mapping (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — pre-BDD discovery technique

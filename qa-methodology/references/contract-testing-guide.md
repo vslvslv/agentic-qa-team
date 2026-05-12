@@ -1,7 +1,7 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 16 | score: 100/100 | date: 2026-05-07 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07) | community: production lessons -->
-<!-- new in iteration 16: Pact Plugin Framework section (gRPC, Protobuf, plugin driver, plugin CLI, manifest format, consumer/provider examples) -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 17 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12) | community: production lessons -->
+<!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
 
 ## Terminology (ISTQB CTFL 4.0 alignment)
 
@@ -818,7 +818,7 @@ describe('OrderService → InventoryService (Pact V4)', () => {
 - No `port` option: V4 auto-assigns mock server port, eliminating collision when running files in parallel
 - `addInteraction()` builder API replaces the chained `.given().uponReceiving()` pattern from V3
 - V4 supports a plugin architecture for gRPC, Protobuf, and XML via community plugins
-- **When to migrate:** new TypeScript projects should start with pact-js v13 (V4); for existing V3 pact files the transition is safe since V4 is backward-compatible
+- **When to migrate:** new TypeScript projects should start with pact-js v16 (V4); in v16+ the preferred import is `Pact`/`Matchers` (aliases for `PactV4`/`MatchersV3`). For existing V3 pact files the transition is safe since V4 is backward-compatible. For existing pact-js v13–v15 codebases using `PactV4`/`MatchersV3`, upgrading to v16 requires only a Node.js ≥ 20 runtime update — no import changes needed unless you want to use the new canonical names.
 
 ---
 
@@ -1028,7 +1028,7 @@ export default config;
     "pact:record-deploy:prod": "pact-broker record-deployment --pacticipant OrderService --version $GIT_COMMIT --environment production --broker-base-url $PACT_BROKER_URL --broker-token $PACT_BROKER_TOKEN"
   },
   "devDependencies": {
-    "@pact-foundation/pact": "^13.0.0",
+    "@pact-foundation/pact": "^16.0.0",
     "@pact-foundation/pact-cli": "^1.0.0",
     "@types/jest": "^29.0.0",
     "jest": "^29.0.0",
@@ -1036,6 +1036,9 @@ export default config;
     "typescript": "^5.0.0",
     "wait-on": "^7.0.0"
   }
+  // NOTE: pact-js v16+ requires Node.js >= 20.
+  // If you are on pact-js v13 (Node >= 18), use "@pact-foundation/pact": "^13.0.0".
+  // v13→v16 is a drop-in upgrade for V4 code; V2 code requires import renaming.
 }
 ```
 
@@ -2209,17 +2212,237 @@ Understanding which Pact specification version your pact files use affects compa
 | Pact V1 | pact-js < v2 | Basic request/response matching | Legacy; do not use in new projects |
 | Pact V2 | pact-js v2–v9 | `term()` regex matchers, `eachLike` | `term()` replaced by `regex()` in V3 |
 | Pact V3 | pact-js v9–v12 | Provider states with params, `MatchersV3`, message pacts | Still widely used; stable |
-| Pact V4 | pact-js v13+ | Plugin architecture, auto-port, gRPC, Protobuf | Recommended for new projects |
+| Pact V4 | pact-js v13–v15 | Plugin architecture, auto-port, gRPC, Protobuf | Previously `PactV4`/`MatchersV3` |
+| Pact V4 | pact-js v16+ | Same spec + renamed default exports; Node ≥ 20; `addAsynchronousInteraction`, interaction metadata | `Pact`/`Matchers` are now the V4 aliases; v13-style `PactV4` still works via the versioned export |
 
 **Migration notes for TypeScript projects:**
-- V3 → V4 migration: Replace `PactV3` with `PactV4`; update `withRequest` builder API; pact files are backward-compatible in the Broker
-- Pact V2 `term()` → V3 `regex()` from `MatchersV3`: `term(value, regex)` → `regex(pattern, value)` (argument order reverses)
-- pact-js v13 (V4) requires Node.js ≥ 18 due to native binary changes (uses Rust-based pact core)
+
+**pact-js v13 → v16 (current recommended version):**
+
+```typescript
+// BEFORE (pact-js v13–v15)
+import { PactV3, PactV4, MatchersV3 } from '@pact-foundation/pact';
+const provider = new PactV4({ ... });
+
+// AFTER (pact-js v16+ — preferred style)
+import { Pact, Matchers } from '@pact-foundation/pact';
+//  Pact  === PactV4 (V4 HTTP DSL)
+//  Matchers === MatchersV3 (flex matchers)
+const provider = new Pact({ ... });
+
+// Old names still work via versioned exports — no forced migration:
+import { PactV4, MatchersV3 } from '@pact-foundation/pact'; // still valid
+import { PactV3 } from '@pact-foundation/pact';             // still valid
+
+// Legacy V2 DSL (plain Pact / Matchers pre-v16):
+import { PactV2, MatchersV2 } from '@pact-foundation/pact'; // replaces old Pact/Matchers
+```
+
+**pact-js v16 breaking changes checklist:**
+- Node.js ≥ 20 is now required (v16, v18, v19 all end-of-life)
+- `Pact` now aliases `PactV4` (previously was the V2 HTTP DSL)
+- `Matchers` now aliases `MatchersV3` (previously was V2 matchers)
+- Libraries that wrap pact-js (`jest-pact`, `nestjs-pact`) need compatible updates — check their changelogs before upgrading
+- `MatchersV2.AnyTemplate` removed — replace with explicit union types
+
+**New V4 APIs added in pact-js v13–v16:**
+- `addAsynchronousInteraction()` — V4 DSL method for async message contracts (replaces `MessageConsumerPact` for V4 pact files)
+- `addSynchronousInteraction()` — V4 DSL for synchronous message/gRPC contracts
+- `addInteractionReference()` — V4 DSL method to support external interaction references (v16.4+)
+- Interaction metadata: `.withComment()`, `.withTestName()`, `.pending()` on V4 interactions (v16.3+) — allows marking interactions as advisory-only inline without `enablePending` at the verifier level
+
+**Older migration notes:**
+- V3 → V4: Replace `PactV3` with `PactV4` (or `Pact` in v16+); update `withRequest` to the builder API; pact files are backward-compatible in the Broker
+- Pact V2 `term()` → V3 `regex()` from `MatchersV3`/`Matchers`: `term(value, regex)` → `regex(pattern, value)` (argument order reverses)
 - V4 pact files include a `pluginConfiguration` section when plugins (gRPC, XML) are used — these files cannot be verified by a Broker running an older verifier
 
 ---
 
-### Reference Links
+### pact-js v16 — Migration Pattern and New Interaction Metadata (TypeScript)
+
+pact-js v16 (released 2026) ships the most impactful breaking changes since v13. Node.js ≥ 20 is required, and the default export names were restructured to promote V4 as the primary API.
+
+#### v16 Import Update (drop-in for existing V4 code)
+
+```typescript
+// BEFORE — pact-js v13–v15 consumer test
+import { PactV4, MatchersV3 } from '@pact-foundation/pact';
+
+const { string, integer, like } = MatchersV3;
+
+const provider = new PactV4({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+});
+
+// AFTER — pact-js v16+ (preferred style)
+// No API changes — only the import aliases changed.
+// PactV4 and MatchersV3 still work via the versioned exports:
+import { PactV4, MatchersV3 } from '@pact-foundation/pact'; // still valid in v16
+
+// Alternatively, use the new canonical names:
+import { Pact, Matchers } from '@pact-foundation/pact'; // Pact === PactV4, Matchers === MatchersV3
+
+const { string, integer, like } = Matchers;
+
+const provider = new Pact({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+});
+// The resulting pact file is identical to the v13 version.
+// The Pact Broker and provider verification are backward-compatible.
+```
+
+#### v16 New Feature — Interaction Metadata (`.pending()`, `.withComment()`, `.withTestName()`)
+
+pact-js v16.3 adds per-interaction metadata to the V4 DSL. This enables fine-grained control over which interactions are advisory-only, without requiring `enablePending` at the entire verifier level.
+
+```typescript
+// order-service.consumer.pact.v16.spec.ts
+// Demonstrates v16.3 per-interaction metadata: pending, comment, testName.
+import path from 'path';
+import { Pact, Matchers } from '@pact-foundation/pact';
+import { OrderClient } from '../src/order-client';
+
+const { string, integer, like } = Matchers;
+
+const provider = new Pact({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+});
+
+describe('OrderService → InventoryService contract (v16 metadata)', () => {
+
+  it('returns stock level for a known SKU (stable interaction)', async () => {
+    await provider
+      .addInteraction()
+      .given('SKU ABC-123 exists with 10 units in stock')
+      .uponReceiving('a request for stock level of SKU ABC-123')
+      // withTestName maps the interaction to a specific Jest test — visible in Broker UI
+      .withTestName('returns stock level for a known SKU (stable interaction)')
+      .withRequest('GET', '/inventory/ABC-123', (builder) => {
+        builder.headers({ Accept: 'application/json' });
+      })
+      .willRespondWith(200, (builder) => {
+        builder
+          .headers({ 'Content-Type': 'application/json' })
+          .jsonBody({
+            sku: string('ABC-123'),
+            available: integer(10),
+            warehouseId: like('WH-001'),
+          });
+      })
+      .executeTest(async (mockServer) => {
+        const client = new OrderClient(mockServer.url);
+        const result = await client.getStock('ABC-123');
+        expect(result.sku).toBe('ABC-123');
+      });
+  });
+
+  it('handles a not-yet-implemented batch endpoint (pending interaction)', async () => {
+    await provider
+      .addInteraction()
+      .given('batch stock endpoint is supported')
+      .uponReceiving('a batch stock request for multiple SKUs')
+      // .pending() marks this interaction as advisory — provider CI reports failure
+      // but does NOT fail the build. Equivalent to enablePending for a single interaction.
+      .pending(true)
+      .withComment('Waiting for provider team to implement /inventory/batch in Sprint 23')
+      .withTestName('handles batch stock request (pending until Sprint 23)')
+      .withRequest('POST', '/inventory/batch', (builder) => {
+        builder
+          .headers({ 'Content-Type': 'application/json' })
+          .jsonBody({ skus: [string('ABC-123'), string('XYZ-456')] });
+      })
+      .willRespondWith(200, (builder) => {
+        builder.jsonBody({
+          results: [
+            { sku: string('ABC-123'), available: integer(10) },
+            { sku: string('XYZ-456'), available: integer(0) },
+          ],
+        });
+      })
+      .executeTest(async (mockServer) => {
+        const client = new OrderClient(mockServer.url);
+        const result = await client.getBatchStock(['ABC-123', 'XYZ-456']);
+        expect(result.results.length).toBe(2);
+      });
+  });
+});
+```
+
+**Key points:**
+- `.pending(true)` is the v16.3 per-interaction alternative to `enablePending: true` on the verifier — it marks only this interaction as advisory-only; all other interactions in the same pact remain hard gates
+- `.withComment(message)` stores a human-readable note in the pact JSON — visible in the Pact Broker UI and useful for cross-team communication about in-progress features
+- `.withTestName(name)` links the interaction to a specific test name — the Broker UI displays this, improving traceability when a single consumer test file generates many interactions
+- When `.pending(true)` is set on an interaction, the Broker marks it as pending when the consumer publishes; it becomes a hard gate only after the provider successfully verifies it once
+
+#### v16 `addAsynchronousInteraction()` (replaces `MessageConsumerPact` for V4)
+
+```typescript
+// notification-service.async.pact.v16.spec.ts
+// v16 V4 DSL approach for async message contracts using addAsynchronousInteraction().
+// This replaces MessageConsumerPact for teams on pact-js v16+ who want V4 pact files.
+import path from 'path';
+import { Pact, Matchers } from '@pact-foundation/pact';
+
+const { like, string, timestamp } = Matchers;
+
+interface OrderCreatedEvent {
+  orderId: string;
+  customerId: string;
+  totalAmount: number;
+  createdAt: string;
+}
+
+const messagePact = new Pact({
+  consumer: 'NotificationService',
+  provider: 'OrderService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+});
+
+async function handleOrderCreatedEvent(body: OrderCreatedEvent): Promise<void> {
+  if (!body.orderId || !body.customerId) {
+    throw new Error('Missing required fields: orderId, customerId');
+  }
+}
+
+describe('NotificationService consumes OrderCreated events (V4 async, pact-js v16)', () => {
+  it('handles a well-formed OrderCreated message', async () => {
+    await messagePact
+      .addAsynchronousInteraction()
+      .given('an order has just been placed')
+      .uponReceiving('an OrderCreated event')
+      .withContent({
+        orderId: string('ORD-9876'),
+        customerId: like('CUST-001'),
+        totalAmount: like(99.99),
+        createdAt: timestamp("yyyy-MM-dd'T'HH:mm:ssXXX", '2024-01-15T10:00:00+00:00'),
+      })
+      .withMetadata({ contentType: 'application/json' })
+      .executeTest(async (body: OrderCreatedEvent) => {
+        await handleOrderCreatedEvent(body);
+        // no explicit assertions needed — if handleOrderCreatedEvent throws, test fails
+      });
+  });
+});
+```
+
+**Key points:**
+- `addAsynchronousInteraction()` is the V4 equivalent of `MessageConsumerPact` — it produces a V4 pact file (not V3), which means the plugin architecture and per-interaction metadata features are available
+- `executeTest` receives the decoded message body directly (type-checked as `OrderCreatedEvent`), not a wrapper object — cleaner than the V3 `asynchronousBodyHandler` pattern
+- For teams on pact-js v13–v15 using `MessageConsumerPact`, migration is optional — `MessageConsumerPact` still works in v16; use `addAsynchronousInteraction` only for new V4 pact files
+
+---
+
+
 
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
@@ -2239,6 +2462,8 @@ Understanding which Pact specification version your pact files use affects compa
 | ts-jest | npm | https://www.npmjs.com/package/ts-jest | TypeScript preprocessor for Jest — compile pact tests without a separate tsc step |
 | openapi-types | npm | https://www.npmjs.com/package/openapi-types | TypeScript types for OpenAPI 2.0/3.0/3.1 documents |
 | OpenAPI Specification | Spec | https://spec.openapis.org/oas/latest.html | For the lighter schema-validation alternative |
+| pact-js CHANGELOG | Repo | https://github.com/pact-foundation/pact-js/blob/master/CHANGELOG.md | Full version history; v16 breaking changes and migration notes |
+| pact-js v16 Migration Guide | Repo | https://github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md | Node ≥20 requirement, PactV4→Pact rename, MatchersV3→Matchers rename, addAsynchronousInteraction |
 | ISTQB CTFL 4.0 Syllabus | Standard | https://www.istqb.org/certifications/certified-tester-foundation-level | Authoritative terminology reference |
 
 ---
@@ -2839,3 +3064,5 @@ pact-broker record-release \
 26. **[community] `record-deployment` called before the deploy succeeds corrupts the Broker.** Some CI pipelines call `record-deployment` as a pre-deploy step to "reserve" the version. If the deploy then fails, the Broker's `deployedOrReleased` selector serves up the wrong version for `can-i-deploy` checks until the next successful deploy records the correct version. Always call `record-deployment` as the **last step** of a successful deploy job, never before.
 
 27. **[community] Using `record-deployment` for library consumers breaks `deployedOrReleased` tracking.** A consumer that is an npm SDK or shared library has no concept of "deployed to an environment" — it can be used by thousands of downstream consumers at once. Teams that use `record-deployment` for such packages effectively overwrite each other's tracking. The correct command is `record-release`, which accumulates versions rather than replacing them. Switch as soon as a consumer package is published to a registry rather than deployed to a server.
+
+28. **[community] pact-js v16 export rename breaks `jest-pact` and `nestjs-pact` without a co-upgrade.** In pact-js v16, `Pact` and `Matchers` were renamed to alias `PactV4`/`MatchersV3`, while the old V2 DSL is now `PactV2`/`MatchersV2`. Wrapper libraries that proxy the old `Pact` export (`jest-pact`, `nestjs-pact`, `@pact-foundation/nest`) instantiated against the V2 class — after the v16 upgrade they silently instantiate a V4 class, causing unexpected behavior or type errors. **Fix:** co-upgrade the wrapper library and pact-js together; check the wrapper library's changelog for a v16-compatible release before running `npm update @pact-foundation/pact`. Also: pact-js v16 requires Node.js ≥ 20 — teams on Node 18 LTS must upgrade their CI runner image first (e.g., `node:20-alpine` in Docker, `node-version: '20'` in GitHub Actions).

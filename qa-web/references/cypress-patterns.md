@@ -1,6 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 31 | score: 100/100 | date: 2026-05-04 -->
-<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0 -->
+<!-- new in this iteration: cy.press() (Cy 14.3), cy.env() async secure vars (Cy 15.10), Cypress.expose() public config, Cy 15 breaking changes (exitCode/Vite ESM/Firefox CDP/Node), Angular 21 zoneless CT, cy.readFile() query promotion, TypeScript 6 + Vite 8 setup -->
 
 ## Core Principles
 
@@ -5215,6 +5216,14 @@ it('asserts that a new tab URL was requested without navigating', () => {
 | `cy.window().its('nested.prop').should(...)` | Retrying nested window property read | Deep window state polling that `.then()` can't retry |
 | `experimentalModifyObstructiveThirdPartyCode: true` | Rewrite third-party CSP/XFO headers for Cypress | Required for `cy.origin()` on strict SSO providers (Okta, Azure AD) |
 | `Emulation.clearGeolocationOverride` via CDP | Remove active geolocation override | Reset GPS state in `afterEach` when `testIsolation: false` |
+| `cy.press(key)` | Dispatch a native keyboard event (Cy 14.3+) | Tab-order tests, Escape to dismiss, arrow-key navigation, single-character press |
+| `cy.press(Cypress.Keyboard.Keys.TAB)` | Real Tab event via key constants | Focus management / tab-order assertions (replaces cypress-plugin-tab) |
+| `cy.env(['KEY']).then(({ KEY }) => {...})` | Async secure env var retrieval (Cy 15.10+) | Sensitive secrets (API keys, passwords) — prevents hydration into window state |
+| `Cypress.expose('key', value)` | Register public config synchronously (Cy 15.10+) | Feature flags, API versions — non-sensitive, visible in Cypress App resolved config |
+| `allowCypressEnv: false` in config | Throw on deprecated Cypress.env() calls | Enforce migration to cy.env() for all secret access in the test suite |
+| `result.exitCode` in cy.exec() | Exit code from shell command (Cy 15+) | Renamed from `result.code` in Cypress 15; TypeScript error guides migration |
+| `provideExperimentalZonelessChangeDetection()` | Enable Angular zoneless mode in CT | Mount Angular 21+ zoneless components without Zone.js dependency |
+| `cy.readFile(path).should(...)` | Retrying file query (Cy 15+ query promotion) | Assert on generated/downloaded files; retries until assertion passes |
 
 ---
 
@@ -5256,3 +5265,545 @@ Cypress Cloud v2 (2026) introduced a Model Context Protocol (MCP) server that ex
 **Recorded run flag required:** MCP access requires your tests to be recorded to Cypress Cloud (`--record --key $CYPRESS_RECORD_KEY`). Tests run without `--record` are not indexed by the Cloud and are invisible to the MCP server.
 
 > **[community]** WHY: The AI-assisted workflow closes the loop between CI failures and developer context. Previously, a failing CI run meant: copy URL, open Cloud dashboard, click into the failing test, copy the stack trace, switch to IDE, open a chat window. With the MCP server, the AI assistant queries the Cloud directly — the developer never leaves the editor. This is especially powerful for debugging flaky tests where cross-run pattern analysis (which the MCP can perform) is more useful than single-run inspection.
+
+### 94. cy.press() — Native Keyboard Event Dispatch (Cypress 14.3+)
+
+`cy.press()` dispatches real native keyboard events, making it the correct tool for focus management, Tab-order navigation, and single-key interactions. Unlike `cy.type()` (which inputs text), `cy.press()` targets a single key at a time and yields `null` (not chainable).
+
+```typescript
+// cypress/support/commands.ts — type declaration for cy.press
+// (Built-in since Cypress 14.3 — no declaration needed if types are up to date)
+import { Keyboard } from 'cypress';  // Cypress.Keyboard.Keys is the key constants map
+
+// Pattern 1: Focus management / Tab order test (replaces cypress-plugin-tab)
+it('tab key cycles through form fields in correct order', () => {
+  cy.visit('/contact');
+
+  cy.get('[data-cy="name-input"]').focus();
+  cy.focused().should('have.attr', 'data-cy', 'name-input');
+
+  // cy.press(TAB) dispatches a real Tab event — no plugin required
+  cy.press(Cypress.Keyboard.Keys.TAB);
+  cy.focused().should('have.attr', 'data-cy', 'email-input');
+
+  cy.press(Cypress.Keyboard.Keys.TAB);
+  cy.focused().should('have.attr', 'data-cy', 'message-textarea');
+
+  cy.press(Cypress.Keyboard.Keys.TAB);
+  cy.focused().should('have.attr', 'data-cy', 'submit-button');
+});
+
+// Pattern 2: Escape key dismisses modal — correct approach vs cy.type('{esc}')
+it('Escape closes the confirmation dialog', () => {
+  cy.visit('/settings');
+  cy.get('[data-cy="delete-account-btn"]').click();
+  cy.get('[data-cy="confirm-dialog"]').should('be.visible');
+
+  // cy.press() for single key events — no subject required (fires on focused element)
+  cy.press(Cypress.Keyboard.Keys.ESC);
+
+  cy.get('[data-cy="confirm-dialog"]').should('not.exist');
+  // Focus should return to the trigger element
+  cy.focused().should('have.attr', 'data-cy', 'delete-account-btn');
+});
+
+// Pattern 3: Arrow key navigation in a custom listbox
+it('arrow keys navigate the custom dropdown listbox', () => {
+  cy.visit('/search');
+  cy.get('[data-cy="search-input"]').type('cypress');
+  cy.get('[data-cy="suggestion-list"]').should('be.visible');
+
+  // DOWN arrow: move focus into the suggestion list
+  cy.press(Cypress.Keyboard.Keys.DOWN);
+  cy.focused().should('have.attr', 'role', 'option');
+
+  cy.press(Cypress.Keyboard.Keys.DOWN);
+  cy.get('[data-cy="suggestion-item"].focused').should('have.text', 'Cypress docs');
+
+  // ENTER to select
+  cy.press(Cypress.Keyboard.Keys.ENTER);
+  cy.location('pathname').should('include', '/results');
+});
+
+// Pattern 4: UTF-8 single character press
+it('typing an accented character inserts the correct Unicode code point', () => {
+  cy.visit('/form');
+  cy.get('[data-cy="name-input"]').focus();
+  cy.press('é');
+  cy.get('[data-cy="name-input"]').should('have.value', 'é');
+});
+```
+
+**cy.press() vs cy.type() decision table:**
+
+| Scenario | Use |
+|----------|-----|
+| Tab navigation, focus order | `cy.press(TAB)` |
+| Escape to dismiss dialog | `cy.press(ESC)` |
+| Arrow key menu navigation | `cy.press(DOWN)` |
+| Single character / Unicode | `cy.press('é')` |
+| Multi-character text input | `cy.type('hello world')` |
+| Modifier combination (Ctrl+S) | `cy.type('{ctrl}s')` |
+| Select all then replace | `cy.type('{selectAll}New text')` |
+
+**[community]** WHY: `cy.type('{tab}')` historically dispatched a synthetic DOM event that some browsers processed differently from a real Tab keypress — focus movement in custom components and shadow DOM trees was unreliable. `cy.press()` activates the browser's transient activation state and dispatches through the same code path as a physical keyboard, making Tab-order tests reliable without the `cypress-plugin-tab` community plugin that many teams used to depend on.
+
+### 95. cy.env() — Async Secure Environment Variable Access (Cypress 15.10+)
+
+Cypress 15.10 introduced `cy.env()` as a secure replacement for the deprecated `Cypress.env()`. The new command retrieves only the variables you explicitly request and prevents all env vars from being automatically hydrated into browser state.
+
+```typescript
+// DEPRECATED (Cypress.env() still works but will be removed):
+// const apiToken = Cypress.env('API_TOKEN');   // hydrates ALL env vars into window
+
+// PREFERRED (Cypress 15.10+):
+// cy.env() — async, only exposes what you request
+
+// Pattern 1: Single variable
+it('authenticates with the configured API key', () => {
+  cy.env(['API_TOKEN']).then(({ API_TOKEN }) => {
+    cy.request({
+      url: '/api/protected-resource',
+      headers: { Authorization: `Bearer ${API_TOKEN}` },
+    }).its('status').should('eq', 200);
+  });
+});
+
+// Pattern 2: Multiple variables in one call
+it('logs in with configured test user credentials', () => {
+  cy.env(['TEST_EMAIL', 'TEST_PASSWORD']).then(({ TEST_EMAIL, TEST_PASSWORD }) => {
+    cy.visit('/login');
+    cy.get('[data-cy="email"]').type(TEST_EMAIL);
+    cy.get('[data-cy="password"]').type(TEST_PASSWORD);
+    cy.get('[data-cy="submit"]').click();
+    cy.url().should('include', '/dashboard');
+  });
+});
+
+// Pattern 3: Custom command using cy.env() for a reusable auth helper
+Cypress.Commands.add('loginSecure', () => {
+  cy.env(['AUTH_EMAIL', 'AUTH_PASSWORD', 'API_BASE_URL']).then(
+    ({ AUTH_EMAIL, AUTH_PASSWORD, API_BASE_URL }) => {
+      cy.session(
+        ['secure-login', AUTH_EMAIL],
+        () => {
+          cy.request('POST', `${API_BASE_URL}/auth/login`, {
+            email: AUTH_EMAIL,
+            password: AUTH_PASSWORD,
+          }).then((res) => {
+            window.localStorage.setItem('auth_token', res.body.token);
+          });
+        },
+        {
+          validate() {
+            cy.env(['API_BASE_URL']).then(({ API_BASE_URL }) => {
+              cy.request({ url: `${API_BASE_URL}/me`, failOnStatusCode: false })
+                .its('status').should('eq', 200);
+            });
+          },
+          cacheAcrossSpecs: true,
+        }
+      );
+    }
+  );
+});
+
+// Pattern 4: Opting out of Cypress.env() for security
+// cypress.config.ts — prevent any test from calling deprecated Cypress.env()
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    allowCypressEnv: false,  // throws if Cypress.env() is called — migrate to cy.env()
+  },
+});
+```
+
+**Type-safe `cy.env()` wrapper:**
+
+```typescript
+// cypress/support/env-typed.ts — typed wrapper for cy.env()
+const ENV_KEYS = ['API_TOKEN', 'API_BASE_URL', 'TEST_EMAIL', 'TEST_PASSWORD'] as const;
+type EnvKey = typeof ENV_KEYS[number];
+
+export function typedEnv<K extends EnvKey[]>(keys: K) {
+  return cy.env(keys) as Cypress.Chainable<Pick<Record<EnvKey, string>, K[number]>>;
+}
+
+// Usage — fully typed; typos on key names become TypeScript errors
+typedEnv(['API_TOKEN', 'API_BASE_URL']).then(({ API_TOKEN, API_BASE_URL }) => {
+  cy.request(`${API_BASE_URL}/users`, { headers: { Authorization: `Bearer ${API_TOKEN}` } });
+});
+```
+
+**[community]** WHY: `Cypress.env()` serializes every configured environment variable into the browser's JavaScript context, making all secrets visible in the browser memory and in test runner logs. A `console.log(Cypress.env())` (accidentally left in code or by a malicious dependency) leaks every secret in the CI log. `cy.env(['key'])` exposes only the specific variable names you request, never their values in logs (`log: true` shows the key name, never the value), and does not hydrate the entire env dict into window state.
+
+### 96. Cypress.expose() — Public Configuration Values
+
+`Cypress.expose(key, value)` (Cypress 15.10+) registers non-sensitive configuration values that are accessible synchronously throughout the test suite and visible in the Cypress App's resolved configuration view. Use it for feature flags, API versions, and environment identifiers that are not secrets.
+
+```typescript
+// cypress.config.ts — expose public configuration
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on, config) {
+      // Expose non-sensitive values for synchronous access in tests
+      // (These appear in the Cypress App's Resolved Config panel)
+      return config;
+    },
+  },
+});
+
+// cypress/support/e2e.ts — expose values before any test runs
+before(() => {
+  // Expose API version and environment identifier — neither is sensitive
+  Cypress.expose('API_VERSION', '2');
+  Cypress.expose('ENVIRONMENT', Cypress.env('ENVIRONMENT') ?? 'local');
+  Cypress.expose('FEATURE_NEW_CHECKOUT', Cypress.env('FEATURE_NEW_CHECKOUT') === 'true');
+});
+
+// Usage in tests — synchronous, no .then() required
+it('sends the correct API version header', () => {
+  const apiVersion = Cypress.config('API_VERSION') as string;  // exposed values available via config
+
+  cy.intercept('/api/**', (req) => {
+    expect(req.headers['x-api-version']).to.eq(apiVersion);
+  }).as('apiCalls');
+
+  cy.visit('/products');
+  cy.wait('@apiCalls');
+});
+
+it('shows the new checkout UI when feature flag is enabled', () => {
+  const newCheckout = Cypress.config('FEATURE_NEW_CHECKOUT') as boolean;
+
+  cy.visit('/cart');
+  cy.get('[data-cy="checkout-btn"]').click();
+
+  if (newCheckout) {
+    cy.get('[data-cy="new-checkout-flow"]').should('be.visible');
+  } else {
+    cy.get('[data-cy="legacy-checkout-form"]').should('be.visible');
+  }
+});
+```
+
+**cy.env() vs Cypress.expose() decision table:**
+
+| Value type | Access pattern | Use |
+|-----------|---------------|-----|
+| API keys, passwords, tokens | Async, `.then()` required | `cy.env(['KEY'])` |
+| Feature flags, API version | Sync, read directly | `Cypress.expose('key', val)` |
+| Base URLs for non-sensitive environments | Sync | `Cypress.expose('BASE_URL', ...)` |
+| DB connection strings | Never expose to browser | Use `cy.task()` only |
+
+**[community]** WHY: Before `Cypress.expose()`, teams either used `Cypress.env()` for public values (which also exposed secrets) or stored values in a custom global (`window.TEST_CONFIG = {...}`). `Cypress.expose()` creates a dedicated typed mechanism: values appear in the Cypress App's resolved configuration panel, making them debuggable without code changes. Keeping public and secret config in separate APIs also makes a security audit straightforward — scan for `cy.env()` to find all secret access points, and `Cypress.expose()` for public config.
+
+### 97. Cypress 15 Breaking Changes and Upgrade Notes
+
+Cypress 15 (2026) introduced several breaking changes requiring code updates when upgrading from Cypress 14.
+
+```typescript
+// BREAKING CHANGE 1: cy.exec() — 'code' renamed to 'exitCode'
+// Upgrade from v14 to v15
+
+// ❌ Cypress 14 and earlier
+cy.exec('npm run build').then((result) => {
+  expect(result.code).to.eq(0);         // 'code' property removed in v15
+});
+
+// ✅ Cypress 15+
+cy.exec('npm run build').then((result) => {
+  expect(result.exitCode).to.eq(0);     // use 'exitCode' (aligns with execa v4)
+  cy.log(`stdout: ${result.stdout}`);
+  cy.log(`stderr: ${result.stderr}`);
+});
+
+// Automated migration: search and replace 'result.code' → 'result.exitCode'
+// TypeScript users: the type error at result.code guides you to the change
+```
+
+```typescript
+// BREAKING CHANGE 2: @cypress/vite-dev-server is now ESM-only; min Vite 5
+
+// ❌ CommonJS config (fails in Cypress 15 + Vite dev server)
+const { defineConfig } = require('cypress');
+module.exports = defineConfig({ component: { devServer: { bundler: 'vite' } } });
+
+// ✅ ESM config (cypress.config.ts or cypress.config.mjs)
+import { defineConfig } from 'cypress';
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'vite',
+      // Vite 5+ required — if you're on Vite 4, upgrade first
+    },
+  },
+});
+
+// cypress.config.ts — check Vite version compatibility
+// package.json should have "vite": ">=5.0.0" for Cypress 15 CT
+```
+
+```typescript
+// BREAKING CHANGE 3: Firefox CDP removed — Firefox now uses WebDriver BiDi
+
+// ❌ CDP commands that relied on Firefox CDP (Cypress 14 and earlier with Firefox)
+// Network throttling via CDP does NOT work on Firefox in Cypress 15
+// cy.wrap(Cypress.automation('remote:debugger:protocol', { ... })) — Firefox only
+
+// ✅ Guard CDP commands to Chrome/Chromium only
+const throttleNetwork = (profile: string) => {
+  // CDP commands only work on Chrome-family browsers
+  if (Cypress.browser.family !== 'chromium') {
+    cy.log(`Skipping network throttle — CDP not supported in ${Cypress.browser.name}`);
+    return;
+  }
+  cy.wrap(
+    Cypress.automation('remote:debugger:protocol', {
+      command: 'Network.emulateNetworkConditions',
+      params: NETWORK_PROFILES[profile],
+    })
+  );
+};
+
+// ✅ Firefox tests in Cypress 15 still work for all non-CDP features:
+// cy.intercept(), cy.session(), cy.origin(), component testing
+// WebDriver BiDi is the new protocol — most Cypress APIs are protocol-agnostic
+```
+
+```bash
+# Node.js version requirements for Cypress 15:
+# - Node.js 18 support REMOVED (end-of-life)
+# - Node.js 23 support REMOVED (odd release)
+# - Supported: Node.js 20 (LTS) and Node.js 22 (LTS)
+# - Bundled Node: 22.15.1
+
+# Check your CI workflow:
+# .github/workflows/e2e.yml — update node-version
+# - node-version: '18'   ← remove
+# + node-version: '22'   ← or '20'
+
+# Webpack 4 support removed — upgrade to Webpack 5 if using webpack bundler for CT
+```
+
+```typescript
+// BREAKING CHANGE 4: cy.origin() now required for all subdomain navigation
+// (document.domain injection removed; injectDocumentDomain: true is deprecated in v14,
+//  may be removed in a future major after v15)
+
+// If you have tests navigating between app.example.com and api.example.com
+// and previously relied on document.domain = 'example.com', migrate to cy.origin():
+
+// ❌ No longer supported without injectDocumentDomain: true
+cy.visit('https://app.example.com');
+cy.visit('https://api.example.com/oauth/callback');  // throws SecurityError in v14+
+
+// ✅ Use cy.origin() for cross-subdomain navigation
+cy.visit('https://app.example.com');
+cy.get('[data-cy="login"]').click();
+
+cy.origin('https://accounts.example.com', () => {
+  cy.get('[data-cy="sso-email"]').type(Cypress.env('SSO_EMAIL'));
+  cy.get('[data-cy="sso-submit"]').click();
+});
+
+cy.url().should('include', 'app.example.com/dashboard');
+```
+
+**[community]** WHY: The `cy.exec()` `code` → `exitCode` rename aligns Cypress with the underlying `execa` library's API and is the only property-level rename in Cypress 15. TypeScript users get a compile-time error pointing directly to the change; JavaScript users discover it at runtime. The safest upgrade path: (1) bump Cypress in a branch, (2) run `tsc --noEmit` on your `cypress/` directory to catch the `exitCode` rename and any other type-breaking changes, (3) run the full suite in CI before merging.
+
+### 98. Angular 21 Zoneless Component Testing
+
+Cypress Component Testing supports Angular 21's new zoneless change detection mode (released with Angular 17+, stabilized in 21). Zoneless components do not rely on Zone.js and use explicit `ChangeDetectorRef.markForCheck()` or signals for updates.
+
+```typescript
+// cypress.config.ts — Angular component testing config
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'angular',
+      bundler: 'webpack',
+    },
+    specPattern: '**/*.cy.ts',
+  },
+});
+```
+
+```typescript
+// product-form.cy.ts — Angular 21 zoneless component
+import { ProductFormComponent } from './product-form.component';
+import { provideExperimentalZonelessChangeDetection } from '@angular/core';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
+
+describe('ProductFormComponent (zoneless)', () => {
+  it('submits with valid data', () => {
+    cy.mount(ProductFormComponent, {
+      imports: [],
+      providers: [
+        // Required for zoneless Angular testing
+        provideExperimentalZonelessChangeDetection(),
+        provideHttpClientTesting(),
+      ],
+    });
+
+    cy.get('[data-cy="product-name"]').type('New Widget');
+    cy.get('[data-cy="product-price"]').type('19.99');
+    cy.get('[data-cy="submit"]').click();
+
+    // With zoneless, change detection runs on explicit signal/markForCheck triggers
+    // Cypress's automatic retry handles the async update correctly
+    cy.get('[data-cy="success-message"]').should('be.visible');
+  });
+
+  it('shows validation error for empty name', () => {
+    cy.mount(ProductFormComponent, {
+      providers: [provideExperimentalZonelessChangeDetection()],
+    });
+
+    cy.get('[data-cy="submit"]').click();
+
+    // Signal-based reactive form errors update synchronously — no retry needed
+    cy.get('[data-cy="name-error"]').should('contain.text', 'Name is required');
+  });
+});
+```
+
+**`NoopAnimationsModule` for zoneless tests:**
+
+```typescript
+// For components using animations, import NoopAnimationsModule to prevent async animation timing
+import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+
+cy.mount(AnimatedDialogComponent, {
+  imports: [NoopAnimationsModule],   // makes animations synchronous
+  providers: [provideExperimentalZonelessChangeDetection()],
+});
+```
+
+**[community]** WHY: The most common zoneless component test failure is "element not visible" immediately after a state change. In zone-based Angular, Zone.js automatically triggers change detection after every async operation. In zoneless mode, change detection only runs when a signal changes or `markForCheck()` is called — which happens correctly in the application, but test code that directly patches a property without going through a signal may not trigger a re-render. Always interact through the component's public input signals or typed component properties, never by patching internal state directly.
+
+### 99. cy.readFile() as a Retrying Query Command (Cypress 15+)
+
+Starting in Cypress 15, `cy.readFile()` was promoted to a **query command** — it retries automatically when chained assertions fail, polling the filesystem until the assertion passes or the timeout expires. This eliminates the manual polling pattern previously required for generated files.
+
+```typescript
+// BEFORE Cypress 15 (manual polling required for generated files):
+// cy.readFile sometimes needed explicit timeout + manual wait
+it('waits for a report to be generated (old pattern)', () => {
+  cy.get('[data-cy="generate-report"]').click();
+  // Had to use large timeout hoping file appears in time
+  cy.readFile('cypress/downloads/report.csv', { timeout: 30_000 })
+    .should('contain', 'id,name');
+});
+
+// CYPRESS 15+ (readFile is a query command — automatic retry with assertion):
+it('waits for generated CSV by asserting with .should()', () => {
+  cy.get('[data-cy="generate-report"]').click();
+
+  // readFile retries on each .should() failure — no fixed timeout needed
+  // Cypress will re-read the file on every retry attempt until assertion passes
+  cy.readFile('cypress/downloads/report.csv')
+    .should('contain', 'id,name,date,amount')
+    .and('match', /Alice.*2026/);
+});
+
+// Advanced: combine readFile query with custom assertion for complex file validation
+it('validates JSON export structure', () => {
+  cy.get('[data-cy="export-json"]').click();
+
+  cy.readFile<{ records: Array<{ id: string; status: string }> }>(
+    'cypress/downloads/export.json'
+  ).should((json) => {
+    expect(json.records).to.be.an('array').with.length.gt(0);
+    expect(json.records[0]).to.have.property('id').that.is.a('string');
+    expect(json.records[0]).to.have.property('status').that.is.oneOf(['active', 'inactive']);
+  });
+});
+
+// Polling binary files (PDF, images) — assert non-empty before content check
+it('generates a PDF export', () => {
+  cy.get('[data-cy="export-pdf"]').click();
+
+  cy.readFile('cypress/downloads/report.pdf', 'binary')
+    .should('have.length.gt', 0);  // readFile retries until file exists and is non-empty
+});
+```
+
+**[community]** WHY: Before the query promotion, `cy.readFile()` was a one-shot command — if the file didn't exist at the moment it ran, the test immediately failed. Teams worked around this with `cy.wait(5000)` before `cy.readFile()`, or with `cy.task()` polling loops. Now that `cy.readFile()` retries on assertion failure, the idiomatic approach is simply `cy.readFile(path).should(...)` — the retry loop is built in. The key gotcha: the file must be created in the `cypress/downloads` folder (or the configured `downloadsFolder`) on the same machine running Cypress; remote file generation requires a `cy.task()` bridge.
+
+### 100. TypeScript 6 and Vite 8 Component Testing Setup
+
+Cypress 15 added official support for TypeScript 6 and Vite 8. These newer versions require minor configuration updates.
+
+```json
+// tsconfig.json — TypeScript 6 configuration updates for Cypress CT
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",   // required for TypeScript 6 with Vite
+    "strict": true,
+    "jsx": "react-jsx",
+    "types": ["cypress", "node"],
+    "verbatimModuleSyntax": true,    // TypeScript 6 default: enforces import type for types
+    "noUncheckedSideEffectImports": true  // TypeScript 6 new: side-effect imports must be explicit
+  },
+  "include": ["cypress/**/*.ts", "cypress/**/*.tsx", "src/**/*.ts", "src/**/*.tsx"]
+}
+```
+
+```typescript
+// cypress.config.ts — Vite 8 component testing setup
+import { defineConfig } from 'cypress';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  component: {
+    devServer: {
+      framework: 'react',
+      bundler: 'vite',
+      viteConfig: {
+        plugins: [react()],
+        // Vite 8: explicit esbuild target for TypeScript 6 output
+        esbuild: {
+          target: 'es2022',
+        },
+        build: {
+          target: 'es2022',
+        },
+      },
+    },
+    specPattern: 'src/**/*.cy.{ts,tsx}',
+  },
+});
+```
+
+```typescript
+// TypeScript 6 verbatimModuleSyntax impact on Cypress test files:
+// Import type declarations must use `import type` or they cause errors
+
+// ❌ TS6 with verbatimModuleSyntax: true — emits unused import
+import { CypressTasks } from './task-types';  // type-only import treated as value import
+
+// ✅ Use `import type` for type-only imports
+import type { CypressTasks } from './task-types';
+import type { Product } from '@/types/product';
+
+// This also applies to fixture types:
+// ✅
+import type { UserFixture } from '../fixtures/user';
+cy.fixture<UserFixture>('user.json').then((user) => {
+  expect(user.role).to.be.oneOf(['admin', 'user', 'guest']);
+});
+```
+
+**[community]** WHY: TypeScript 6's `verbatimModuleSyntax` option (now a default in strict configurations) requires all type-only imports to use `import type`. Teams upgrading TypeScript alongside Cypress 15 often see a flood of "Module ... has no exported member" or "This import is never used" errors that are actually the TS6 `verbatimModuleSyntax` rule being enforced for the first time. Run `npx tsc --noEmit` after updating TypeScript before adding Cypress 15 — fix all TS6 type import errors first, then address any Cypress-specific type changes (e.g., `result.exitCode`) in a separate pass.
+
+---

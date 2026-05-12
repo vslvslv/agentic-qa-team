@@ -5,6 +5,44 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.4 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 1/100), learning-sources +36 new sources
+
+### learning-sources catalog (+36 sources, 327 → 363 entries)
+- QA tools +12: Playwright assertions/debug/frames/downloads/pages, Vitest config/API, k6 HTTP/2, cypress-realworld-app, httpbin, Step CI, tRPC testing
+- QA methodology +7: pytest parametrize, Cucumber anti-patterns, 4× Martin Fowler bliki entries, nektos/act
+- Languages +8: TypeScript template literals/utility types, C# patterns/LINQ, Go effective/testing flags, Java Streams, Rust Clippy
+- Security/A11y/AI +9: OWASP Cheat Sheet Series, OWASP AI Security, OWASP SAMM, NIST SSDF, Snyk, Semgrep, TruffleHog, axe-core API, DeepEval
+
+### qa-refine (3 guides extended, all 100/100)
+- `playwright-patterns.md` — v1.60 APIs: `locator.drop()`, `test.abort()`, `tracing.startHar()`, `getByRole description`, `toHaveCSS pseudo`, BrowserContext lifecycle events (+332 lines)
+- `cypress-patterns.md` — Cypress 14/15: `cy.press()` native keyboard, `cy.env()` secure vars, `exitCode` rename, Firefox CDP removed, Angular 21 zoneless CT (+550 lines)
+- `k6-patterns.md` — HTTP/2 protocol: ALPN negotiation, `r.proto` assertion, VU sizing math, GOAWAY `error_code=1610` (+157 lines)
+- `detox-patterns.md` — iOS PickerView `scrollPickerViewToRowIndex`, `jestExpect` alias gotcha, Android slider no-op (+226 lines)
+- `appium-wdio-patterns.md` — `browser.emulate()`, WDIO v9 migration, `trackSelectorPerformance`, `scrollIntoView` native options, Allure v3 `ALLURE_TESTPLAN_PATH` (+580 lines, 10,320 total)
+
+### qa-methodology-refine (12 guides extended, all 100/100)
+- `ci-cd-testing-guide.md` — Testcontainers Cloud Turbo mode, file-mount limitation
+- `tdd-guide.md` — Beck/DHH/Fowler Investment Framework, 2026 Google TotT
+- `bdd-guide.md` — Feature-coupled steps anti-pattern, conjunction steps, Discovery→Formulation→Automation
+- `test-isolation-guide.md` — Jest 30 `globalsCleanup`, `using spy` TypeScript 5.2 auto-restore, Vitest `vi.stubEnv`/`vi.stubGlobal`
+- `test-data-guide.md` — faker v10 ESM-only migration, UUID v7 `faker.string.uuid({version:7})`, Self-Initializing Fake (MSW v2)
+- `contract-testing-guide.md` — pact-js v16: Node ≥20, export renames, wrapper library co-upgrade
+- `flakiness-guide.md` — `failOnFlakyTests: !!process.env.CI` (v1.52), `retain-on-failure-and-retries` trace (v1.59), Vitest 4 screenshot OS-baseline
+- `coverage-guide.md` — Stryker 9.5.1 `testFiles`, Vitest 4 `enableCoverage` API, AI-agent `json-summary` gotcha
+- `accessibility-guide.md` — jest-axe v10, axe-core 4.11.4 fixes, Next.js App Router route announcer, RSC ARIA boundaries
+- `shift-left-guide.md` — IAST runtime taint tracking, `nektos/act` local CI
+- `test-pyramid-guide.md` — Fowler 5-layer microservice strategy, Neon DB branch-per-CI-run, Vitest `defineProject` type-safe config
+- `exploratory-guide.md` — WCAG 2.2 charter design, defect prediction model, charter dependency graph (+644 lines)
+
+### lang-refine (5 guides extended, all 100/100)
+- `typescript-patterns.md` — Template literal types deep-dive, complete 22-row utility types reference (95→100/100)
+- `javascript-patterns.md` — ES2026: `Math.sumPrecise()`, `Uint8Array.toBase64()`/`.toHex()`, Stage 3 Decorators warning
+- `java-patterns.md` — Virtual thread + `synchronized` pinning (Java 21), ORM N+1 lazy loading
+- `python-patterns.md` — `Concatenate`+`ParamSpec`, TypeVar bound vs constraint, Python 3.14 `map(strict=True)`
+- `csharp-patterns.md` — `Task.WhenAny` double-await pitfall, C# 14 compound assignment operators
+
+---
+
 ## v1.16.0.3 — 2026-05-08 — deep refine run (30-iter cap) — 25 reference guides written/updated
 
 ### qa-refine (17 guides, all ≥ 95/100)

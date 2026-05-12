@@ -1,9 +1,11 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
      stryker-mutator.io/docs (synthesized) |
+     stryker-mutator.io/releases (fetched 2026-05-12: v9.4–9.6 new features) |
+     vitest.dev/blog/vitest-4.html (fetched 2026-05-12: Vitest 4 coverage API changes) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -315,10 +317,12 @@ removed conditions, swapped return values) and reports each surviving mutant as 
 untested defect hypothesis. This is the only metric that directly measures whether
 your tests can detect real bugs.
 
-**Version note**: Stryker 9 (current as of April 2026) requires **Node 20+** and
-**Vitest v2+** for the Vitest runner. Projects on Node 18 or Vitest v1 must stay on
-Stryker 8.x. The `concurrency` option now accepts percentage strings (`'50%'`) in
-addition to integers — useful for shared CI runners where CPU count varies.
+**Version note**: Stryker 9 (v9.6.1 as of May 2026) requires **Node 20+** and
+**Vitest v2+** for the Vitest runner (Vitest v4 supported since Stryker 9.4.0). Projects
+on Node 18 or Vitest v1 must stay on Stryker 8.x. The `concurrency` option accepts
+percentage strings (`'50%'`) since v9.6.0 — useful for shared CI runners where CPU
+count varies. Stryker 9.5.1 added Vitest fixtures support (`test.extend`) and the new
+`testFiles` option to restrict which test files execute (see Pattern 23).
 
 ```typescript
 // stryker.config.ts — Stryker 9 with Jest runner (Node 20+)
@@ -1438,6 +1442,134 @@ export default defineConfig({
 - Coverage thresholds are checked only in the merge job — not per-shard — to avoid false failures on partial test runs
 - Without merging, coverage from shards 2-4 is simply discarded; aggregate numbers are artificially low
 
+### Pattern 23 — Stryker `testFiles` option: per-module mutation validation  [community]
+
+Stryker 9.5.1 introduced the `testFiles` option, which restricts which test files are
+executed when killing mutants. The use case: verify that a module's dedicated unit tests
+can independently kill all of its mutants, without relying on integration or e2e tests
+that happen to exercise the same code. This is a stricter quality gate than full-suite
+mutation testing — it ensures that the module's own test suite is self-sufficient.
+
+```typescript
+// stryker.config.ts — validate that payments unit tests kill all payment mutants
+import type { PartialStrykerOptions } from '@stryker-mutator/api/core';
+
+const config: PartialStrykerOptions = {
+  testRunner: 'vitest',
+  vitest: { configFile: 'vitest.config.ts' },
+  coverageAnalysis: 'perTest',
+  checkers: ['typescript'],
+  tsconfigFile: 'tsconfig.json',
+  mutate: [
+    'src/payments/**/*.ts',         // only mutate the payments module
+    '!src/payments/**/*.test.ts',
+    '!src/payments/**/*.spec.ts',
+  ],
+  // Restrict test execution to payments unit tests only.
+  // Without this, Stryker uses ALL test files — mutants might be killed by
+  // integration tests rather than the payment module's own unit tests.
+  testFiles: [
+    'src/payments/**/*.test.ts',
+    'src/payments/**/*.spec.ts',
+  ],
+  thresholds: {
+    high: 80,
+    low: 60,
+    break: 50,
+  },
+  reporters: ['html', 'progress', 'json'],
+  incremental: true,
+  incrementalFile: '.stryker-tmp/incremental.json',
+};
+
+export default config;
+```
+
+```bash
+# Run per-module validation on payments (unit tests only)
+npx stryker run --testFiles 'src/payments/**/*.test.ts'
+
+# Run per-module validation as part of a CI job matrix:
+# matrix.module: [payments, auth, validation, notifications]
+npx stryker run \
+  --mutate "src/${{ matrix.module }}/**/*.ts" \
+  --testFiles "src/${{ matrix.module }}/**/*.test.ts"
+```
+
+**When to use this pattern**: when building confidence that each module owns and kills
+its own mutants, rather than relying on broader integration coverage. A module that
+scores 80 % MSI using the full test suite but only 40 % using its own unit tests is a
+signal that the unit test case suite is under-tested and integration tests are carrying
+the mutation score.
+
+### Pattern 24 — Vitest 4 dynamic coverage control: `enableCoverage` / `disableCoverage`  [community]
+
+Vitest 4 introduced `enableCoverage()` and `disableCoverage()` in the programmatic API,
+allowing test suites to selectively toggle coverage collection at runtime. The primary
+use case: skip coverage collection for test setup/teardown sections that import many
+modules without executing business logic — these inflate coverage artificially while
+adding instrumentation overhead.
+
+```typescript
+// scripts/selective-coverage-run.ts — programmatic Vitest 4 API with dynamic coverage control
+import { startVitest } from 'vitest/node';
+
+async function runWithSelectiveCoverage(): Promise<void> {
+  const vitest = await startVitest('test', [], {
+    coverage: {
+      provider: 'v8',               // Vitest 3.2+ AST remapping: V8 = Istanbul accuracy
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/**/index.ts', 'src/**/__mocks__/**'],
+      all: true,
+      reporter: ['text-summary', 'lcov', 'json-summary'],
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+      },
+    },
+  });
+
+  if (!vitest) throw new Error('Vitest failed to start');
+
+  // Coverage is enabled by default when the coverage option is configured.
+  // Disable it during setup-heavy test files to reduce overhead:
+  await vitest.coverage.provider?.disableCoverage();
+
+  // Re-enable before running business logic tests:
+  await vitest.coverage.provider?.enableCoverage();
+
+  await vitest.close();
+}
+
+runWithSelectiveCoverage().catch((err) => {
+  console.error('Coverage run failed:', err);
+  process.exit(1);
+});
+```
+
+```typescript
+// Alternative: use enableCoverage/disableCoverage in a custom test setup file
+// vitest-setup.ts — disable coverage during test infrastructure setup
+import { enableCoverage, disableCoverage } from 'vitest';
+
+// These APIs are experimental in Vitest 4.0 — check current docs before production use.
+// Use case: skip coverage on test helper imports that pollute the coverage report.
+beforeAll(async () => {
+  // Do expensive module setup without coverage instrumentation overhead:
+  await import('./test-helpers/db-seed');
+  await import('./test-helpers/mock-server');
+  // Re-enable before the actual test cases run:
+});
+```
+
+**Important caveats**: `enableCoverage`/`disableCoverage` are part of Vitest 4's
+experimental programmatic API. They are most useful in monorepo setups where test
+infrastructure modules (database seeders, mock servers, fixture loaders) would otherwise
+inflate coverage numbers. For most projects, standard config-based coverage (Patterns 1–2)
+is sufficient and less complex.
+
 ---
 
 ## Anti-Patterns
@@ -2036,6 +2168,32 @@ included), but the aggregate misses 75 % of the codebase. The fix is Vitest's
 in a dedicated job, and enforce coverage thresholds only on the merged output. Never
 check coverage thresholds per-shard; only the merged report is meaningful.
 
+### G37 — Vitest auto-adjusts coverage output in AI coding agent environments  [community]
+Vitest 3.x+ detects when it is running inside an AI coding agent (GitHub Copilot Workspace,
+Claude Code, Cursor, and similar) and automatically modifies the default `text` coverage
+reporter: it sets `skipFull: true` and adds the `text-summary` reporter to minimise
+terminal token output. **WHY it matters**: when coverage CI jobs run via AI agent tooling
+(e.g., a coding agent that invokes `npx vitest --coverage` to verify a fix), the coverage
+output format differs from a human-run terminal session. Scripts that parse the text
+reporter output line-by-line — looking for specific patterns like `All files` or specific
+file paths — may fail silently or produce incorrect results because the AI-agent output
+omits unchanged files (`skipFull: true` means files at 100 % are not printed). Use
+`coverage/coverage-summary.json` (generated by the `json-summary` reporter) for
+programmatic CI assertions rather than parsing terminal text output — the JSON file is
+unaffected by the AI-agent text reporter adjustment.
+
+### G38 — Stryker `testFiles` vs `mutate` glob interaction: silent test scope mismatch  [community]
+When using the Stryker 9.5.1+ `testFiles` option to limit which tests execute, a common
+misconfiguration is setting `mutate` to a broad glob (e.g., `src/**/*.ts`) while
+`testFiles` is scoped narrowly to one module's tests. Stryker will mutate all source
+files but only run the narrow test set — modules with no dedicated tests in the
+`testFiles` scope will appear to have 0 % mutation score because no test covers their
+mutants. This is not reported as an error; surviving mutants simply accumulate.
+**WHY it matters**: the intent of `testFiles` is per-module validation — mutating only
+the module whose tests are specified. Always pair `testFiles` with a matching `mutate`
+glob to scope both mutation and test execution to the same module boundary. See Pattern 23
+for the correct combined configuration.
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -2089,7 +2247,8 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 
 ### Known adoption costs
 - **Mutation testing**: 5–30x slower than unit test suite; requires incremental/selective
-  configuration before CI integration is practical. Stryker 9 requires Node 20+ and Vitest v2+.
+  configuration before CI integration is practical. Stryker 9 requires Node 20+ and Vitest v2+
+  (Vitest v4 supported from Stryker 9.4.0; Stryker 8.x for Node 18 or Vitest v1).
 - **Istanbul instrumentation**: 20–40 % test runtime overhead; significant on large TypeScript suites.
   `ts-jest` with Istanbul adds source-map resolution on top. In **Vitest 3.2+**, use the V8 provider
   with AST remapping instead — same accuracy as Istanbul at V8 speed, eliminating the overhead penalty.
@@ -2132,4 +2291,5 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Jest 30 configuration docs | Official | https://jestjs.io/docs/configuration | Jest 30 (Oct 2025) reference; negative thresholds, moduleFileExtensions optimisation |
 | Stryker configuration reference | Official | https://stryker-mutator.io/docs/stryker-js/configuration/ | Full config reference: ignoreStatic, disableTypeChecks, coverageAnalysis, timeoutFactor, concurrency, testFiles |
 | Stryker Dashboard | Official | https://dashboard.stryker-mutator.io/ | Track mutation scores over time, generate badges, integrate with CI |
-| Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+, percentage-based concurrency |
+| Stryker GitHub Releases | Official | https://github.com/stryker-mutator/stryker-js/releases | Release notes for Stryker 9.x: Node 20+ requirement, Vitest v2+/v4, percentage-based concurrency, testFiles option (9.5.1) |
+| Vitest 4 release notes | Official | https://vitest.dev/blog/vitest-4.html | Vitest 4 new features: stable Browser Mode, dynamic enableCoverage/disableCoverage API, expect.schemaMatching |

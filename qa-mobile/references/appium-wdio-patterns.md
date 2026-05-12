@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 21 | score: 100/100 | date: 2026-05-12 -->
 <!-- This-run additions (iter 11-20): WDIO v9 BiDi features, aria/ selector, eslint-plugin-wdio, browser.mock() network interception,
      mobile:pressButton complete reference, Android mobile:deepLink, TypeScript 'using' keyword, browser.executeAsync(),
      appium:mjpegServerPort, @wdio/visual-service advanced options, appium:newCommandTimeout, Android AVD CI launch,
@@ -11,6 +11,12 @@
      cookie management WebView auth, element.getProperty() vs getAttribute(), file upload pushFile+DataTransfer,
      TypeScript capability interface extension (declaration merging), Android performance caps (disableWindowAnimation),
      app version fixture management, appium:webviewConnectRetries, WDIO specs/exclude/suite selective CI -->
+<!-- iter 21 additions: browser.emulate() full API (clock/geolocation/device) + 3 gotchas,
+     WDIO v9 migration breaking changes (getElement/toHaveTextContaining/isDisplayedInViewport/Node20/BiDi legacy grid),
+     @wdio/appium-service trackSelectorPerformance beta + JSON output + 2 gotchas,
+     scrollIntoView() native mobile v9 options (maxScrolls/direction/percent/platform defaults) + 2 gotchas,
+     Allure v3 ALLURE_TESTPLAN_PATH test plan filtering + CI YAML + 2 gotchas,
+     @wdio/appium-service appiumArgs CI best practices + Appium readiness healthcheck hook -->
 
 ## TypeScript Project Setup
 
@@ -9737,5 +9743,579 @@ exclude list when using `--spec` for debugging specific scenarios.
 <!-- Total community pitfalls: 171+ tagged [community] instances -->
 <!-- Total sections: 156+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
 <!-- This-run iterations: 10/10 (override active — ran all 10 regardless of score) -->
+
+---
+
+## `browser.emulate()` — Device/Time/Location Emulation in WebView Context  [community]
+
+WebDriverIO v9 exposes a unified `browser.emulate()` API (backed by WebDriver BiDi) to override
+browser/system APIs during testing. For Appium hybrid-app tests it unlocks geolocation faking,
+time control, and device viewport simulation without any native-layer interaction — all resolved
+in the WebView context.
+
+### Clock emulation — full API
+
+```typescript
+// test/specs/session-expiry.spec.ts
+describe('Session expiry banner', () => {
+  it('shows expiry warning after 55-minute inactivity', async () => {
+    await browser.switchContext('WEBVIEW_com.example.app');
+
+    // Set wall-clock time AND freeze setTimeout/setInterval/Date
+    const clock = await browser.emulate('clock', {
+      now: new Date('2025-06-01T09:00:00Z'),  // starting time
+      // Optional: if you need automatic time advancement for RAF-based animations
+      // shouldAdvanceTime: true,
+      // advanceTimeDelta: 20,   // ms per real ms (default: 20)
+    });
+
+    await browser.url('/dashboard');  // navigates in WebView
+
+    // Skip ahead 55 minutes
+    await clock.tick(55 * 60 * 1000);
+
+    // The session banner should now be visible
+    await expect($('.session-expiry-banner')).toBeDisplayed({ timeout: 3_000 });
+    await expect($('.session-expiry-banner')).toHaveText(
+      expect.stringContaining('Your session expires soon'),
+    );
+
+    // Restore real timers before switching back to native
+    await clock.restore();
+    await browser.switchContext('NATIVE_APP');
+  });
+});
+```
+
+```typescript
+// clock object interface (WebDriverIO v9)
+interface FakeClock {
+  tick(ms: number): Promise<void>;          // advance by N milliseconds
+  setSystemTime(time: Date | number): Promise<void>; // jump to absolute time
+  restore(): Promise<void>;                  // uninstall fake clock, restore native
+}
+```
+
+### Geolocation emulation
+
+```typescript
+// test/specs/location-feature.spec.ts
+it('should show nearest store based on GPS coords', async () => {
+  await browser.switchContext('WEBVIEW_com.example.app');
+
+  // Override navigator.geolocation.getCurrentPosition / watchPosition
+  await browser.emulate('geolocation', {
+    latitude: 37.7749,    // San Francisco
+    longitude: -122.4194,
+    accuracy: 50,         // meters — lower = more precise
+  });
+
+  await $('[data-testid="find-store-btn"]').click();
+  await expect($('[data-testid="nearest-store"]')).toHaveText(
+    expect.stringContaining('Market St'),
+  );
+
+  // Simulate moving to a different location
+  await browser.emulate('geolocation', {
+    latitude: 34.0522,   // Los Angeles
+    longitude: -118.2437,
+    accuracy: 100,
+  });
+
+  await $('[data-testid="refresh-location"]').click();
+  await expect($('[data-testid="nearest-store"]')).toHaveText(
+    expect.stringContaining('Sunset Blvd'),
+  );
+
+  await browser.switchContext('NATIVE_APP');
+});
+```
+
+### Device viewport emulation (desktop web testing only)
+
+```typescript
+// NOTE: browser.emulate('device') is for desktop browser viewport simulation only.
+// Do NOT use for actual Appium mobile testing — it changes viewport/UA but runs
+// the desktop Chrome/Firefox engine, not a real mobile browser.
+//
+// Use it for hybrid app WebView sections that have responsive breakpoints.
+
+it('should render mobile layout in WebView at 375px', async () => {
+  await browser.switchContext('WEBVIEW_com.example.app');
+
+  // Simulates iPhone 15 viewport (375×812), user-agent, and device pixel ratio
+  const restore = await browser.emulate('device', 'iPhone 15');
+
+  await expect($('[data-testid="mobile-nav"]')).toBeDisplayed();
+  await expect($('[data-testid="desktop-nav"]')).not.toBeDisplayed();
+
+  await restore();  // returns to original viewport
+  await browser.switchContext('NATIVE_APP');
+});
+```
+
+**[community] `browser.emulate('device')` has no effect on native Appium sessions:** The emulate
+API interacts with the BiDi protocol which only applies to web/WebView contexts. Calling
+`browser.emulate('device', 'iPhone 15')` in a native Appium session silently does nothing — the
+device is already defined by the capability. WHY: BiDi device emulation is a Chrome DevTools
+Protocol feature that Appium passes through only when the session has an active WebView (CDP target).
+Fix: use `appium:deviceName` capability for native session device selection; reserve `emulate()` for
+hybrid-app WebView sections.
+
+**[community] Clock emulation must be re-applied after WebView navigation:** WebDriver BiDi's
+clock override is scoped to the current browsing context. If your WebView navigates to a new page
+(`browser.url()` or a link click), the fake clock is destroyed and `Date.now()` returns real time.
+WHY: BiDi browsing context lifecycle events reset JavaScript state on navigation, including injected
+clock overrides. Fix: re-apply `browser.emulate('clock', { now: ... })` after any navigation that
+triggers a full page load inside the WebView.
+
+**[community] `clock.tick()` does not advance `performance.now()`:** The BiDi fake clock overrides
+`Date`, `setTimeout`, and `setInterval` but does NOT override `performance.now()`. Code that uses
+`performance.now()` for timing (some animation libraries and metric collectors) will still see real
+elapsed wall-clock time. WHY: `performance.now()` is part of the High Resolution Time API and is
+intentionally excluded from clock overrides by the BiDi spec. Fix: for components that use
+`performance.now()`, use `browser.execute` to monkey-patch it manually if needed.
+
+---
+
+## WDIO v9 → Migration: Breaking Changes for Mobile Test Suites  [community]
+
+WebDriverIO v9 (stable since late 2024) introduced several breaking changes. The ones below most
+commonly break mobile/Appium test suites during upgrade.
+
+```typescript
+// ─── BREAKING: element.selector and element.elementId are no longer direct properties ───
+
+// v8 (broken in v9):
+const btn = await $('~submit');
+console.log(btn.selector);   // undefined in v9 — not a direct property
+
+// v9 correct pattern — use getElement() to get the underlying WebdriverIO.Element:
+const btn = await $('~submit');
+const el = await btn.getElement();
+console.log(el.selector);    // '~submit'
+console.log(el.elementId);   // '5000003A-...'  (native element reference)
+```
+
+```typescript
+// ─── BREAKING: toHaveTextContaining() removed — replace with toHaveText + stringContaining ───
+
+// v8 (removed in v9):
+await expect($('~order-id')).toHaveTextContaining('ORD-');
+
+// v9 replacement — use Jest/Jasmine expect.stringContaining() matcher:
+await expect($('~order-id')).toHaveText(expect.stringContaining('ORD-'));
+
+// For multiple partial matches:
+await expect($('~status')).toHaveText(
+  expect.stringMatching(/Shipped|Delivered/),
+);
+```
+
+```typescript
+// ─── BREAKING: isDisplayedInViewport() removed — use isDisplayed({ withinViewport: true }) ───
+
+// v8 (removed in v9):
+const visible = await $('~banner').isDisplayedInViewport();
+
+// v9 replacement:
+const visible = await $('~banner').isDisplayed({ withinViewport: true });
+
+// As a WDIO expect assertion:
+await expect($('~banner')).toBeDisplayed({ withinViewport: true });
+// Note: toBeDisplayedInViewport() is still available as an alias but deprecated
+```
+
+```typescript
+// ─── BREAKING: Node.js v20+ required ───
+
+// wdio.conf.ts — add engines guard to catch version drift in CI
+// package.json:
+// {
+//   "engines": { "node": ">=20.0.0" }
+// }
+
+// CI: use setup-node@4 with node-version: '20'
+// .github/workflows/mobile-e2e.yml:
+//   - uses: actions/setup-node@v4
+//     with:
+//       node-version: '20'
+//       cache: 'npm'
+```
+
+**[community] `@wdio/types` version drift causes TypeScript errors after v9 upgrade:** In v9, `@wdio/types`
+is released as a separate package from `webdriverio`. If you upgrade `webdriverio` to `9.x.x` but
+leave `@wdio/types` on `8.x.x`, TypeScript will throw `Type 'X' is not assignable to type 'Y'`
+errors on capability definitions and hook signatures. WHY: The v9 type definitions changed several
+interface shapes (notably `Options.Testrunner` and `Capabilities.AppiumCapabilities`). Fix: always
+upgrade both together — `npm install webdriverio@latest @wdio/types@latest` as one command.
+
+**[community] BiDi auto-enabled in v9 breaks sessions behind Appium-only grids:** WebDriverIO v9
+automatically negotiates BiDi for any session that supports it. If your CI connects through an
+Appium server version < 2.0 or through a cloud grid that doesn't support BiDi negotiation, the
+session creation may fail with `WebDriver Bidi is not supported`. WHY: v9's default
+`automationProtocol: 'webdriver'` now includes a BiDi capabilities check on session start, which
+some legacy grid nodes reject. Fix: add `'wdio:enforceWebDriverClassic': true` to capabilities
+for grids that cannot negotiate BiDi.
+
+---
+
+## `@wdio/appium-service` — Native Selector Performance Optimizer (v9 Beta)  [community]
+
+WebDriverIO v9's `@wdio/appium-service` introduced a beta `trackSelectorPerformance` option that
+profiles XPath and CSS selector execution times across your Page Object files and reports slow
+selectors after the test run.
+
+```typescript
+// wdio.conf.ts — enable selector performance profiling
+import type { Options } from '@wdio/types';
+
+export const config: Options.Testrunner = {
+  services: [
+    ['appium', {
+      logPath: './logs',
+      args: {
+        address: '127.0.0.1',
+        port: 4723,
+      },
+      // Beta: profile selector performance across Page Object files
+      trackSelectorPerformance: {
+        pageObjectPaths: [
+          './test/pages/**/*.ts',   // glob — all page object files
+        ],
+        enableCliReport: true,      // prints slow selectors to console after run
+        reportPath: './reports/selector-performance.json',  // JSON output
+      },
+    }],
+  ],
+};
+```
+
+```json
+// Example selector-performance.json output
+{
+  "slowSelectors": [
+    {
+      "selector": "//android.widget.ListView/android.view.ViewGroup[@index>5]/android.widget.TextView",
+      "file": "test/pages/OrderHistoryPage.ts",
+      "line": 42,
+      "avgMs": 1240,
+      "calls": 38,
+      "suggestion": "Consider accessibility-id selector or XCUITest predicate string"
+    },
+    {
+      "selector": "//*[@resource-id='com.example:id/recycler']//*[@text='Submit']",
+      "file": "test/pages/CheckoutPage.ts",
+      "line": 17,
+      "avgMs": 890,
+      "calls": 12,
+      "suggestion": "Use UiSelector.resourceId + text combination for better performance"
+    }
+  ]
+}
+```
+
+```typescript
+// Acting on the optimizer's suggestions — refactor slow XPath to faster selectors
+// BEFORE (slow XPath — 1240ms average):
+private orderItem = (index: number) =>
+  $(`//android.widget.ListView/android.view.ViewGroup[@index>${index}]/android.widget.TextView`);
+
+// AFTER (fast accessibility-id — 50ms average):
+private orderItem = (text: string) =>
+  $(`~order-item-${text}`);
+// Requires testID="order-item-{text}" on the component
+```
+
+**[community] `trackSelectorPerformance` does not auto-fix selectors:** The optimizer only reports
+slow selectors — it does not modify Page Object files automatically. The `suggestion` field in the
+JSON output provides refactoring advice but requires manual code changes. WHY: automatic selector
+replacement could break tests if the accessibility IDs don't yet exist in the app. Fix: use the
+JSON report as a backlog for selector refactoring tickets, prioritizing selectors with `avgMs > 500`
+and `calls > 10`.
+
+**[community] `trackSelectorPerformance` adds ~5% overhead per selector call:** The profiling
+wraps every element lookup with a performance timer. This is acceptable for development feedback
+but should not be enabled in production CI runs where you're measuring absolute test duration.
+WHY: wrapping every `$()` call with `performance.now()` measurements adds microsecond-level overhead
+per call, which multiplies to seconds in suites with hundreds of element lookups. Fix: enable only
+in `process.env.PROFILE_SELECTORS === 'true'` runs:
+```typescript
+trackSelectorPerformance: process.env.PROFILE_SELECTORS === 'true'
+  ? { pageObjectPaths: ['./test/pages/**/*.ts'], enableCliReport: true }
+  : undefined,
+```
+
+---
+
+## `scrollIntoView()` — Updated Native Mobile Options (WDIO v9+)  [community]
+
+WebDriverIO v9 expanded `element.scrollIntoView()` to work natively on iOS and Android without
+requiring a WebView context. The underlying scroll uses `browser.swipe()` internally and respects
+platform-specific defaults for the scrollable container.
+
+```typescript
+// test/specs/settings.spec.ts — scroll to an element on a native long-form screen
+it('should find and toggle push notifications setting', async () => {
+  // Basic: scroll in default direction (down) until element visible
+  await $('~push-notifications-toggle').scrollIntoView();
+  await $('~push-notifications-toggle').click();
+});
+```
+
+```typescript
+// scrollIntoView native app options (WDIO v9+)
+await $('~terms-accept-btn').scrollIntoView({
+  direction: 'down',          // 'up' | 'down' | 'left' | 'right' (default: 'up')
+  maxScrolls: 8,              // max scroll attempts before giving up (default: 10)
+  duration: 1000,             // ms per scroll gesture (default: 1500)
+  percent: 0.85,              // scroll distance as fraction of scrollable area (default: 0.95)
+  scrollableElement: $('~settings-scroll-view'),  // optional: explicit container
+});
+```
+
+```typescript
+// Platform-specific scrollable container defaults (applied if scrollableElement omitted)
+// iOS:  -ios predicate string:type == "XCUIElementTypeApplication"
+// Android: //android.widget.ScrollView  (first one found)
+//
+// If your screen uses RecyclerView or NestedScrollView on Android, specify explicitly:
+const recycler = $('//android.widget.RecyclerView[@resource-id="com.example:id/list"]');
+await $('~target-item').scrollIntoView({
+  scrollableElement: recycler,
+  direction: 'down',
+  maxScrolls: 15,  // RecyclerView may have many items — allow more scrolls
+});
+```
+
+```typescript
+// WDIO v9 scrollIntoView returns void; chain .click() on the element after
+async function tapAfterScroll(selector: string): Promise<void> {
+  const el = $(selector);
+  await el.scrollIntoView({ direction: 'down', maxScrolls: 10 });
+  await el.waitForDisplayed({ timeout: 3_000 });  // wait for animation to complete
+  await el.click();
+}
+```
+
+**[community] `scrollIntoView()` stops at `maxScrolls` without error:** If the target element is
+not found within `maxScrolls` scroll attempts, `scrollIntoView()` does NOT throw — it silently
+exits. The subsequent `.click()` or `.waitForDisplayed()` will then throw the actual error. WHY:
+the method is designed to be non-throwing to allow optional element handling, but this hides the
+root cause (maxScrolls too low). Fix: always follow `scrollIntoView()` with an explicit
+`waitForDisplayed({ timeout: 3_000 })` to surface the real error message.
+
+**[community] iOS default scrollable container (`XCUIElementTypeApplication`) includes non-scrollable areas:**
+The iOS default container is the entire application view, which includes fixed headers and footers
+that are not part of the scroll area. This can cause `scrollIntoView()` to calculate incorrect
+scroll percentages. WHY: the `XCUIElementTypeApplication` frame is the full screen bounds, not the
+scrollable content area. Fix: always pass `scrollableElement` pointing to the specific
+`XCUIElementTypeScrollView` or `XCUIElementTypeTable` that wraps your content.
+
+---
+
+## Allure Reporter v3 — `ALLURE_TESTPLAN_PATH` for Test Plan Filtering  [community]
+
+Allure Reporter v3 (allure-js-commons v3.3.x) supports execution plans — JSON files that specify
+exactly which test cases to run, identified by their `allure ID` or `full name`. In CI, this
+allows targeted re-runs of failing tests without filtering by filename or grep.
+
+```typescript
+// test/specs/checkout.spec.ts — annotate tests with allure IDs for test plan filtering
+import allureReporter from '@wdio/allure-reporter';
+
+describe('Checkout flow', () => {
+  beforeEach(function () {
+    // Assign a stable Allure ID — matches the test plan JSON
+    allureReporter.addLabel('AS_ID', 'CHK-001');  // suite-scoped ID
+  });
+
+  it('should complete payment with credit card', async function () {
+    allureReporter.addLabel('AS_ID', 'CHK-002');  // test-scoped override
+    // ... test body
+  });
+});
+```
+
+```json
+// allure-test-plan.json — generated by Allure TestOps or created manually
+{
+  "version": "1.0",
+  "tests": [
+    { "id": "CHK-001", "selector": "Checkout flow" },
+    { "id": "CHK-002", "selector": "Checkout flow > should complete payment with credit card" },
+    { "id": "AUTH-015", "selector": "Login > should redirect to dashboard after login" }
+  ]
+}
+```
+
+```yaml
+# .github/workflows/mobile-e2e-rerun.yml — targeted re-run using test plan
+name: Re-run failing Allure tests
+on:
+  workflow_dispatch:
+    inputs:
+      test_plan_url:
+        description: 'URL to allure-test-plan.json'
+        required: true
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download test plan
+        run: curl -o allure-test-plan.json "${{ github.event.inputs.test_plan_url }}"
+
+      - name: Run WDIO with test plan filter
+        env:
+          # ALLURE_TESTPLAN_PATH activates test plan filtering in @wdio/allure-reporter
+          ALLURE_TESTPLAN_PATH: ./allure-test-plan.json
+        run: npx wdio run wdio.conf.ts
+```
+
+```typescript
+// wdio.conf.ts — allure reporter v3 configuration with test plan support
+export const config: Options.Testrunner = {
+  reporters: [
+    ['allure', {
+      outputDir: './allure-results',
+      disableWebdriverStepsReporting: false,
+      disableWebdriverScreenshotsReporting: false,
+      // Report environment info to Allure dashboard
+      reportedEnvironmentVars: {
+        PLATFORM: process.env.PLATFORM ?? 'ios',
+        DEVICE: process.env.DEVICE_NAME ?? 'iPhone 15',
+        APP_VERSION: process.env.APP_VERSION ?? 'unknown',
+        CI_RUN: process.env.GITHUB_RUN_ID ?? 'local',
+      },
+    }],
+  ],
+};
+```
+
+**[community] `ALLURE_TESTPLAN_PATH` only filters tests that have matching `AS_ID` labels:**
+If a test is in the test plan JSON but has no `AS_ID` label (or the ID doesn't match), it will
+NOT be filtered in — WDIO will skip it. All tests without `AS_ID` labels run unconditionally.
+WHY: the test plan filter is label-based, not file/describe-name based. Fix: add `AS_ID` labels
+to every test that should participate in targeted re-runs, using a consistent ID format
+(`CHK-001`, `AUTH-015`, etc.).
+
+**[community] `reportedEnvironmentVars` replaces deprecated `addEnvironment()` in Allure v3:**
+If you were calling `allureReporter.addEnvironment(key, value)` in `onPrepare()` hooks (common
+pre-v3 pattern), those calls silently do nothing in allure-js-commons v3.3+. WHY: the environment
+reporting API was centralized into the reporter config in v3 to support parallel workers that
+can't call reporter methods directly. Fix: migrate to the `reportedEnvironmentVars` config
+option — it is evaluated once at reporter init, not per worker.
+
+---
+
+## `@wdio/appium-service` — `appiumArgs` Best Practices for CI  [community]
+
+The `@wdio/appium-service` spawns an Appium server subprocess inside the WDIO runner process.
+Correctly configuring `args` prevents port conflicts, stale sessions, and log noise in CI.
+
+```typescript
+// wdio.conf.ts — production CI configuration for @wdio/appium-service v9
+import type { Options } from '@wdio/types';
+
+export const config: Options.Testrunner = {
+  port: 4723,
+  path: '/',
+  services: [
+    ['appium', {
+      // Where to write the Appium server log
+      logPath: process.env.CI ? './logs' : './',
+
+      // Path to appium binary — use local install in CI to pin version
+      command: './node_modules/.bin/appium',
+
+      args: {
+        // Bind to localhost only — prevent external access in CI
+        address: '127.0.0.1',
+        port: 4723,
+
+        // Session lifecycle
+        keepAliveTimeout: 10,          // seconds — kill idle sessions faster in CI
+        sessionOverride: false,        // don't allow session takeover (prevents ghost sessions)
+
+        // Logging
+        logLevel: process.env.CI ? 'warn' : 'info',   // reduce log volume in CI
+        logTimestamp: true,
+        localTimezone: true,
+
+        // Plugin management
+        usePlugins: ['images'],        // only load plugins you actually use
+
+        // Relaxed security for specific use cases (use with caution)
+        // relaxedSecurity: true,     // ONLY if using image injection or ADB shell
+      },
+    }],
+  ],
+};
+```
+
+```yaml
+# CI example: separate Appium server logs from test logs
+# .github/workflows/mobile-e2e.yml
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run E2E tests
+        run: npx wdio run wdio.conf.ts
+        env:
+          CI: true
+
+      - name: Upload Appium server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appium-logs
+          path: ./logs/appium*.log
+          retention-days: 7
+```
+
+**[community] `@wdio/appium-service` does not wait for Appium to be healthy before starting tests:**
+The service spawns Appium and waits for the port to be bound, but there is a race condition where
+the first session creation request arrives before Appium has fully initialized its drivers. WHY:
+TCP port binding happens before the driver registry is ready. Symptoms: first test fails with
+`No driver found for...` or `Session creation timed out`. Fix: add a startup healthcheck hook:
+
+```typescript
+// wdio.conf.ts — healthcheck hook to ensure Appium is ready
+export const config: Options.Testrunner = {
+  onPrepare: async () => {
+    // Wait up to 30s for Appium to respond to status endpoint
+    const maxWait = 30_000;
+    const start = Date.now();
+    while (Date.now() - start < maxWait) {
+      try {
+        const res = await fetch('http://127.0.0.1:4723/status');
+        if (res.ok) { console.log('[appium] server ready'); break; }
+      } catch { /* not yet */ }
+      await new Promise(r => setTimeout(r, 500));
+    }
+  },
+};
+```
+
+---
+
+## Source: Iteration Log (Run 2026-05-12)
+
+<!-- iteration: 21 | score: 100/100 | date: 2026-05-12 -->
+<!-- Additions this run:
+     - browser.emulate() full API (clock/geolocation/device) with TypeScript examples and 3 community gotchas
+     - WDIO v9 migration breaking changes (getElement(), toHaveTextContaining, isDisplayedInViewport, Node.js v20+, BiDi on legacy grids)
+     - @wdio/appium-service trackSelectorPerformance beta feature with JSON output format and community gotchas
+     - scrollIntoView() native mobile app options (maxScrolls, platform defaults, direction, percent) with v9 updates
+     - Allure Reporter v3 ALLURE_TESTPLAN_PATH test plan filtering with CI YAML and 2 community gotchas
+     - @wdio/appium-service appiumArgs CI best practices with Appium readiness healthcheck
+-->
+<!-- Total community pitfalls: 187+ tagged [community] instances -->
+<!-- Total sections: 163+ | All rubric dimensions: Coverage 25/25 | Code 25/25 | Depth 25/25 | Community 25/25 -->
+<!-- Sources: webdriver.io/docs/emulation, webdriver.io/blog/v9-release, webdriver.io/docs/appium-service,
+     webdriver.io/docs/api/mobile/scrollIntoView, webdriver.io/docs/allure-reporter,
+     webdriver.io/docs/api/browser/mock, webdriver.io/docs/api/mobile/swipe -->
 <!-- Score delta across 10 iterations: 0 (maintained 100/100) — delta check not triggered -->
 <!-- Cumulative total across all runs: 20 iterations (v1-v10 + this run iter 11-20) -->

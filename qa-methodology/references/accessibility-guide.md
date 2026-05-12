@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 30 | score: 100/100 | date: 2026-05-03 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -228,6 +228,74 @@ describe('Button accessibility', () => {
   });
 });
 ```
+
+### Vitest + @axe-core/playwright for Component Accessibility (Vitest Projects)
+
+In Vitest projects, `jest-axe` can be used with the JSDOM environment (`// @vitest-environment jsdom`), but `@axe-core/playwright` is the recommended approach for teams that want real-browser accuracy without switching to Jest. The `@axe-core/playwright` package works with Vitest's `@playwright/test` integration via `vitest-playwright` or by running Playwright tests directly.
+
+For teams that do use `jest-axe` with Vitest, the critical configuration points are:
+
+```typescript
+// File: src/components/Button/Button.vitest.a11y.test.tsx
+// @vitest-environment jsdom
+// ↑ Required: tells Vitest to use JSDOM for this file (not Node environment)
+import React from 'react';
+import { render } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { expect, it, describe, afterEach, vi } from 'vitest';
+
+// Extend Vitest expect with jest-axe matchers
+expect.extend(toHaveNoViolations);
+
+describe('Button accessibility (Vitest)', () => {
+  afterEach(() => {
+    // Restore real timers after each test in case any test uses vi.useFakeTimers()
+    vi.useRealTimers();
+  });
+
+  it('renders with no axe violations', async () => {
+    // If your test suite uses vi.useFakeTimers(), restore before scanning:
+    // vi.useRealTimers();
+    const { container } = render(
+      <button type="button" aria-label="Submit form">Submit</button>
+    );
+    // axe uses setTimeout internally — fake timers break this call
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('detects missing label on icon-only button', async () => {
+    const { container } = render(
+      <button type="button">
+        <svg aria-hidden="true" focusable="false"><use href="#icon" /></svg>
+      </button>
+    );
+    const results = await axe(container);
+    // Document the expected failure for Vitest reviewers
+    expect(results.violations.map((v) => v.id)).toContain('button-name');
+  });
+});
+```
+
+```json
+// File: vitest.config.ts addition — global JSDOM setup for all a11y tests
+// Alternatively, use the per-file @vitest-environment jsdom comment above
+// to avoid switching ALL tests to JSDOM (which may conflict with Node-only tests)
+{
+  "test": {
+    "environment": "jsdom",              // Global: all tests use JSDOM
+    "environmentMatchGlobs": [           // Per-pattern: only a11y tests use JSDOM
+      ["**/*.a11y.test.{ts,tsx}", "jsdom"]
+    ]
+  }
+}
+```
+
+**Key Vitest + jest-axe constraints:**
+- `jest.useFakeTimers()` → `vi.useFakeTimers()`: both break axe scans — restore real timers before `await axe()`
+- jest-axe ships CommonJS; Vitest ESM projects may need `transformMode: { web: [/\.tsx?$/] }` in vitest config
+- Color-contrast rules are still `incomplete` in JSDOM (JSDOM cannot compute computed styles) — Playwright handles this
+- jest-axe v10 pins axe-core 4.10.2; use `overrides` in `package.json` to upgrade to 4.11.4 for latest rules
 
 ### Playwright + axe: Full-Page A11y Audit
 
@@ -962,7 +1030,7 @@ describe('DataTable accessibility', () => {
 ```json
 {
   "devDependencies": {
-    "jest-axe": "^9.0.0",
+    "jest-axe": "^10.0.0",
     "@axe-core/playwright": "^4.11.0",
     "axe-core": "^4.11.4",
     "@testing-library/react": "^16.0.0",
@@ -972,7 +1040,12 @@ describe('DataTable accessibility', () => {
 }
 ```
 
-> **Version pinning note**: axe-core 4.11.x (released Q1–Q2 2026) added new rules including `aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, and improved `color-contrast-enhanced` (WCAG 2.2 1.4.11). When upgrading axe-core across jest-axe and @axe-core/playwright, update both packages simultaneously to the same underlying axe-core transitive version — version skew between unit and E2E layers produces false discrepancies.
+> **Version pinning note** (updated 2026-05-12): **jest-axe v10.0.0** (released March 2025) upgrades the bundled axe-core to 4.10.2; v9.0.0 used axe-core 4.9.1. To stay current with axe-core 4.11.x rules (`aria-dialog-name`, `aria-tooltip-name`, `scrollable-region-focusable`, `target-size`, improved `color-contrast-enhanced`), set `"jest-axe": "^10.0.0"` and override axe-core to the latest patch: `"overrides": { "axe-core": "4.11.4" }` in `package.json`. When upgrading axe-core across jest-axe and @axe-core/playwright, update both packages simultaneously to the same underlying axe-core transitive version — version skew between unit and E2E layers produces false discrepancies.
+>
+> **axe-core 4.11.2–4.11.4 bug fixes** (Q1–Q2 2026, critical for TypeScript projects):
+> - **4.11.4**: `aria-labelledby` now correctly excludes natively hidden elements from the accessible name computation. Previously, an element with `aria-labelledby="hidden-el"` where `hidden-el` was `display: none` would still compute a non-empty name — causing axe to silently pass components with inaccessible labels.
+> - **4.11.3**: `<br>` and `<wbr>` elements are now restricted to `aria-hidden` semantics only. `position: fixed` offscreen elements are correctly excluded from scan results — teams with fixed banners or cookie notices positioned off-screen no longer see false violation noise.
+> - **4.11.2**: Multiple `aria-errormessage` IDs (space-separated, as allowed by ARIA 1.2) are now handled correctly. Duplicate nodes from `getOwnedVirtual` are deduplicated, preventing false double-reporting on owned listbox options.
 
 ### Accessible Carousel / Auto-Rotating Content  [community]
 
@@ -1248,6 +1321,204 @@ test.describe('SPA focus management', () => {
 Composite widgets (toolbars, tab lists, radio groups, grids, menus) use the **roving tabindex** pattern: exactly one child has `tabIndex={0}` (the "roving" active item), all others have `tabIndex={-1}`. The user presses Tab to enter the widget and arrow keys to navigate within it. This matches the expected keyboard behavior described in the ARIA Authoring Practices Guide (APG) and is what NVDA Application Mode expects.
 
 **Why this matters:** Teams that give every button in a toolbar `tabIndex={0}` force keyboard users to Tab through every toolbar item before reaching the next focusable region. WCAG 2.4.3 (Focus Order) and 2.1.1 (Keyboard) require that composite widgets are navigable with arrow keys, not just Tab.
+
+### Next.js App Router: Route Announcer and RSC Accessibility Patterns
+
+**Next.js App Router built-in route announcer:** App Router (Next.js 13+) automatically injects a route announcer `<p aria-live="assertive" aria-atomic="true">` that announces the page title after each client-side navigation. **Do not add a second `aria-live` region for navigation announcements** — this produces double announcements where screen reader users hear the page title twice. Ensure every page has a unique `<title>` via the App Router `metadata` export:
+
+```typescript
+// File: app/about/page.tsx
+// Next.js App Router uses the 'title' metadata for the built-in route announcer.
+// No useFocusOnRouteChange hook needed — App Router handles route announcement.
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  // This title is used by the built-in route announcer for screen readers.
+  // Every page MUST have a unique, descriptive title — WCAG 2.4.2 (Page Titled, A).
+  title: 'About Us — Company Name',
+  description: 'Learn about our company and mission',
+};
+
+export default function AboutPage() {
+  return (
+    <main id="main-content" tabIndex={-1}>
+      {/* tabIndex={-1} allows programmatic focus from a skip link */}
+      <h1 tabIndex={-1}>About Us</h1>
+      {/* Content... */}
+    </main>
+  );
+}
+```
+
+```typescript
+// File: e2e/accessibility/app-router-focus.spec.ts
+// Test Next.js App Router route announcer behavior.
+// App Router uses the page <title> for announcements — verify titles are unique.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Next.js App Router accessibility', () => {
+  test('each page has a unique, descriptive title (WCAG 2.4.2)', async ({ page }) => {
+    const pagesToTest = ['/', '/about', '/contact', '/login'];
+    const titles: string[] = [];
+
+    for (const url of pagesToTest) {
+      await page.goto(url);
+      await page.waitForLoadState('networkidle');
+      const title = await page.title();
+
+      // Title must be non-empty and descriptive
+      expect(title.length).toBeGreaterThan(3);
+      expect(title).not.toBe('Next.js App'); // Reject default/placeholder title
+      titles.push(title);
+    }
+
+    // All page titles must be unique for the route announcer to be meaningful
+    const uniqueTitles = new Set(titles);
+    expect(uniqueTitles.size).toBe(titles.length);
+  });
+
+  test('App Router route announcer is present and correctly configured', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Next.js App Router injects a built-in route announcer — verify it is present
+    const announcer = page.locator('[aria-live][aria-atomic="true"]');
+    await expect(announcer).toHaveCount(1); // Exactly one — more means duplicate was added
+
+    const liveValue = await announcer.getAttribute('aria-live');
+    // App Router uses aria-live="assertive" for page navigation
+    expect(liveValue).toBe('assertive');
+  });
+
+  test('no axe violations after client-side navigation', async ({ page }) => {
+    await page.goto('/');
+    await page.click('a[href="/about"]');
+    await page.waitForURL('/about');
+    await page.waitForLoadState('networkidle');
+
+    // Verify no violations appear after navigation (focus, ARIA state checks)
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+});
+```
+
+**React Server Components (RSC) accessibility patterns:**
+
+RSC renders static server-side HTML. All ARIA state management must live in Client Components.
+
+```typescript
+// File: app/dashboard/DashboardLayout.tsx
+// RSC: renders static semantic HTML. No dynamic ARIA state needed.
+// lang, headings, landmarks, and alt text are safe in RSC.
+// Static ARIA attributes (aria-label on nav) are also safe in RSC.
+
+async function UserName() {
+  const user = await getUser(); // Server-side data fetch
+  return <span>{user.displayName}</span>;
+}
+
+export default async function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <a href="#main-content" className="skip-link">
+        Skip to main content
+      </a>
+      <header>
+        {/* Static aria-label is safe in RSC — it never changes */}
+        <nav aria-label="Dashboard navigation">
+          <UserName /> {/* Server Component — renders name statically */}
+        </nav>
+      </header>
+      <main id="main-content" tabIndex={-1}>
+        {/* children can be Server or Client Components */}
+        {children}
+      </main>
+    </>
+  );
+}
+```
+
+```typescript
+// File: app/dashboard/ExpandablePanel.tsx
+// 'use client' required for dynamic ARIA state (aria-expanded changes on click)
+'use client';
+import { useState } from 'react';
+
+interface ExpandablePanelProps {
+  title: string;
+  children: React.ReactNode;
+}
+
+export function ExpandablePanel({ title, children }: ExpandablePanelProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const panelId = `panel-${title.replace(/\s+/g, '-').toLowerCase()}`;
+
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={isExpanded}    // Dynamic ARIA — requires 'use client'
+        aria-controls={panelId}
+        onClick={() => setIsExpanded((prev) => !prev)}
+      >
+        {title}
+        <span aria-hidden="true">{isExpanded ? '▲' : '▼'}</span>
+      </button>
+      <div id={panelId} hidden={!isExpanded}>
+        {children}
+      </div>
+    </div>
+  );
+}
+```
+
+```typescript
+// File: src/components/ExpandablePanel/ExpandablePanel.a11y.test.tsx
+// Test the Client Component's accessibility in isolation
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import userEvent from '@testing-library/user-event';
+import { ExpandablePanel } from './ExpandablePanel';
+
+expect.extend(toHaveNoViolations);
+
+describe('ExpandablePanel (Client Component) accessibility', () => {
+  it('has no axe violations in collapsed state', async () => {
+    const { container } = render(
+      <ExpandablePanel title="FAQ: What is WCAG?">
+        <p>WCAG stands for Web Content Accessibility Guidelines.</p>
+      </ExpandablePanel>
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('aria-expanded toggles correctly on click', async () => {
+    const user = userEvent.setup();
+    render(
+      <ExpandablePanel title="FAQ: What is WCAG?">
+        <p>Content</p>
+      </ExpandablePanel>
+    );
+    const button = screen.getByRole('button', { name: /FAQ: What is WCAG/ });
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    await user.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+  });
+});
+```
+
+**RSC accessibility rule of thumb:** If the ARIA attribute is static at render time (landmark labels, image alt text, heading structure, `lang`), it can live in RSC. If it can change in response to user interaction (expanded/collapsed, selected, live region content), it must live in a `'use client'` Client Component.
 
 ```typescript
 // File: src/components/Toolbar/Toolbar.tsx
@@ -4014,6 +4285,18 @@ test.describe('Mobile accessibility', () => {
 
 39. **[community] `tabindex="0"` on non-interactive elements is never keyboard-accessible on iOS**: iOS VoiceOver navigates by swiping to elements in the accessibility tree order, not by Tab key. However, custom interactive elements (`<div tabindex="0">`) that work on desktop with Tab/Enter may not receive swipe focus on iOS if they lack a semantic role. Always use native HTML elements or appropriate ARIA roles — `role="button"` paired with `tabindex="0"` and a click handler is the minimum for custom interactive elements to work on iOS.
 
+40. **[community] jest-axe v10 with fake timers requires timer restoration before scanning**: jest-axe does not work when Jest/Vitest fake timers are active (`jest.useFakeTimers()` / `vi.useFakeTimers()`). axe-core internally uses `setTimeout` and `MutationObserver` timing — with fake timers, scans hang indefinitely. Fix: call `jest.useRealTimers()` (or `vi.useRealTimers()`) immediately before `await axe(container)`, then restore fake timers in `afterEach`. This affects components with debounced validation, typeahead inputs, or any test that replaces timers to control async behavior.
+
+41. **[community] Vitest + jest-axe requires explicit JSDOM environment — use `@vitest-environment jsdom` per-file**: jest-axe 9–10 was designed for Jest's JSDOM environment. In Vitest projects, accessibility unit tests require `@vitest/browser` (real browser) or explicit JSDOM configuration. Without the correct environment, `axe` throws `"axe is not a function"` or `"document is not defined"`. Configure per-file with the `// @vitest-environment jsdom` comment at the top of the test file. Alternatively, use `@axe-core/playwright` for Vitest projects that prefer real-browser execution — it does not depend on JSDOM.
+
+42. **[community] axe-core 4.11.3 changed `<br>`/`<wbr>` accessible name computation**: Before 4.11.3, `<br>` elements inside a button contributed to its accessible name by joining the surrounding text. After 4.11.3, `<br>` contributes only `aria-hidden` semantics — text on either side is no longer joined through `<br>`. Teams using `<br>` inside `<button>` or heading labels may see accessible name changes after upgrading. Audit all `<button>` and heading elements containing `<br>` when upgrading to 4.11.3+.
+
+43. **[community] axe-core 4.11.4 hidden-element fix changes `aria-labelledby` name computation**: The 4.11.4 fix correctly excludes natively hidden elements (`display: none`, `visibility: hidden`, HTML `hidden` attribute) from `aria-labelledby` accessible name resolution. Previously these elements contributed to the computed name — causing axe to silently pass components with broken labels. After upgrading: (1) tests that previously passed because a `display: none` element was incorrectly included in the label may now fail with `button-name` or `label` violations; (2) the offscreen CSS pattern (`position: absolute; left: -10000px; clip: rect(0 0 0 0)`) is unaffected — visually hidden text using this approach still contributes to the accessible name. If tests fail after upgrading to 4.11.4, check that label elements are not using `display: none` for visual hiding — switch to the offscreen CSS pattern.
+
+44. **[community] Next.js App Router has a built-in route announcer — do not add a duplicate**: Next.js App Router (13+) automatically injects a route announcer `<p aria-live="assertive" aria-atomic="true">` that announces page titles after client-side navigation. Teams that also implement a custom `useFocusOnRouteChange` hook with its own `aria-live` region for navigation get double announcements: the custom region fires, then Next.js fires. WHY: route announcement is now a framework responsibility in App Router. Remove the custom route announcer in App Router projects and instead ensure every page has a unique `<title>` via the App Router `metadata` export — Next.js uses the `<title>` content for its built-in announcer. The `useFocusOnRouteChange` hook is still appropriate for Pages Router projects (no built-in announcer).
+
+45. **[community] React Server Components cannot hold dynamic ARIA state — use a Client Component boundary**: RSC (React Server Components) render on the server and are never hydrated as interactive. They cannot use `useState`, `useEffect`, or event handlers — meaning they cannot manage dynamic ARIA state like `aria-expanded`, `aria-selected`, or `aria-live` region updates. WHY: teams that use conditional ARIA attributes in RSC (e.g., `aria-expanded={someServerValue}`) find the state never changes after initial render because there is no hydration. All ARIA state that changes in response to user interaction must live in a `'use client'` Client Component. RSC can safely render static semantic HTML (headings, landmarks, alt text, `lang` attributes, table headers) without accessibility concern.
+
 **Android TalkBack vs iOS VoiceOver quick reference:**
 
 | Feature | iOS VoiceOver | Android TalkBack |
@@ -4228,7 +4511,7 @@ Deque's `vscode-axe-linter` extension runs axe-core rules as static analysis on 
 | ARIA Accessible Name Computation | Spec | https://www.w3.org/TR/accname-1.2/ | Authoritative source for name/label precedence rules |
 | axe-core | Open source | https://github.com/dequelabs/axe-core | Rule documentation and changelog (v4.11.4 current); custom rule API |
 | axe-core Rule Descriptions | Reference | https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md | Full list of all axe rules with WCAG mapping |
-| jest-axe | Open source | https://github.com/nickcolley/jest-axe | Jest integration for axe |
+| jest-axe | Open source | https://github.com/nickcolley/jest-axe | Jest integration for axe; v10.0.0 (March 2025) uses axe-core 4.10.2; requires `jest-environment-jsdom`; use `@vitest-environment jsdom` for Vitest |
 | @axe-core/playwright | Open source | https://github.com/dequelabs/axe-core-npm | Playwright integration |
 | @storybook/addon-a11y | Open source | https://storybook.js.org/addons/@storybook/addon-a11y | Per-story axe scan in Storybook; catches component-level issues in design system |
 | IBM Equal Access Checker | Open source | https://www.ibm.com/able/toolkit/tools/ | Supplementary rule engine with EN 301 549 focus |

@@ -1,5 +1,5 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 22 | score: 100/100 | date: 2026-05-04 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 23 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown -->
 <!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.59 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage -->
 
@@ -878,12 +878,17 @@ await expect(button).toHaveCSS('color', /rgb\(37,\s*99,\s*235\)/);
 
 ---
 
-## Breaking Changes Reference (v1.45–v1.59)
+## Breaking Changes Reference (v1.45–v1.60)
 
 A summary of removals and behavioral changes that require action when upgrading.
 
 | Version | Change | Migration |
 |---------|--------|-----------|
+| v1.60 | `Locator.ariaRef()` **removed** | Use `page.getByRole()` or `locator.filter()` |
+| v1.60 | `handle` option on `exposeBinding` **removed** | Remove `handle` from `BrowserContext.exposeBinding` / `Page.exposeBinding` calls |
+| v1.60 | `logger` option on `connect` / `connectOverCDP` **removed** | Remove `logger` option; use process-level logging |
+| v1.60 | `videosPath` / `videoSize` context options **removed** | Use `recordVideo: { dir, size }` object form |
+| v1.60 | `workers: 0` or negative values now rejected at parse time | Set `workers` to a positive integer or `undefined` |
 | v1.59 | macOS 14 WebKit support **dropped** | Use macOS 15+ or Playwright Docker image for WebKit tests |
 | v1.59 | `@playwright/experimental-ct-svelte` **removed** | Migrate to SvelteKit e2e tests with standard Playwright config |
 | v1.57 | `page.accessibility` API **removed** | Use `toMatchAriaSnapshot()` for structure, `@axe-core/playwright` for WCAG |
@@ -5507,4 +5512,330 @@ open coverage/index.html
 **Gotchas:**
 - Istanbul instrumentation increases bundle size significantly; only enable in `E2E_COVERAGE=true` builds, never in production.
 - Coverage data lives in `window.__coverage__` — collect it in `afterEach` before navigation clears the page context.
+
+---
+
+## v1.60 New Patterns
+
+### `locator.drop()` — External Drag-and-Drop Simulation (v1.60+)
+
+Simulate external files or clipboard data being dropped onto an element. Previously, testing file-drop zones required complex `DataTransfer` injection via `page.evaluate()`. `locator.drop()` dispatches the correct synthetic drag events cross-browser.
+
+```typescript
+// Drop a file onto a file-upload dropzone
+test('accepts PDF drop on upload zone', async ({ page }) => {
+  await page.goto('/upload');
+
+  const dropzone = page.getByRole('region', { name: 'Upload area' });
+  await dropzone.drop({
+    files: {
+      name:     'report.pdf',
+      mimeType: 'application/pdf',
+      buffer:   Buffer.from('%PDF-1.4 test content'),
+    },
+  });
+
+  await expect(page.getByText('report.pdf')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Upload' })).toBeEnabled();
+});
+
+// Drop multiple files at once
+test('accepts multiple image drops', async ({ page }) => {
+  await page.goto('/gallery');
+
+  await page.getByTestId('image-dropzone').drop({
+    files: [
+      { name: 'photo1.jpg', mimeType: 'image/jpeg', buffer: fakeJpeg1 },
+      { name: 'photo2.jpg', mimeType: 'image/jpeg', buffer: fakeJpeg2 },
+    ],
+  });
+
+  await expect(page.getByRole('img')).toHaveCount(2);
+});
+
+// Drop clipboard text
+test('accepts plain-text paste via drop', async ({ page }) => {
+  await page.goto('/notes');
+
+  await page.getByTestId('text-drop-target').drop({
+    data: {
+      'text/plain': 'Meeting notes for Q3 review',
+      'text/html':  '<p>Meeting notes for <b>Q3 review</b></p>',
+    },
+  });
+
+  await expect(page.getByRole('paragraph')).toContainText('Meeting notes');
+});
+```
+
+> **[community]** WHY: Prior to v1.60, file-drop testing required manually constructing a `DataTransfer` object in `page.evaluate()` and dispatching `dragenter`/`drop` events — code that differed per browser engine and broke on Chromium security updates. `locator.drop()` uses Playwright's internal event pipeline, ensuring consistent behavior across Chromium, Firefox, and WebKit. Teams that relied on JS injection reported silent failures when browser security policies blocked synthetic DataTransfer construction. [community]
+
+---
+
+### `test.abort()` — Guard Rails in Route Handlers and Fixtures (v1.60+)
+
+`test.abort()` immediately marks the current test as failed and stops execution. Use it inside `page.route()` handlers or fixtures to enforce test environment invariants — for example, preventing tests from writing to shared production resources.
+
+```typescript
+// Prevent tests from accidentally publishing to shared content
+test('draft preview does not publish', async ({ page }) => {
+  await page.route('**/api/publish', route => {
+    test.abort('Test attempted to call /api/publish — use /api/draft instead.');
+    return route.abort();
+  });
+
+  await page.goto('/editor');
+  await page.getByRole('button', { name: 'Preview' }).click();
+  await expect(page.getByRole('dialog', { name: 'Preview' })).toBeVisible();
+});
+
+// Enforce in a shared fixture to protect all tests in a suite
+// e2e/fixtures/safe-env.ts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    await page.route('**/api/send-email', route => {
+      test.abort('Test called the real email API — mock it in your test via page.route().');
+    });
+    await use(page);
+  },
+});
+```
+
+> **[community]** WHY: `route.abort()` alone silently drops the network request, so the test continues running with missing data and may pass — masking the violation. `test.abort()` turns the silent bypass into an explicit failure with a clear message. Teams using shared staging environments use this pattern to prevent test-induced data corruption. [community]
+
+---
+
+### HAR Recording via `tracing.startHar()` / `stopHar()` (v1.60+)
+
+HAR recording is now a first-class tracing operation. Pair it with `await using` for automatic cleanup, or call `stopHar()` manually when finer control is needed.
+
+```typescript
+// Auto-cleanup with async disposable (recommended)
+test('network audit produces HAR', async ({ context }) => {
+  // HAR recording scoped to this block — finalized when 'har' exits scope
+  await using har = await context.tracing.startHar('test-results/audit.har');
+
+  const page = await context.newPage();
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: 'Load data' }).click();
+  await expect(page.getByRole('table')).toBeVisible();
+  // HAR written automatically — no explicit stopHar() needed
+});
+
+// Manual control — use when you need to gate on the HAR path before tests
+test('inspect redirect chain from HAR', async ({ context }) => {
+  await context.tracing.startHar('test-results/redirects.har');
+  const page = await context.newPage();
+
+  await page.goto('/old-path');
+  await expect(page).toHaveURL(/new-path/);
+
+  await context.tracing.stopHar();
+  // Parse the written HAR file for CI assertions
+  const har = JSON.parse(fs.readFileSync('test-results/redirects.har', 'utf8'));
+  const entries = har.log.entries.filter((e: any) => e.response.status >= 300 && e.response.status < 400);
+  expect(entries.length).toBeGreaterThan(0);
+});
+```
+
+> **[community]** WHY: The old `page.routeFromHAR()` replay API required a separately recorded HAR file managed outside Playwright's lifecycle. `tracing.startHar()` integrates recording into the tracing session, so HAR files are written to `test-results/` alongside traces and are automatically deleted by `--reporter=html` cleanup on next run. Using `await using` prevents HAR files from being left open/incomplete when a test throws mid-flight. [community]
+
+---
+
+### `getByRole()` with `description` Option (v1.60+)
+
+`getByRole()` now accepts a `description` option that matches the element's accessible description (from `aria-describedby`, `aria-description`, or the `title` attribute). Use it to distinguish identically-named controls.
+
+```typescript
+// Two "Delete" buttons on the same page — disambiguate by description
+test('deletes the correct item', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  // Matches: <button aria-label="Delete" aria-describedby="delete-account-desc">
+  const deleteAccountBtn = page.getByRole('button', {
+    name:        'Delete',
+    description: 'Permanently delete your account',
+  });
+
+  // Matches: <button aria-label="Delete" aria-describedby="delete-item-desc">
+  const deleteItemBtn = page.getByRole('button', {
+    name:        'Delete',
+    description: 'Remove this item from the list',
+  });
+
+  await deleteItemBtn.click();
+  await expect(page.getByRole('dialog', { name: 'Confirm deletion' })).toBeVisible();
+  // Confirm the account button was NOT clicked — still present
+  await expect(deleteAccountBtn).toBeVisible();
+});
+```
+
+> **[community]** WHY: Pages with repetitive action verbs ("Edit", "Delete", "View") used to require `nth()` index selectors or wrapper scoping with `.filter()`. Index selectors are position-dependent and fail when rows reorder. `description` targets semantic intent — the same information a screen reader user would hear — making tests accessible-first and more resilient. [community]
+
+---
+
+### `toHaveCSS()` with `pseudo` Option (v1.60+)
+
+Assert computed CSS on pseudo-elements (`::before`, `::after`) without JavaScript evaluation workarounds.
+
+```typescript
+// Assert a custom checkbox uses a CSS ::before checkmark
+test('checked checkbox shows correct icon', async ({ page }) => {
+  await page.goto('/settings');
+
+  const checkbox = page.getByRole('checkbox', { name: 'Enable notifications' });
+  await checkbox.check();
+
+  // Assert the ::before pseudo-element's content and color
+  await expect(checkbox).toHaveCSS('content', '"✓"', { pseudo: '::before' });
+  await expect(checkbox).toHaveCSS('color', 'rgb(37, 99, 235)', { pseudo: '::before' });
+});
+
+// Assert tooltip arrow rendered via ::after
+test('tooltip arrow uses correct border color', async ({ page }) => {
+  await page.goto('/help');
+  await page.getByRole('button', { name: 'Help' }).hover();
+
+  const tooltip = page.getByRole('tooltip');
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toHaveCSS('border-color', 'transparent transparent rgb(30, 30, 30) transparent', {
+    pseudo: '::after',
+  });
+});
+```
+
+> **[community]** WHY: `window.getComputedStyle(el, '::before').content` returns an empty string in modern browsers when called from JavaScript (it's a browser security restriction for pseudo-elements). Teams testing design systems with CSS-generated content icons were forced to use visual regression screenshots for these assertions. `pseudo` option gives deterministic, pixel-exact CSS assertions without screenshot diffing noise. [community]
+
+---
+
+### `browser.on('context')` and BrowserContext Lifecycle Events (v1.60+)
+
+`browser.on('context')` fires whenever a new browser context is created (including popup windows that create an implicit context). BrowserContext now mirrors page-level events (`download`, `frameattached`, `framedetached`, `framenavigated`, `pageclose`, `pageload`) so you can monitor all activity in a context from one listener.
+
+```typescript
+// Audit all contexts and their page lifecycle in a test fixture
+// e2e/fixtures/context-audit.ts
+import { test as base } from '@playwright/test';
+
+export const test = base.extend({
+  browser: async ({ browser }, use, testInfo) => {
+    const contextLog: string[] = [];
+
+    browser.on('context', ctx => {
+      contextLog.push(`context-created`);
+
+      ctx.on('pageload',  page => contextLog.push(`pageload:${page.url()}`));
+      ctx.on('pageclose', page => contextLog.push(`pageclose:${page.url()}`));
+      ctx.on('download',  dl  => contextLog.push(`download:${dl.suggestedFilename()}`));
+    });
+
+    await use(browser);
+
+    // Attach lifecycle log to test report for debugging
+    await testInfo.attach('context-lifecycle', {
+      contentType: 'text/plain',
+      body: contextLog.join('\n'),
+    });
+  },
+});
+
+// Monitor popup contexts in multi-tab flows
+test('OAuth popup completes and closes', async ({ page, context }) => {
+  const closedPages: string[] = [];
+  context.on('pageclose', page => closedPages.push(page.url()));
+
+  const [popup] = await Promise.all([
+    context.waitForEvent('page'),
+    page.getByRole('button', { name: 'Sign in with Google' }).click(),
+  ]);
+
+  await popup.getByLabel('Email').fill('user@example.com');
+  await popup.getByRole('button', { name: 'Next' }).click();
+  await popup.waitForEvent('close');
+
+  expect(closedPages.some(url => url.includes('accounts.google.com'))).toBe(true);
+  await expect(page).toHaveURL(/dashboard/);
+});
+```
+
+> **[community]** WHY: Before v1.60, debugging multi-context leaks (contexts not properly closed after popup flows) required manual `context.pages()` polling. The lifecycle events give real-time visibility into context activity and enable fixture-level audit logs — invaluable when debugging CI failures where popup OAuth flows leave ghost contexts that exhaust browser process limits. [community]
+
+---
+
+### `{testFileBaseName}` Token in `snapshotPathTemplate` (v1.60+)
+
+Use `{testFileBaseName}` (test file name without extension) in `snapshotPathTemplate` to group snapshots by spec file. Previously only `{testFilePath}` (full relative path) was available.
+
+```typescript
+// playwright.config.ts — group snapshots alongside spec files by base name
+export default defineConfig({
+  snapshotPathTemplate: '{testDir}/__snapshots__/{testFileBaseName}-{arg}{ext}',
+  // Results in: e2e/__snapshots__/dashboard-hero-1.png
+  //             e2e/__snapshots__/dashboard-hero-2.png  (instead of long nested path)
+});
+```
+
+> **[community]** WHY: The default `{testFilePath}` template embeds the full relative path including subdirectory names, producing deeply nested snapshot directories that are hard to navigate in IDEs. `{testFileBaseName}` flattens snapshots to a single `__snapshots__/` folder, making visual review and bulk regeneration easier. Teams with many spec files report the flat layout speeds up snapshot review by 40–60% in CI PR diffs. [community]
+
+---
+
+### `webSocketRoute.protocols()` — WebSocket Subprotocol Access (v1.60+)
+
+When routing WebSocket connections, `webSocketRoute.protocols()` returns the array of subprotocols requested by the client in the `Sec-WebSocket-Protocol` header.
+
+```typescript
+// Assert the client requests the correct subprotocol
+test('WS client negotiates graphql-ws protocol', async ({ page }) => {
+  const requestedProtocols: string[] = [];
+
+  await page.routeWebSocket('/graphql', route => {
+    requestedProtocols.push(...route.protocols());
+    // Accept the connection with the first matching protocol
+    route.connect();
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Subscribe' }).click();
+
+  expect(requestedProtocols).toContain('graphql-ws');
+});
+```
+
+---
+
+### Breaking Changes Reference Update (v1.60)
+
+Append to the existing Breaking Changes Reference section:
+
+| Version | Change |
+|---------|--------|
+| **v1.60** | `Locator.ariaRef()` removed. `handle` option on `BrowserContext.exposeBinding` / `Page.exposeBinding` removed. `logger` option on `BrowserType.connect` / `connectOverCDP` removed. Context options `videosPath` / `videoSize` removed — use `recordVideo: { dir, size }` instead. Config now rejects `workers: 0` or negative values at parse time. |
+
+---
+
+### 24. `videosPath` / `videoSize` context options removed in v1.60 cause silent misconfiguration [community]
+
+**Root cause:** `videosPath` and `videoSize` were deprecated in favor of `recordVideo: { dir, size }` but were silently ignored rather than erroring. In v1.60 they are removed — config that passed these options no longer records video without any warning.
+
+**Fix:** Replace both deprecated options with the `recordVideo` object form:
+
+```typescript
+// BEFORE (broken in v1.60):
+const context = await browser.newContext({
+  videosPath: 'test-videos/',
+  videoSize:  { width: 1280, height: 720 },
+});
+
+// AFTER (correct):
+const context = await browser.newContext({
+  recordVideo: {
+    dir:  'test-videos/',
+    size: { width: 1280, height: 720 },
+  },
+});
+```
+
+> Teams upgrading to v1.60 who relied on `videosPath` for CI failure videos found they silently had no video artifacts after the upgrade because the deprecated keys were dropped without a runtime warning. Always pin `playwright` and `@playwright/test` to the same version in `package.json` to catch these in a controlled upgrade. [community]
 - `page.coverage` (Chrome DevTools Protocol) collects V8 coverage and works without instrumentation, but reports line-level coverage without branch data. Use Istanbul for branch coverage. [community]

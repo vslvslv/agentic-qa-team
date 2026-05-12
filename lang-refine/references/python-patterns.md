@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 33 | score: 100/100 | date: 2026-05-08 -->
+<!-- sources: mixed (official + community) | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -37,6 +37,7 @@
      Iter 31 (2026-05-07): 100/100 (+0) — updated Python 3.13 section with TypeVar defaults (PEP 696), TypeIs (PEP 742), ReadOnly TypedDict (PEP 705), copy.replace() generic, deprecated modules, colorized tracebacks, free-threaded CPython; sourced from docs.python.org/3/whatsnew/3.13.html
      Iter 32 (2026-05-07): 100/100 (+0) — added Python 3.14 section: PEP 649/749 deferred annotations + annotationlib, PEP 750 t-strings, PEP 734 concurrent.interpreters, PEP 758 bracketless except, PEP 765 finally return warning, free-threaded improvements, pathlib.copy/move; community gotcha #28 (deferred annotation + get_type_hints); sourced from docs.python.org/3/whatsnew/3.14.html
      Iter 33 (2026-05-08): 100/100 (+0) — added factory_boy test factory patterns — basic Factory/DjangoModelFactory/SQLAlchemyModelFactory, LazyAttribute, SubFactory, RelatedFactory, Faker integration, sequences, create/build/stub strategies, batch operations; community gotcha #29 (create vs build strategy pitfalls); sourced from factoryboy.readthedocs.io/en/stable/ + practitioner synthesis
+     Iter 34 (2026-05-12): 100/100 (+0) — added Concatenate + ParamSpec decorator typing pattern, TypeVar bounds vs constraints deep-dive, map() strict= mode (Python 3.14), pathlib.info attribute, asyncio call-graph introspection, float.from_number() / complex.from_number(); community gotcha #30 (TypeVar bound vs constraint confusion); sourced from docs.python.org/3/library/typing.html + docs.python.org/3/whatsnew/3.14.html
 -->
 
 ## Core Philosophy
@@ -4329,3 +4330,333 @@ def test_order_total(user):
 | No locale set for locale-sensitive Faker fields | Phone/address formats fail locale-specific validators | Set `faker = factory.Faker._get_faker(locale="en_US")` or per-field locale |
 | `RelatedFactory` when `SubFactory` is more appropriate | `RelatedFactory` creates the related object *after*, so the FK relationship may be inverted | Use `SubFactory` for objects the main factory *depends on*; `RelatedFactory` for objects that *depend on* the main one |
 | Not using `spec=` or `create_autospec()` | Mock silently accepts nonexistent attributes; typos go undetected | Use `Mock(spec=SomeClass)` or `create_autospec(SomeClass, instance=True)` |
+
+---
+
+## `Concatenate` + `ParamSpec` for Injecting / Removing Decorator Arguments
+
+`Concatenate` lets you express the transformation a decorator performs on a callable's argument list. It is the precise tool for decorators that prepend, remove, or replace the first N arguments of a function — common in dependency injection, middleware, and memoization patterns.
+
+```python
+from collections.abc import Callable
+from threading import Lock
+from typing import Concatenate, TypeVar
+from typing import ParamSpec
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+_lock = Lock()
+
+
+# Decorator that ADDS a Lock as the first argument
+def with_lock(f: Callable[Concatenate[Lock, P], R]) -> Callable[P, R]:
+    """Inject a module-level lock as the first arg; callers don't see it."""
+    def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+        return f(_lock, *args, **kwargs)
+    return inner
+
+
+@with_lock
+def update_counter(lock: Lock, delta: int, *, saturate: bool = False) -> int:
+    """Lock-protected counter update. `lock` is injected by @with_lock."""
+    with lock:
+        global _counter
+        _counter = min(_counter + delta, 100) if saturate else _counter + delta
+        return _counter
+
+
+# Caller sees only (delta: int, *, saturate: bool = False) — lock is hidden
+result = update_counter(5, saturate=True)
+
+
+# Decorator that REMOVES the first argument (e.g. the 'self' parameter)
+def unbound_to_static(
+    f: Callable[Concatenate[object, P], R]
+) -> Callable[P, R]:
+    """Convert an unbound method to a standalone function (drop first arg)."""
+    def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+        return f(None, *args, **kwargs)  # Supply a dummy self
+    return inner
+```
+
+**`Concatenate[Arg1, Arg2, ..., P]`** — the last element must always be a `ParamSpec`.
+Use it when:
+- A decorator prepends/removes known positional arguments (dependency injection)
+- You need the type checker to verify the injected argument type
+- A plain `Callable[P, R]` would lose information about the removed argument
+
+**Contrast with plain `ParamSpec`:**
+```python
+# Plain ParamSpec — preserves the full signature unchanged
+def logged(f: Callable[P, R]) -> Callable[P, R]: ...  # No arg injection
+
+# Concatenate — transforms the signature
+def with_db(f: Callable[Concatenate[Session, P], R]) -> Callable[P, R]: ...  # Injects Session
+```
+
+---
+
+## TypeVar Bounds vs Constraints — Deep Dive
+
+Python's `TypeVar` supports two forms of restriction that look similar but behave very differently. Choosing the wrong one leads to confusing type errors or loss of type information.
+
+```python
+from typing import TypeVar
+
+# BOUND — upper bound: S can be any subtype of str
+# The return type is preserved as the SPECIFIC subtype used at the call site
+S = TypeVar("S", bound=str)
+
+def capitalise[S: str](x: S) -> S:
+    """Returns the same subtype as was passed in."""
+    return type(x)(x.capitalize())  # Preserves subclass
+
+class MyStr(str):
+    pass
+
+s: MyStr = capitalise(MyStr("hello"))   # ✓  return type is MyStr
+t: str   = capitalise("hello")          # ✓  return type is str
+```
+
+```python
+# CONSTRAINED — exact match: A must be EXACTLY str or EXACTLY bytes (not a subclass)
+# The return type collapses to one of the listed constraints, never a subclass
+A = TypeVar("A", str, bytes)
+
+def concat[A: (str, bytes)](x: A, y: A) -> A:
+    return x + y
+
+a = concat("one", "two")               # ✓ str
+b = concat(b"one", b"two")             # ✓ bytes
+# c = concat("one", b"two")            # ✗ Type error: cannot mix
+
+class MyBytes(bytes): pass
+d = concat(MyBytes(b"x"), MyBytes(b"y"))
+reveal_type(d)   # bytes — collapsed to the constraint, NOT MyBytes
+```
+
+**Decision guide:**
+
+| Scenario | Use |
+|---|---|
+| Need to preserve the exact subtype in the return value | `TypeVar("S", bound=Base)` |
+| Need to prevent mixing two incompatible types (str/bytes) | `TypeVar("A", str, bytes)` |
+| The function body only uses methods common to a base class | Bound |
+| The function body depends on knowing the type is exactly one of N options | Constrained |
+| Supporting subclasses at the call site matters | Bound only |
+
+**Common mistake:** Using a constrained `TypeVar` hoping to keep subtype information. If you write `TypeVar("T", Animal, Vehicle)` and call with `Dog(Animal)`, the return type is `Animal`, not `Dog`. Switch to a bound if you need to preserve the subclass.
+
+---
+
+## `map()` with `strict=True` (Python 3.14)
+
+Python 3.14 adds a `strict` keyword to `map()` that raises `ValueError` when the iterables have unequal lengths — the same guarantee that `zip(strict=True)` (Python 3.10) provides.
+
+```python
+# Without strict= (Python 3.10+) — silently truncates to the shorter sequence
+names = ["Alice", "Bob"]
+scores = [95, 87, 72]   # One extra item — silently dropped!
+labeled = list(map(lambda n, s: f"{n}: {s}", names, scores))
+# ['Alice: 95', 'Bob: 87']  — Carol's score is silently discarded
+
+# With strict=True (Python 3.14+) — raises ValueError on mismatch
+try:
+    labeled = list(map(lambda n, s: f"{n}: {s}", names, scores, strict=True))
+except ValueError as e:
+    print(e)  # map() argument 2 is longer than argument 1
+
+# Single-iterable map is unaffected (strict= only applies to multi-iterable usage)
+doubled = list(map(lambda x: x * 2, [1, 2, 3], strict=True))   # ✓ [2, 4, 6]
+
+# Prefer zip(strict=True) over map(strict=True) for simple pairwise operations
+for name, score in zip(names, scores, strict=True):
+    print(f"{name}: {score}")
+```
+
+**When to use:** Any time you zip/map two sequences that should be the same length (e.g., database column names + row values, header row + data row). The strict check catches data-alignment bugs that would otherwise silently produce wrong output.
+
+---
+
+## `pathlib.Path.info` — Cached Stat Attribute (Python 3.14)
+
+`Path.info` provides a cached view of a file's metadata (type, stat), allowing multiple attribute queries with a single syscall. It replaces repeated `os.stat()` calls or multiple `Path.is_*()` calls in tight loops.
+
+```python
+from pathlib import Path
+
+path = Path("data/output.csv")
+
+# Old pattern — two syscalls (two separate stat() calls):
+if path.is_file() and path.stat().st_size > 0:
+    process(path)
+
+# New pattern (Python 3.14+) — single syscall, cached on the info object:
+info = path.info
+if info.is_file() and info.size > 0:
+    process(path)
+
+# Useful for filtering large directory listings efficiently
+data_dir = Path("data")
+large_files = [
+    p for p in data_dir.iterdir()
+    if p.info.is_file() and p.info.size > 1_000_000
+]
+print(f"Found {len(large_files)} files > 1 MB")
+
+# info attributes:
+# .is_file()    — True if regular file
+# .is_dir()     — True if directory
+# .is_symlink() — True if symlink
+# .size         — file size in bytes (st_size)
+# .mtime        — last modified time (st_mtime)
+# .mode         — permission bits (st_mode)
+```
+
+**Note:** `info` caches the result of a single `lstat()` call. If the file system changes after `path.info` is accessed, call `path.info` again to re-query — the cache is not invalidated automatically.
+
+---
+
+## `float.from_number()` and `complex.from_number()` (Python 3.14)
+
+Python 3.14 adds explicit conversion constructors that validate the input type before converting — addressing a long-standing trap where `float(obj)` would silently succeed by calling `__trunc__()` on objects that only partially implement the numeric protocol.
+
+```python
+# OLD behaviour (Python < 3.14):
+class WeirdNumber:
+    def __trunc__(self) -> int:
+        return 42   # Truncates to int
+
+obj = WeirdNumber()
+f = float(obj)   # 42.0 — succeeded via __trunc__! Surprising.
+
+# NEW in Python 3.14: float() no longer falls back to __trunc__()
+# f = float(obj)   # TypeError: float() argument must be a string or a number,
+#                  #            not 'WeirdNumber'
+
+# EXPLICIT conversion with proper validation:
+import math
+
+def to_float_safe(value: object) -> float:
+    """Convert numeric types to float; reject non-numeric objects explicitly."""
+    return float.from_number(value)   # Raises TypeError for non-numeric types
+
+
+# Works for all legitimate numeric types:
+print(float.from_number(42))        # 42.0
+print(float.from_number(3.14))      # 3.14
+print(float.from_number(True))      # 1.0
+# print(float.from_number("3.14"))  # TypeError — strings not accepted
+
+# complex.from_number() similarly:
+print(complex.from_number(42))      # (42+0j)
+print(complex.from_number(3.14))    # (3.14+0j)
+# print(complex.from_number("1+2j"))  # TypeError
+```
+
+**Why it matters:** Before 3.14, calling `float()` on an object with `__trunc__` but not `__float__` or `__index__` would silently produce a truncated integer as a float — masking type errors. Use `float.from_number()` in new code when strict numeric type safety is required.
+
+---
+
+## `asyncio` Call-Graph Introspection (Python 3.14)
+
+Python 3.14 ships CLI and programmatic tools for inspecting running asyncio programs — essential for diagnosing deadlocks, stuck coroutines, and unexpected task hierarchies without a debugger.
+
+```python
+import asyncio
+
+
+# Programmatic call-graph capture (same process)
+async def child_task(name: str) -> None:
+    await asyncio.sleep(1)
+    print(f"{name} done")
+
+
+async def parent_task() -> None:
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(child_task("A"))
+        tg.create_task(child_task("B"))
+
+
+async def main() -> None:
+    from asyncio import capture_call_graph, print_call_graph
+
+    task = asyncio.create_task(parent_task())
+
+    # Capture the call graph of all running tasks
+    graph = capture_call_graph()
+    print_call_graph(graph)    # Hierarchical async call tree → stdout
+    await task
+
+
+asyncio.run(main())
+```
+
+**CLI inspection (attach to running process):**
+```bash
+# Flat task listing — all tasks in process PID
+python -m asyncio ps 12345
+
+# Hierarchical task tree — shows parent-child relationships
+python -m asyncio pstree 12345
+```
+
+**What you see:**
+- All running coroutines with their current `await` point
+- Task group hierarchies (structured concurrency chains)
+- Which coroutine is blocked waiting for which resource
+
+**Combine with `sys.remote_exec()` for zero-overhead production debugging:**
+```python
+import sys
+
+# In the target process — no debugger port needed:
+# sys.remote_exec(pid, "import asyncio; asyncio.print_call_graph()")
+```
+
+This replaces ad-hoc `print()` debugging in production asyncio servers — especially useful when a single slow external call starves the event loop and you can't attach a full debugger.
+
+---
+
+### Community Gotcha #30: TypeVar Bound vs Constraint Confusion  [community]
+
+**Problem:** A `TypeVar` with constraints collapses to the declared constraint type in the return, even when a subclass is passed. Developers expecting the subtype to be preserved are surprised when the return type is the base class, causing spurious type errors when they try to use the returned value as the subtype.
+
+**Why:** Constrained `TypeVar`s exist to prevent *mixing* of incompatible types (e.g. `str + bytes`). The trade-off is that the return type becomes the constraint, not the caller's specific subtype. This is by design — it ensures that all call sites that can mix `str` and `bytes` are rejected. The cost is that subclass information is erased.
+
+**Fix:** Use a *bounded* `TypeVar` (or the `[S: Base]` syntax) when you need to preserve the subtype. Use constrained `TypeVar`s only when you need to prevent mixing of mutually incompatible types.
+
+```python
+from typing import TypeVar
+
+# BAD: constrained — erases subclass in return type
+BadT = TypeVar("BadT", str, bytes)
+
+def first_bad(items: list[BadT]) -> BadT:
+    return items[0]
+
+class ShortStr(str): pass
+items: list[ShortStr] = [ShortStr("hello")]
+result = first_bad(items)
+reveal_type(result)   # str — ShortStr is lost!
+
+# GOOD: bounded — preserves the actual subtype
+GoodT = TypeVar("GoodT", bound=str)
+
+def first_good(items: list[GoodT]) -> GoodT:
+    return items[0]
+
+result2 = first_good(items)
+reveal_type(result2)  # ShortStr — preserved correctly
+
+# When to use CONSTRAINED: preventing str/bytes mixing
+MixT = TypeVar("MixT", str, bytes)
+
+def encode(text: MixT, prefix: MixT) -> MixT:
+    return prefix + text   # Enforces: both args must be the same type
+
+encode("hello", "pre_")       # ✓ str + str
+encode(b"hello", b"pre_")     # ✓ bytes + bytes
+# encode("hello", b"pre_")    # ✗ Type error: cannot mix str and bytes
+```

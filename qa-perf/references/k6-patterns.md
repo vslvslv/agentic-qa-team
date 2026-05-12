@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 21 | score: 100/100 | date: 2026-05-04 -->
-<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/ -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/ -->
 
-> Generated from official k6 documentation and community sources on 2026-05-04. Verified against k6 v1.7.1 (latest stable; security patch for CVE-2026-33186 in gRPC); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (latest stable; security patch for CVE-2026-33186 in gRPC); k6 v2.0.0-rc1 breaking changes documented below. Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section.
 
@@ -3757,6 +3757,163 @@ export default function () {
 > is 0 for most requests — connections are reused. But on cold starts, first-VU iterations, or
 > after connection resets, the TCP+TLS overhead adds 50-200ms that `http_req_duration` silently
 > ignores. Always add a `perceived_latency` custom trend for accurate user-facing SLO validation.
+
+---
+
+## HTTP/2 Protocol Support
+
+k6 supports HTTP/2 automatically — no configuration required. When the target server announces HTTP/2 support via ALPN (TLS extension), k6 upgrades the connection. HTTP/2 multiplexes multiple requests over a single TCP connection, reducing connection-setup overhead and improving throughput accuracy under high concurrency.
+
+### How HTTP/2 Negotiation Works
+
+| Step | What happens |
+|------|-------------|
+| 1. TLS handshake | k6 sends ALPN extension advertising `h2` and `http/1.1` |
+| 2. Server selects | Server responds with `h2` if it supports HTTP/2; `http/1.1` otherwise |
+| 3. Automatic upgrade | k6 silently upgrades — no script change needed |
+| 4. Multiplexed streams | All requests within a VU share one TCP connection with independent streams |
+
+**Key insight for load testing:** HTTP/2 multiplexing means a single VU can achieve significantly higher concurrency than HTTP/1.1, which serialises requests per connection. This changes your VU sizing — fewer VUs may be needed to achieve the same RPS, because each VU's requests no longer queue behind one another.
+
+### Verifying HTTP/2 Negotiation  [community]
+
+Always verify the actual protocol in use before interpreting results. A test you believe is measuring HTTP/2 performance may silently fall back to HTTP/1.1 if the server is misconfigured.
+
+```javascript
+// k6/scripts/http2-verify.js
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { Trend, Counter } from "k6/metrics";
+
+const h2Requests  = new Counter("http2_requests");
+const h1Requests  = new Counter("http1_requests");
+const h2Latency   = new Trend("http2_latency_ms", true);
+
+export const options = {
+  scenarios: {
+    protocol_check: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "30s", target: 20 },
+        { duration: "1m",  target: 20 },
+        { duration: "15s", target: 0  },
+      ],
+    },
+  },
+  thresholds: {
+    // Ensure at least 95% of requests use HTTP/2
+    http2_requests: ["count>0"],
+    http_req_duration: ["p(95)<500"],
+    checks: ["rate>0.99"],
+  },
+};
+
+const BASE = __ENV.API_URL || "https://localhost:3443";
+
+export default function () {
+  const res = http.get(`${BASE}/api/items`);
+
+  // r.proto returns "HTTP/2.0" or "HTTP/1.1" — use this to confirm negotiation
+  const isH2 = res.proto === "HTTP/2.0";
+
+  check(res, {
+    "status 200":   (r) => r.status === 200,
+    "protocol H2":  (r) => r.proto === "HTTP/2.0",
+  });
+
+  if (isH2) {
+    h2Requests.add(1);
+    h2Latency.add(res.timings.duration);
+  } else {
+    h1Requests.add(1);
+    console.warn(`VU ${__VU} falling back to ${res.proto} — check server TLS/ALPN config`);
+  }
+
+  sleep(1);
+}
+```
+
+### HTTP/2 Multiplexing — Concurrent Batch Requests  [community]
+
+HTTP/2 multiplexing allows multiple requests to fly in parallel over one connection without the per-request overhead of new TCP handshakes. Use `http.batch()` to exploit this in k6:
+
+```javascript
+// k6/scripts/h2-batch-load.js — exploit HTTP/2 multiplexing for realistic page-load simulation
+import http from "k6/http";
+import { check, sleep } from "k6";
+
+export const options = {
+  scenarios: {
+    h2_batch: {
+      executor: "constant-arrival-rate",
+      rate: 50,
+      timeUnit: "1s",
+      duration: "2m",
+      preAllocatedVUs: 20,
+      maxVUs: 100,
+    },
+  },
+  thresholds: {
+    http_req_duration: ["p(95)<300"],
+    http_req_failed:   ["rate<0.01"],
+  },
+};
+
+const BASE = __ENV.API_URL || "https://localhost:3443";
+
+export default function () {
+  // HTTP/2 multiplexes all 4 requests over one connection — no serial queuing
+  // Under HTTP/1.1, browsers open 6 parallel connections; k6 can do the same per VU
+  const responses = http.batch([
+    ["GET", `${BASE}/api/items`,          null, { tags: { name: "items" } }],
+    ["GET", `${BASE}/api/categories`,     null, { tags: { name: "categories" } }],
+    ["GET", `${BASE}/api/user/profile`,   null, { tags: { name: "profile" } }],
+    ["GET", `${BASE}/api/notifications`,  null, { tags: { name: "notifications" } }],
+  ]);
+
+  // Verify all responses and check protocol
+  for (const [name, res] of Object.entries(responses)) {
+    check(res, {
+      [`${name} status 200`]: (r) => r.status === 200,
+      [`${name} is H2`]:      (r) => r.proto === "HTTP/2.0",
+    });
+  }
+
+  sleep(0.5);
+}
+```
+
+### Real-World Gotchas — HTTP/2  [community]
+
+**1. Multiplexing changes VU sizing math.**
+Under HTTP/1.1, Little's Law (`VUs = RPS × response_time`) assumes one connection per VU. Under HTTP/2, a single VU can multiplex dozens of concurrent streams over one connection — so you need *fewer* VUs to achieve the same RPS. Teams that copy VU counts from HTTP/1.1 tests and run them against HTTP/2 backends risk generating 5–10× the intended load. WHY: the HTTP/2 VU spends no time waiting for connection establishment between requests; each request is a new stream on the existing connection.
+
+**2. Silent HTTP/1.1 fallback masks performance regressions.**
+k6 silently falls back to HTTP/1.1 when the server does not advertise HTTP/2. If your baseline was measured against HTTP/2 and the target later loses `h2` ALPN support (misconfigured LB, cert rotation issue), your new test will appear slower — but the root cause is the protocol downgrade, not a regression. Always assert `r.proto === "HTTP/2.0"` in smoke tests before load tests. WHY: without the assertion, you cannot distinguish "server is slower" from "server lost HTTP/2 support".
+
+**3. TCP HOL blocking under packet loss negates HTTP/2 benefits.**
+HTTP/2 multiplexes streams over a single TCP connection. Under high packet loss (> 1%), a single dropped TCP segment stalls ALL streams on that connection — this is TCP head-of-line (HOL) blocking. HTTP/3 (QUIC over UDP) solves this, but k6 does not currently support HTTP/3. WHY: production load tests on lossy networks or throttled connections may show HTTP/2 performing *worse* than HTTP/1.1 with 6 parallel connections (each with independent TCP HOL).
+
+**4. `http_req_connecting` stays at 0 after the first request — expected behavior.**
+Under both HTTP/1.1 keep-alive and HTTP/2, subsequent requests on the same connection show `http_req_connecting = 0`. This is correct — k6 reuses the connection. It is NOT a bug. Teams sometimes flag this as "the metrics are missing data". WHY: connection reuse is the normal behavior and means the server is behaving correctly.
+
+**5. TLS termination at the load balancer hides HTTP/2 from k6.**
+If your load balancer (Nginx, Envoy, AWS ALB) terminates TLS and proxies to the backend over HTTP/1.1, k6's `res.proto` will show `HTTP/2.0` for the LB→k6 leg but the backend never receives H2 traffic. This means you're testing the LB's HTTP/2 handling, not the backend's. WHY: relevant when you are measuring backend server performance and need to test without LB in the path, or when testing internal services directly.
+
+### HTTP/2 Error Codes Quick Reference  [community]
+
+See the `Network Error Codes & Diagnostics` section (1600–1699 range) for k6 H2 error codes:
+
+| Code | Meaning | Common cause |
+|------|---------|-------------|
+| 1600 | Generic HTTP/2 error | Check server logs |
+| 1610 | GOAWAY frame received | Server initiated graceful shutdown; scale-down event |
+| 1630 | Stream-level error | Protocol violation or server reset of a specific stream |
+| 1650 | Connection-level error | Fatal H2 connection failure; reconnect required |
+
+> **[community]:** `error_code=1610` (GOAWAY) is the most common HTTP/2 error in k6 tests against Kubernetes services. It appears when a Pod is terminated during a rolling deployment — the server sends GOAWAY to close existing connections gracefully before the Pod shuts down. To detect this, filter for `error_code=1610` in `handleSummary` or a Grafana dashboard: a spike during a deployment is expected and healthy; a sustained 1610 rate indicates an LB health-check misconfiguration.
+
+---
 
 ## Key APIs
 

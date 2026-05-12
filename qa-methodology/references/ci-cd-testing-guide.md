@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 23 | score: 100/100 | date: 2026-05-04 -->
-<!-- sources: training knowledge + iterative refinement pass | new: docs.pact.io/pact_nirvana (Pact Nirvana CI/CD maturity) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 24 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: testcontainers.com/cloud/docs/ (Testcontainers Cloud CI offload + Turbo mode) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 24 CI testing pillars covered in this guide:**
+**The 25 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -42,6 +42,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 22 | Visual regression | Playwright screenshot comparison — advisory PR annotation |
 | 23 | Deployment environments | GitHub Environments with reviewer gates + wait timers |
 | 24 | Docker BuildKit cache | GHA layer cache (`type=gha,mode=max`) for test images |
+| 25 | Testcontainers Cloud | Remote Docker daemon offload + Turbo mode for parallel Testcontainers suites |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -1128,6 +1129,94 @@ const container = await new PostgreSqlContainer('postgres:16-alpine')
 ```
 
 > [community] Testcontainers' `withReuse()` option can cut total integration suite time by 40% when the same container image is used across many test files. The risk: the reused container accumulates state between test suites unless each suite truncates its tables. Make `TRUNCATE` in `beforeEach` non-negotiable when using reuse.
+
+### Testcontainers Cloud for CI Pipelines [community]
+
+Testcontainers Cloud eliminates Docker-daemon management in CI by offloading container execution to a remote cloud environment via an SSH tunnel. Tests use the same `@testcontainers/*` client API — no code changes required — but containers run in a dedicated cloud worker (8 GB memory per session) rather than on the CI runner itself.
+
+**Why this matters for CI:** GitHub Actions free-tier runners have 2 vCPUs and ~7 GB RAM. A suite using Testcontainers with Postgres + Redis + a browser can exhaust that budget instantly. Testcontainers Cloud externalises container RAM and I/O to a remote worker, freeing the runner for TypeScript compilation and test execution.
+
+> [community] Teams that migrate from `services:` containers to Testcontainers Cloud report two compounding wins: (1) the CI runner no longer OOMs under heavy parallel suites, and (2) Turbo mode allocates a separate cloud worker per forked test process, achieving linear scaling without any sharding YAML. The migration path is a one-line agent bootstrap and a `TC_CLOUD_TOKEN` secret — existing test code is unchanged.
+
+**GitHub Actions setup (TypeScript Node.js project):**
+
+```yaml
+# .github/workflows/integration.yml
+name: Integration Tests
+
+on: [pull_request]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      TC_CLOUD_TOKEN: ${{ secrets.TC_CLOUD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      # One-step agent bootstrap — no Dockerfile changes needed
+      - uses: atomicjar/testcontainers-cloud-setup-action@main
+      - run: npm ci
+      # Existing Testcontainers test command unchanged
+      - run: npm run test:integration
+```
+
+**Turbo mode (parallel workers per fork — TypeScript Jest):**
+
+```typescript
+// jest.config.ts — forked workers each get their own cloud Docker daemon
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  // 4 forks → 4 independent Testcontainers Cloud workers (Turbo mode)
+  maxWorkers: 4,
+  // Each worker runs its own container lifecycle; no shared state
+  workerThreads: false,   // forked mode required for independent daemon per worker
+  testTimeout: 60_000,    // allow 60s for remote container start on first run
+};
+
+export default config;
+```
+
+**Enable Turbo mode in CI (increases concurrency):**
+
+```yaml
+# Set max concurrency for Turbo mode (each parallel process → 1 cloud worker)
+- uses: atomicjar/testcontainers-cloud-setup-action@main
+  with:
+    args: --max-concurrency=4 --terminate
+```
+
+**Key limitations to document on the team wiki:**
+
+```typescript
+// LIMITATION: File system mounts do NOT work with Testcontainers Cloud.
+// Replace BindMountVolume with copyFileToContainer() in your setup.
+
+// BAD — fails with Testcontainers Cloud:
+// container.withBindMount('/host/seed.sql', '/docker-entrypoint-initdb.d/seed.sql');
+
+// GOOD — works locally and in cloud:
+import { GenericContainer } from 'testcontainers';
+import * as fs from 'fs';
+
+const container = await new GenericContainer('postgres:16-alpine')
+  .withExposedPorts(5432)
+  .start();
+
+// Copy init SQL after container starts
+await container.copyContentToContainer([{
+  content: fs.readFileSync('./tests/fixtures/seed.sql'),
+  target: '/docker-entrypoint-initdb.d/seed.sql',
+}]);
+```
+
+> [community] The most common Testcontainers Cloud adoption issue: `TC_CLOUD_TOKEN` is scoped to a service account (CI) vs. a developer seat (Desktop). Mixing them by sharing the CI token with developers causes quota exhaustion on the service account and breaks the pipeline. Create a dedicated service account token for each CI provider (GitHub Actions, GitLab CI, Jenkins) and a separate seat allocation for developer machines.
+
+> [community] Testcontainers Cloud's `--terminate` flag is critical for CI cost control. Without it, cloud workers idle for up to 60 seconds after the CI job ends, consuming Worker Minutes (the billing unit for service accounts). Setting `--terminate` in the setup action drops the worker immediately when the job exits, eliminating the idle charge. On a 50-PR/day team running 4-worker Turbo suites, this saves ~200 Worker Minutes/day.
 
 ### Type-Safe API Mocking with MSW in CI [community]
 
@@ -4235,6 +4324,7 @@ jobs:
 | Nx docs — Affected commands | Official docs | https://nx.dev/nx-api/nx/documents/affected | Monorepo affected testing |
 | Turborepo — Remote caching | Official docs | https://turbo.build/repo/docs/core-concepts/remote-caching | Remote cache setup |
 | Testcontainers for Node.js | Official docs | https://testcontainers.com/guides/getting-started-with-testcontainers-for-nodejs/ | Integration test containers |
+| Testcontainers Cloud Docs | Official docs | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon: 8GB/session, Turbo mode parallelization, multi-lang CI/CD integration |
 | Husky — Git hooks | Official docs | https://typicode.github.io/husky/ | Pre-commit hook setup |
 | lint-staged | Official docs | https://github.com/lint-staged/lint-staged | Staged-files-only linting |
 | OSV-Scanner | Official docs | https://google.github.io/osv-scanner/ | Dependency vulnerability scanning |

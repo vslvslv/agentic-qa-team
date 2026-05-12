@@ -1,6 +1,12 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 25 | score: 100/100 | date: 2026-05-08 -->
+<!-- sources: official | community | mixed | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 26 (2026-05-12): added Template Literal Types deep-dive (type-safe property event source pattern,
+       cross-multiplication, intrinsic string utilities with examples, performance anti-pattern for large unions)
+       and Utility Types complete reference (ConstructorParameters, ThisParameterType, OmitThisParameter,
+       ThisType, and full function/this-type utilities table) — sourced from
+       typescriptlang.org/docs/handbook/2/template-literal-types.html and
+       typescriptlang.org/docs/handbook/utility-types.html (both new learning-sources catalog entries 2026-05-12)
      Iter 21 (2026-05-04): added Type Narrowing Deep-Dive (all 9 techniques from official narrowing docs),
        Conditional Types section (extends ternary, infer keyword, distributive types, built-in utilities),
        Declaration Files & Merging section, and expanded TSConfig reference table — sourced from
@@ -3177,3 +3183,200 @@ The standard library utility types are all implemented as mapped types. Understa
 | Using `Partial<T>` for update payloads with `exactOptionalPropertyTypes` | `Partial` uses `?` which allows explicit `undefined`; with `exactOptionalPropertyTypes` this breaks update logic | Use `{ [K in keyof T]+?: T[K] \| undefined }` or a custom `DeepPartial` |
 | Mapping over `any` | `[P in keyof any]` resolves to `string \| number \| symbol`, collapsing all type information | Only map over concrete types or constrained type parameters |
 | Forgetting `string &` before `Capitalize` | `Capitalize<K>` fails when `K` is `string \| number \| symbol` | Always intersect: `Capitalize<string & K>` |
+
+---
+
+## Template Literal Types — Deep Dive
+
+Template literal types build on string literal types using the same backtick syntax as JavaScript template literals. They can combine unions (cross-multiplying them), enforce naming conventions on event/property names, and are the foundation of the intrinsic string manipulation utility types.
+
+### Type-Safe Property Event Source (Inference in Template Position)
+
+The canonical advanced pattern: capture a literal type in a generic parameter, validate it against an object's keyof union, then use indexed access to wire the callback's parameter type:
+
+```typescript
+// Enforce "Changed"-suffix event names + keep callback type in sync with property type
+type PropEventSource<Type> = {
+  on<Key extends string & keyof Type>(
+    eventName: `${Key}Changed`,           // literal constraint: only "<prop>Changed" accepted
+    callback: (newValue: Type[Key]) => void // indexed access: callback type follows property type
+  ): void;
+};
+
+declare function makeWatchedObject<Type>(obj: Type): Type & PropEventSource<Type>;
+
+const person = makeWatchedObject({
+  firstName: 'Alice',
+  lastName: 'Smith',
+  age: 30,
+});
+
+// ✅ Correct: "firstNameChanged" matches Key="firstName"; callback infers (string) => void
+person.on('firstNameChanged', newName => {
+  console.log(newName.toUpperCase()); // newName: string
+});
+
+// ✅ Correct: Key="age"; callback infers (number) => void
+person.on('ageChanged', newAge => {
+  if (newAge < 0) console.warn('negative age');
+});
+
+// ❌ Error: "firstName" does not match "${Key}Changed" pattern
+// person.on('firstName', () => {});
+
+// ❌ Error: "frstNameChanged" is a typo — not in the valid union
+// person.on('frstNameChanged', () => {});
+```
+
+**Key insight:** TypeScript captures the literal type of the first argument (e.g., `"firstNameChanged"`), infers `Key = "firstName"` by stripping the suffix, validates it against `keyof Type`, then uses `Type[Key]` for the callback parameter. This chain gives you compile-time typo detection AND correct callback types — both from a single signature.
+
+### String Union Cross-Multiplication
+
+When two or more union types are interpolated in a template literal type, TypeScript generates the Cartesian product of all combinations:
+
+```typescript
+type EmailLocaleIDs  = 'welcome_email' | 'email_heading';
+type FooterLocaleIDs = 'footer_title'  | 'footer_sendoff';
+
+// 2 × 2 = 4 combinations
+type AllLocaleIDs = `${EmailLocaleIDs | FooterLocaleIDs}_id`;
+// "welcome_email_id" | "email_heading_id" | "footer_title_id" | "footer_sendoff_id"
+
+type Lang = 'en' | 'ja' | 'pt';
+
+// 3 × 4 = 12 combinations — routes, keys, or enum values generated at the type level
+type LocaleMessageIDs = `${Lang}_${AllLocaleIDs}`;
+// "en_welcome_email_id" | "en_email_heading_id" | ... (12 total)
+```
+
+[community] **Pitfall — unbounded cross-multiplied unions degrade performance.** TypeScript docs explicitly warn: *"We generally recommend that people use ahead-of-time generation for large string unions."* A pattern like `` `${Day}_${Hour}_${Minute}` `` with 7 × 24 × 60 = 10,080 members causes type-checker slowdown and IDE lag. Use build-time codegen (e.g., a script that generates the union and writes it to a `.d.ts`) for unions that exceed ~100 members.
+
+### Intrinsic String Manipulation Utilities
+
+TypeScript ships four built-in string manipulation utilities implemented inside the compiler (not expressible as TypeScript code). They apply **at the type level only** — no runtime cost. They are not locale-aware; they use JavaScript's default `toUpperCase()`/`toLowerCase()`.
+
+```typescript
+type Greeting = 'Hello, World';
+
+type Shouted      = Uppercase<Greeting>;       // "HELLO, WORLD"
+type Whispered    = Lowercase<Greeting>;       // "hello, world"
+type Capitalized  = Capitalize<'hello world'>; // "Hello world"
+type Decapitalized = Uncapitalize<'HELLO'>; // "hELLO"
+
+// Practical: enforce cache key format at the type level
+type ASCIICacheKey<Str extends string> = `ID-${Uppercase<Str>}`;
+type MainID = ASCIICacheKey<'my_app'>; // "ID-MY_APP"
+
+// Combine with mapped types to generate getter names
+type Getters2<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+interface Point { x: number; y: number }
+type PointGetters = Getters2<Point>; // { getX: () => number; getY: () => number }
+```
+
+**Why `string &` is required before `Capitalize`:** `keyof T` returns `string | number | symbol`. `Capitalize` only accepts `string`. Intersecting with `string` narrows to just the string keys — without it, TypeScript emits an error about `symbol` not being assignable to `string`.
+
+---
+
+## Utility Types — Complete Reference
+
+TypeScript ships utility types that cover five categories: property transformation, property selection, union manipulation, function reflection, and `this`-type manipulation. Most teams know `Partial`/`Pick`/`Omit` but miss the function and `this` utilities.
+
+### Function Type Reflection
+
+```typescript
+// Parameters<T> — tuple of parameter types (uses last overload for overloaded fns)
+type T0 = Parameters<() => string>;                     // []
+type T1 = Parameters<(s: string) => void>;              // [s: string]
+type T2 = Parameters<<T>(arg: T) => T>;                 // [arg: unknown]
+declare function greet(name: string, times: number): string;
+type GreetParams = Parameters<typeof greet>;             // [string, number]
+
+// ReturnType<T> — return type (uses last overload)
+type R0 = ReturnType<() => string>;                     // string
+type R1 = ReturnType<(s: string) => void>;              // void
+type R2 = ReturnType<typeof greet>;                     // string
+
+// ConstructorParameters<T> — constructor parameter tuple
+class Connection {
+  constructor(public host: string, public port: number) {}
+}
+type ConnParams = ConstructorParameters<typeof Connection>; // [host: string, port: number]
+type ErrParams  = ConstructorParameters<ErrorConstructor>;  // [message?: string]
+
+// InstanceType<T> — class instance type
+type ConnInstance = InstanceType<typeof Connection>;     // Connection
+```
+
+### `this`-Type Utilities
+
+These three utilities are rarely documented in team guides but are essential when working with `this`-typed functions:
+
+```typescript
+// ThisParameterType<T> — extracts the 'this' parameter type; 'unknown' if absent
+function toHex(this: Number): string {
+  return this.toString(16);
+}
+type HexThis = ThisParameterType<typeof toHex>; // Number
+
+// Useful: pass a 'this'-dependent function to a utility that needs the this type
+function applyToNumber(n: ThisParameterType<typeof toHex>): string {
+  return toHex.call(n);
+}
+
+// OmitThisParameter<T> — strips the 'this' parameter; useful for bind() results
+type BoundHex = OmitThisParameter<typeof toHex>; // () => string
+const fiveHex: BoundHex = toHex.bind(5);         // no 'this' needed at call site
+console.log(fiveHex()); // "5"
+
+// ThisType<T> — marks the contextual 'this' type for methods in an object literal
+// Requires noImplicitThis: true; does NOT return a transformed type — it's a marker
+type ObjectDescriptor<D, M> = {
+  data?: D;
+  methods?: M & ThisType<D & M>; // 'this' inside methods is typed as D & M
+};
+
+function makeObject<D, M>(desc: ObjectDescriptor<D, M>): D & M {
+  return { ...desc.data, ...desc.methods } as D & M;
+}
+
+const counter = makeObject({
+  data: { count: 0 },
+  methods: {
+    increment() { this.count++; },    // 'this' is { count: number } & { increment, decrement }
+    decrement() { this.count--; },
+    reset()     { this.count = 0; },
+  },
+});
+counter.increment();
+```
+
+[community] **Pitfall — `ThisType<T>` has no effect without `noImplicitThis: true` in tsconfig.** The marker is silently ignored in permissive mode, which makes `this` inside the methods `any` — the same as if you hadn't used `ThisType` at all. Enable `"noImplicitThis": true` (part of `"strict": true` from TypeScript 2.0+) to get the contextual `this` binding.
+
+### Full Utility Type Reference Table
+
+| Utility | Category | What it produces | TS version |
+|---------|----------|-----------------|------------|
+| `Partial<T>` | Property | All properties optional | 2.1 |
+| `Required<T>` | Property | All properties required | 2.8 |
+| `Readonly<T>` | Property | All properties readonly | 2.1 |
+| `Record<K,V>` | Property | Object with keys `K` and values `V` | 2.1 |
+| `Pick<T,K>` | Selection | Keep only keys `K` from `T` | 2.1 |
+| `Omit<T,K>` | Selection | Drop keys `K` from `T` | 3.5 |
+| `Exclude<T,U>` | Union | Remove union members assignable to `U` | 2.8 |
+| `Extract<T,U>` | Union | Keep only members assignable to `U` | 2.8 |
+| `NonNullable<T>` | Union | Remove `null` and `undefined` | 2.8 |
+| `Parameters<T>` | Function | Tuple of parameter types | 3.1 |
+| `ConstructorParameters<T>` | Function | Tuple of constructor parameter types | 3.1 |
+| `ReturnType<T>` | Function | Return type | 2.8 |
+| `InstanceType<T>` | Function | Class instance type | 2.8 |
+| `ThisParameterType<T>` | this | Type of `this` parameter | 3.3 |
+| `OmitThisParameter<T>` | this | Function type with `this` removed | 3.3 |
+| `ThisType<T>` | this | Contextual `this` marker (requires `noImplicitThis`) | 2.3 |
+| `Awaited<T>` | Async | Recursively unwrap Promise | 4.5 |
+| `NoInfer<T>` | Inference | Block inference from this position | 5.4 |
+| `Uppercase<S>` | String | Uppercase string literal | 4.1 |
+| `Lowercase<S>` | String | Lowercase string literal | 4.1 |
+| `Capitalize<S>` | String | Capitalize first character | 4.1 |
+| `Uncapitalize<S>` | String | Uncapitalize first character | 4.1 |

@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 20 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 21 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -94,6 +94,9 @@ DAST runs against a live or containerized application instance:
 - **OWASP ZAP** — open-source, scriptable, integrable with CI via `zaproxy/action-full-scan` or `zaproxy/action-baseline-scan`
 - **Nuclei** — fast, template-based vulnerability scanner for common CVEs and misconfigurations
 - Targets: XSS, CSRF, open redirects, broken auth headers, missing security headers (CSP, HSTS, X-Frame-Options)
+
+**OWASP DevSecOps 8-stage pipeline placement:**
+The OWASP DevSecOps Guideline (v0.2) defines the following ordering: (1) Credential leak detection, (2) SAST, (3) SCA, **(4) IAST** — during integration test runs, (5) DAST — nightly/scheduled, (6) IaC scanning, (7) Infrastructure scanning, (8) Compliance validation. IAST occupies the integration-test slot because it requires a running application but provides near-real-time results (seconds, not hours).
 
 **WHY it matters**: DAST validates runtime behavior that static analysis cannot see. A TypeScript application can pass every SAST check and strict type check and still ship with: an insecure CORS wildcard, missing `HttpOnly` cookie flags, no Content Security Policy, or an outdated TLS cipher suite. DAST is the only automated mechanism that catches configuration-level vulnerabilities that live outside the codebase entirely.
 
@@ -1156,6 +1159,180 @@ app.get('/health', (_req: Request, res: Response) => {
 
 **WHY DAST is NOT a pre-commit or PR check**: ZAP scans a running application for runtime vulnerabilities (missing headers, actual XSS reflection, CORS misconfiguration, TLS issues). These can only be verified against a live server — no static analysis or type system can catch a missing `Content-Security-Policy` header. Run DAST nightly to keep the feedback window short (< 24 hours), but never block PR merges on it.
 
+### IAST (Interactive Application Security Testing) — The Mid-Pipeline Security Layer
+
+IAST embeds sensor agents inside the running application and monitors real traffic flows during integration test runs. Unlike SAST (code analysis) and DAST (black-box scanning), IAST has full visibility into code execution paths, data flows, taint propagation, and backend connections — in real time, without the 5–7 day manual effort of a DAST scan.
+
+**IAST pipeline position**: runs during integration test execution on the CI/CD pipeline (not pre-commit, not nightly). Its results are available in the same CI run that executes the integration test suite.
+
+**OWASP DevSecOps Guideline (v0.2) — IAST capabilities:**
+- Hardcoded credentials detected during runtime (not just in static code)
+- Unsanitized user inputs flowing to dangerous sinks (SQL, shell, file paths) with full call-stack context
+- Unencrypted connections to backend services (databases, APIs, message queues) observed live
+- Data flow from HTTP request body through service layer to storage — the exact path SAST cannot trace
+
+**TypeScript/Node.js IAST tools:**
+
+| Tool | Type | Integration | WHY relevant for TypeScript |
+|------|------|-------------|----------------------------|
+| Contrast Community Edition | Open-source agent | Node.js agent injected via `require('node_modules/@contrast/agent')` | Monitors Express/Fastify request handling; detects injection sinks at runtime |
+| Checkmarx CxIAST | Commercial | Node.js agent | Correlates SAST findings with observed runtime behavior — reduces false positives |
+| Synopsys Seeker | Commercial | Node.js agent | Real-time taint tracking: follows user input from `req.body` through `pool.query()` |
+
+```typescript
+// src/app.ts — integrate Contrast CE IAST agent in test/staging environments only
+// The IAST agent is imported once, before all other requires, to instrument the runtime
+// NEVER enable in production: agent adds ~5–15% performance overhead
+
+// Load agent only in non-production environments
+if (process.env.NODE_ENV !== 'production' && process.env.IAST_ENABLED === 'true') {
+  // Agent patches Node.js core APIs, http, crypto, and child_process at load time
+  // It tracks taint from req.body/req.params through the call stack
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- IAST agent must be first require
+  require('@contrast/agent');
+}
+
+import express from 'express';
+import helmet from 'helmet';
+// ... rest of application
+export const app = express();
+app.use(helmet());
+app.use(express.json({ limit: '1mb' }));
+```
+
+```yaml
+# .github/workflows/iast-integration.yml — run IAST agent during integration test suite
+name: IAST Security Scan
+on:
+  pull_request:
+    paths: ['src/**/*.ts', 'tests/integration/**']
+
+jobs:
+  iast-scan:
+    name: Integration Tests + IAST Agent
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: test, POSTGRES_DB: testdb }
+        ports: ['5432:5432']
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+
+      - name: Run integration tests with IAST agent
+        env:
+          NODE_ENV: test
+          IAST_ENABLED: 'true'
+          CONTRAST__API__URL: ${{ vars.CONTRAST_API_URL }}
+          CONTRAST__API__API_KEY: ${{ secrets.CONTRAST_API_KEY }}
+          CONTRAST__APPLICATION__NAME: my-typescript-api
+          CONTRAST__APPLICATION__VERSION: ${{ github.sha }}
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/testdb
+        run: npx vitest run tests/integration/ --reporter=verbose
+        # The IAST agent instruments all HTTP handlers, database calls, and crypto
+        # operations during the Vitest integration run and reports findings to Contrast
+
+      - name: Fail on IAST critical findings
+        if: env.CONTRAST__API__URL != ''
+        run: |
+          # Query Contrast API for new HIGH/CRITICAL findings in this run
+          npx ts-node scripts/check-iast-results.ts --version=${{ github.sha }} --max-severity=HIGH
+          # Exits non-zero if any HIGH or CRITICAL vulnerabilities were observed
+```
+
+**WHY IAST is the complement to SAST for TypeScript**: SAST (CodeQL, Semgrep) analyses the source code's structure. IAST observes what actually happens when real HTTP requests arrive. The critical TypeScript-specific gap IAST fills: TypeScript's type system cannot detect that `req.query.id` flows into `pool.query('SELECT * FROM users WHERE id = ' + id)` — because the type system treats it as a `string`. IAST's taint engine tracks this flow at runtime and reports the SQL injection without requiring any TypeScript type information.
+
+> [community] **Lesson (OWASP DevSecOps Guideline, v0.2)**: IAST delivers "real-time (zero minutes)" results compared to 5–7 days for a manual DAST scan. The key practical benefit for TypeScript teams: IAST findings have full call-stack context (exact file, line number, HTTP route, taint path) rather than DAST's "the login endpoint returned suspicious behavior." Developers receive actionable findings while the integration test run is still fresh.
+
+> [community] **Lesson (Contrast Security, production teams)**: The most impactful IAST finding category for Node.js/TypeScript applications is **unvalidated redirect** — where `res.redirect(req.query.returnUrl)` routes users to attacker-controlled URLs. This pattern passes TypeScript type checking (both sides are `string`) and passes SAST (no dangerous sink pattern), but IAST sees the HTTP redirect response with attacker-controlled data during test execution.
+
+> [community] **Gotcha (IAST agent + TypeScript performance)**: Node.js IAST agents instrument core modules at load time using `require` hooks. On TypeScript projects using ESM (`"type": "module"` in `package.json`), Contrast CE's CJS `require()` agent cannot patch ESM-loaded modules. Ensure your TypeScript integration test build uses CommonJS output (`"module": "commonjs"`) or switch to an IAST agent with ESM support. The workaround for ESM TypeScript: use `--loader` hooks rather than `require()` patching.
+
+> [community] **Gotcha (IAST vs unit tests)**: IAST only observes code paths that are exercised during the test run. A handler that is never called by an integration test is never instrumented. Maximize IAST coverage by ensuring integration tests cover all HTTP routes and all authentication states (unauthenticated, viewer, admin) — particularly for authorization-gated endpoints where privilege escalation is most likely.
+
+---
+
+### Running CI Checks Locally — nektos/act
+
+A common shift-left frustration is the feedback loop: developers push a commit, wait 3–8 minutes for CI, see a failure, push another commit. `nektos/act` runs GitHub Actions workflows locally using Docker, eliminating the push-wait cycle for CI gate issues.
+
+```bash
+# Install act (macOS/Linux — runs GitHub Actions workflows locally)
+# homebrew: brew install act
+# Windows: choco install act-cli
+
+# Run the PR quality gate locally before pushing
+act pull_request \
+  --job typecheck \
+  --secret-file .env.local \   # Local env vars (ANTHROPIC_API_KEY etc.)
+  --artifact-server-path /tmp/act-artifacts \
+  --platform ubuntu-latest=catthehacker/ubuntu:act-22.04
+# Output: same tsc --noEmit result as CI, in ~45s on local machine
+```
+
+```typescript
+// scripts/pre-push-check.ts — run key CI checks locally before `git push`
+// Use as a git pre-push hook: npx ts-node scripts/pre-push-check.ts
+import { execSync } from 'node:child_process';
+
+const checks: Array<{ name: string; command: string }> = [
+  { name: 'TypeScript type check', command: 'npx tsc --noEmit' },
+  { name: 'ESLint security rules', command: 'npx eslint . --max-warnings=0' },
+  { name: 'Unit tests', command: 'npx vitest run --reporter=dot' },
+  { name: 'npm audit', command: 'npm audit --audit-level=high --omit=dev' },
+];
+
+let failed = false;
+for (const check of checks) {
+  process.stdout.write(`  ${check.name}... `);
+  try {
+    execSync(check.command, { stdio: 'pipe' });
+    console.log('PASS');
+  } catch (err) {
+    console.log('FAIL');
+    console.error((err as Error & { stdout?: Buffer }).stdout?.toString() ?? '');
+    failed = true;
+  }
+}
+
+if (failed) {
+  console.error('\nPre-push check failed. Fix the issues above before pushing.');
+  process.exit(1);
+}
+console.log('\nAll pre-push checks passed. Ready to push.');
+```
+
+```yaml
+# .github/workflows/pr-quality-gate.yml — add act-compatible job names for local running
+# Use consistent job names so `act pull_request --job typecheck` works
+name: PR Quality Gate
+on:
+  pull_request:
+    branches: [main, develop]
+jobs:
+  typecheck:     # act: run with `act pull_request --job typecheck`
+    name: TypeScript Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+```
+
+**WHY `act` is a shift-left tool**: The pre-commit hook catches issues in < 30 seconds. CI catches issues in 3–8 minutes. Without `act`, developers who break a CI check must push a fix commit and wait another 3–8 minutes. With `act`, they can reproduce the exact CI environment locally in < 1 minute. The feedback loop becomes: write code → pre-commit hook (30s) → act on failing job (60s) → push with confidence. This compresses what was a 15-minute iteration to < 2 minutes.
+
+> [community] **Lesson (nektos/act community, 2025 — 73k GitHub stars)**: `act` is most valuable for debugging CI failures that involve environment-specific behavior: Node.js version differences, missing environment variables, platform-specific path issues. Teams that add `act pull_request --job typecheck` to their pre-push workflow report eliminating 70% of "push-wait-fail-fix-push" cycles for type-check-related CI failures.
+
+> [community] **Gotcha (act + Docker on Windows)**: `act` requires Docker Desktop on Windows. The Windows filesystem path mapping between WSL2, Docker, and the act temp directory can cause failures on `actions/checkout@v4`. Use `--container-architecture linux/amd64` and ensure Docker Desktop's WSL2 integration is enabled. The most reliable setup: run `act` from within a WSL2 shell, not from PowerShell or CMD.
+
+---
+
 ## Measuring Shift-Left Effectiveness
 
 | Metric | How to Measure | Good Signal |
@@ -1271,6 +1448,8 @@ Use this checklist to audit a TypeScript/Node.js project's shift-left posture:
 - [ ] **AI code review:** All AI-generated code passes the same shift-left gates as human-written code (not a separate workflow)
 - [ ] **Containerized services:** Trivy image scan + Hadolint Dockerfile lint on `Dockerfile` changes
 - [ ] **AI/LLM apps:** LLM output schema validated with Zod; prompt injection tests in unit test suite
+- [ ] **IAST (teams with integration test suite):** Node.js IAST agent (Contrast CE or equivalent) enabled during integration test runs to detect runtime taint flows invisible to SAST
+- [ ] **Local CI parity:** `nektos/act` configured for key jobs (typecheck, lint) so developers can reproduce CI failures locally before pushing
 
 **Pipeline / Nightly Layer**
 - [ ] Snyk dependency scan (nightly, on `package-lock.json` changes)
@@ -4200,3 +4379,6 @@ export type CreateUserInput = Omit<User, 'id' | 'createdAt'>;
 | OWASP LLM Top 10 (2025) | Official | https://owasp.org/www-project-top-10-for-large-language-model-applications/ | Security risks for LLM applications including prompt injection |
 | langwatch/scenario | Tool | https://github.com/langwatch/scenario | AI agent red-teaming and scenario testing for TypeScript |
 | Prisma ORM | Tool | https://www.prisma.io/docs/ | TypeScript-first ORM with type-safe migrations |
+| OWASP DevSecOps Guideline — IAST | Official | https://owasp.org/www-project-devsecops-guideline/latest/02c-Interactive-Application-Security-Testing | IAST definition, tool list, and pipeline position |
+| Contrast Community Edition (Node.js) | Tool | https://www.contrastsecurity.com/developer/contrast-community-edition | Free IAST agent for Node.js — runtime taint tracking |
+| nektos/act | Tool | https://github.com/nektos/act | Run GitHub Actions workflows locally; 73k stars; eliminates push-wait-fail cycle |

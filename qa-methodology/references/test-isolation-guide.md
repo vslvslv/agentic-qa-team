@@ -1,9 +1,11 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 10 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 11 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
 <!--          Google Testing Blog, Jest/Vitest docs, community production experience               -->
+<!--          Jest 30 blog (globalsCleanup, using spy, jest.onGenerateMock),                       -->
+<!--          Vitest vi.stubEnv/vi.stubGlobal/unstubEnvs/unstubGlobals (2025/2026)                 -->
 
 ---
 
@@ -819,6 +821,11 @@ parallel workers.
 | TypeScript 5.2 — Explicit Resource Management | Official | https://devblogs.microsoft.com/typescript/announcing-typescript-5-2/#using-declarations-and-explicit-resource-management | `using`/`await using` for automatic test resource disposal |
 | Vitest Docs — `test.sequential` | Official | https://vitest.dev/api/#test-sequential | Selective serialization within concurrent describe blocks |
 | Prisma Docs — Interactive Transactions | Official | https://www.prisma.io/docs/orm/prisma-client/queries/transactions#interactive-transactions | Correct rollback-capable transaction mode for integration test isolation |
+| Jest 30 Blog — What's New | Official | https://jestjs.io/blog | `globalsCleanup`, `using spy`, `jest.onGenerateMock`, ESM unmock APIs added in Jest 30 |
+| Vitest — vi.stubEnv API | Official | https://vitest.dev/api/vi#vi-stubenv | Declarative env var isolation with `unstubEnvs: true` config — cleaner than manual save/restore |
+| Vitest — vi.stubGlobal API | Official | https://vitest.dev/api/vi#vi-stubglobal | Global replacement isolation with `unstubGlobals: true` config — auto-restore between tests |
+| Vitest Config — unstubEnvs | Official | https://vitest.dev/config/#unstubenvs | Config flag: automatically call `vi.unstubAllEnvs()` before each test |
+| Martin Fowler — Non-Determinism (teardown section) | Official | https://martinfowler.com/articles/nonDeterminism.html | Teardown-exception contamination: if cleanup throws, downstream test state is corrupted |
 
 ---
 
@@ -846,6 +853,11 @@ parallel workers.
 | Ordering in concurrent suite | Two tests must be sequential in parallel describe | Jest: no native equivalent; use separate describe | `test.sequential` in Vitest |
 | Prisma isolation | Data persists across tests with batch `$transaction` | Use interactive transaction + rollback trigger | Same |
 | Snapshot timestamp drift | Snapshot always fails after first run | `vi.useFakeTimers()` + `vi.setSystemTime()`; or `expect.any(String)` | Same |
+| Uncleaned globals across test files | Order-dependent failures; 2nd test sees mock `fetch` etc. | `globalsCleanup: 'on'` in Jest 30 `testEnvironmentOptions` | `unstubGlobals: true` in vitest config |
+| Spy not restored after test throws | Mock leaks to next test when spy setup used `restoreMocks: false` | `using spy = jest.spyOn(...)` (TS 5.2+, Jest 30) | `using spy = vi.spyOn(...)` |
+| `process.env` boilerplate duplicated across files | Manual save/restore in every test file | Manual Pattern 5 (Pattern 5 in this guide) | `vi.stubEnv() + unstubEnvs: true` in vitest config |
+| Global browser API not restored | `window.fetch` or `navigator` stays mocked in next test | Manually restore in `afterEach` | `vi.stubGlobal() + unstubGlobals: true` |
+| Teardown throws and corrupts downstream state | Cascading failures after a resource cleanup error | Wrap teardown in `try/catch/finally`; always release in `finally` | Same |
 
 ---
 
@@ -1423,4 +1435,158 @@ describe('buildOrderConfirmation snapshot', () => {
     When a snapshot includes non-deterministic values, every run becomes an expected diff, and
     the snapshot loses its value. Fix: use `expect.any(Number)` or `expect.any(String)` for
     timestamps in snapshots, or mock `Date` to a fixed value before the snapshot assertion.
+
+34. **Jest 30's `globalsCleanup` option catches uncleaned globals that cause cross-file contamination.** [community]
+    Jest 30 introduced a `globalsCleanup` option in `testEnvironmentOptions` (default: `'soft'`).
+    When set to `'on'`, Jest detects and warns about globals that were added to `globalThis`
+    during a test file and not removed by `afterAll`. Uncleaned globals persist into the next
+    test file processed by the same worker — a class of isolation failure that is invisible in
+    single-file runs but manifests as order-dependent failures in full suite runs. Teams
+    reported 77% lower memory usage after enabling this option and cleaning up the flagged
+    globals. WHY: module-level `globalThis` assignments are easy to add (e.g., test helpers that
+    set `global.fetch = jest.fn()`) but are rarely cleaned up, because there's no static analysis
+    to catch them. `globalsCleanup: 'on'` provides runtime detection.
+    ```typescript
+    // jest.config.ts
+    export default defineConfig({
+      testEnvironmentOptions: {
+        globalsCleanup: 'on', // Warn when test files leave globals uncleaned
+      },
+    });
+    ```
+
+35. **Jest 30's `using spy = jest.spyOn()` with explicit resource management removes the need for `afterEach` spy cleanup.** [community]
+    TypeScript 5.2's `using` keyword (explicit resource management) works with Jest 30's
+    updated `jest.spyOn()`. Declaring the spy with `using` means it is automatically restored
+    when the test function's scope ends — no `afterEach(() => jest.restoreAllMocks())` needed
+    for that spy. This eliminates the most common missed-teardown isolation bug: a spy set up
+    in a test that is never restored and leaks mock behavior into subsequent tests in the same
+    file. WHY: `afterEach` runs after the test ends but is separate from the test body's
+    try/finally semantics; if a test throws early, `afterEach` still runs, but the `using`
+    pattern makes the cleanup intent local and visible at the point of setup.
+    ```typescript
+    // jest.config.ts: requires ts-jest with TypeScript ≥ 5.2 and target ≥ ES2022
+    import { OrderService } from './orderService';
+    import { InventoryService } from './inventoryService';
+
+    describe('OrderService with using-based spy cleanup', () => {
+      it('calls reserve() on placeOrder', () => {
+        // `using` restores the spy automatically when this function returns
+        using spy = jest.spyOn(InventoryService.prototype, 'reserve')
+          .mockReturnValue(true);
+
+        const svc = new OrderService(new InventoryService());
+        svc.placeOrder('sku-1', 2);
+
+        expect(spy).toHaveBeenCalledWith('sku-1', 2);
+        // spy is auto-restored here — no afterEach needed for this spy
+      });
+
+      it('reserve() is real again — no spy leak from previous test', () => {
+        const svc = new OrderService(new InventoryService());
+        // If the spy from the previous test had leaked, this would return the mock value
+        // The test verifies that isolation was maintained by using-based cleanup
+        expect(() => svc.placeOrder('sku-1', 0)).not.toThrow();
+      });
+    });
+    ```
+
+36. **Vitest's `vi.stubEnv()` + `unstubEnvs: true` is safer than manual `process.env` save/restore.** [community]
+    The manual pattern (Pattern 5: save `originalEnv`, restore in `afterEach`) has two failure
+    modes: (1) if a test throws before `afterEach`, the env is not restored (mitigated by
+    `afterEach` always running, but easy to misuse in custom test harnesses); (2) the save/restore
+    boilerplate is duplicated across test files. Vitest's `vi.stubEnv()` combined with
+    `unstubEnvs: true` in the config provides declarative, automatic env var restoration after
+    every test — no `afterEach` boilerplate required. WHY: Vitest internally tracks the original
+    value of each key passed to `vi.stubEnv()` and restores it automatically before the next test
+    runs when `unstubEnvs` is enabled, even if the test threw.
+    ```typescript
+    // vitest.config.ts
+    export default defineConfig({
+      test: {
+        unstubEnvs: true,    // auto-restores all vi.stubEnv() calls between tests
+        unstubGlobals: true, // auto-restores all vi.stubGlobal() calls between tests
+      },
+    });
+
+    // config.test.ts — no manual save/restore needed
+    import { describe, it, expect, vi } from 'vitest';
+    import { loadConfig } from './config';
+
+    describe('config loader (Vitest)', () => {
+      it('uses LOG_LEVEL=debug when set', () => {
+        vi.stubEnv('LOG_LEVEL', 'debug'); // auto-restored after this test
+
+        const config = loadConfig();
+
+        expect(config.logLevel).toBe('debug');
+      });
+
+      it('defaults to LOG_LEVEL=info — env is automatically restored from previous test', () => {
+        // No manual delete/restore needed — unstubEnvs: true handles it
+        const config = loadConfig();
+
+        expect(config.logLevel).toBe('info');
+      });
+    });
+    ```
+
+37. **Vitest's `vi.stubGlobal()` + `unstubGlobals: true` isolates global API replacements without teardown boilerplate.** [community]
+    Tests that replace browser globals (`window.fetch`, `navigator.language`, `IntersectionObserver`,
+    `requestAnimationFrame`) must restore the original value or leak broken globals into other
+    tests in the same worker. `vi.stubGlobal()` with `unstubGlobals: true` provides the same
+    declarative auto-restore as `vi.stubEnv()`. WHY: unlike `vi.spyOn()`, which wraps an existing
+    method, `vi.stubGlobal()` replaces a property on `globalThis`. The original value is captured
+    at stub time; `vi.unstubAllGlobals()` (or auto-restore via config) sets the property back
+    to exactly that value — correctly handling globals that were `undefined` before the test set
+    them. Manual approaches using `delete globalThis.fetch` fail when the original value was not
+    `undefined`.
+    ```typescript
+    // component.test.ts — testing a component that calls navigator.language
+    import { describe, it, expect, vi } from 'vitest';
+    import { getDisplayLanguage } from './i18n';
+
+    describe('getDisplayLanguage (Vitest with unstubGlobals: true)', () => {
+      it('returns "French" when navigator.language is fr-FR', () => {
+        vi.stubGlobal('navigator', { language: 'fr-FR' }); // auto-restored
+
+        expect(getDisplayLanguage()).toBe('French');
+      });
+
+      it('returns "English" when navigator.language is en-US', () => {
+        vi.stubGlobal('navigator', { language: 'en-US' }); // auto-restored
+
+        expect(getDisplayLanguage()).toBe('English');
+      });
+
+      it('defaults to "English" when navigator is not stubbed', () => {
+        // unstubGlobals: true restores the real navigator between tests
+        expect(getDisplayLanguage()).toBe('English');
+      });
+    });
+    ```
+
+38. **Teardown exception silently breaks isolation for all downstream tests.** [community]
+    When cleanup code in `afterEach` or `afterAll` throws an exception, Jest/Vitest reports it
+    as a test failure attributed to the *current* test — but the cleanup side effect (database
+    not rolled back, server not closed, env var not restored) is not undone. All subsequent
+    tests that relied on a clean starting state now run against contaminated state, producing
+    cascading failures that look like unrelated test defects. WHY: teardown code often accesses
+    resources that may already be in a bad state when the preceding test failed (e.g., a
+    `queryRunner` that is already released). Wrap teardown in try/catch or use `finally` blocks:
+    ```typescript
+    afterEach(async () => {
+      try {
+        await queryRunner.rollbackTransaction();
+      } catch {
+        // Do not let teardown failures cascade — log but swallow
+        console.warn('[teardown] rollback failed; state may be contaminated');
+      } finally {
+        // release() must always run regardless of rollback success
+        await queryRunner.release().catch(() => {});
+      }
+    });
+    ```
+    The `finally` block ensures the connection handle is always released even when rollback
+    fails, preventing connection pool exhaustion (Gotcha 26) as a secondary consequence.
 

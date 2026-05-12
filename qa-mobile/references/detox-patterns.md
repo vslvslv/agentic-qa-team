@@ -1,5 +1,5 @@
 # Detox Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 39 | score: 100/100 | date: 2026-05-03 -->
+<!-- lang: JavaScript | sources: official docs + community + training knowledge | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
 <!-- WebFetch was unavailable — synthesized from official docs knowledge + community research training data -->
 <!-- Re-run `/qa-refine Detox` with WebFetch enabled to pull live sources -->
 
@@ -1767,6 +1767,9 @@ jobs:
 | `device.takeScreenshot(name)` | Save a screenshot to artifacts | Manual debugging snapshots |
 | `device.captureViewHierarchy(name)` | Dump native accessibility tree to .viewhierarchy file | Debug "element not found" — open in Xcode |
 | `device.clearKeychain()` | Purge iOS Simulator Keychain (Detox 20+) | Prevent token leak between auth test suites |
+| `element.scrollPickerViewToRowIndex(row, col)` | Scroll iOS native PickerView to a row in a column | iOS native `<Picker>` / date pickers |
+| `element.scroll(px, dir, startX?, startY?)` | Scroll from a specific normalized position (0–1) | Tap-dense scroll views where center is occupied |
+| `jestExpect` (global) | Jest's `expect` aliased to avoid Detox conflict | Value assertions alongside Detox element assertions |
 | `by.system()` | Match system-level UI elements (alerts, permission dialogs) | When pre-granting in `launchApp` is not possible |
 
 ### Android-specific device APIs
@@ -1910,6 +1913,11 @@ Review your tests against this list when diagnosing a CI failure:
 | Using `tapAtPoint` with hardcoded pixels for tappable UI | Add `testID` and use `tap()` instead; `tapAtPoint` is for canvas/map only |
 | `adjustSliderToPosition` on a custom JS slider | Only works on native RN `<Slider>`; use JS test helpers for custom sliders |
 | Leaving `captureViewHierarchy` calls in production tests | Debug utility only — remove before merging; it adds ~500ms per call |
+| `adjustSliderToPosition` on Android | API is iOS-only; guard with `device.getPlatform()` and use `tapAtPoint` fallback (Gotcha 31) |
+| Duplicate `testID` on wrapper + inner component | Add `testID` only to the innermost interactive element (Gotcha 32) |
+| Importing `expect` from `@jest/globals` | Use the `jestExpect` global alias provided by Detox's test environment instead |
+| `scrollPickerViewToRowIndex` called before picker is visible | Always `waitFor(...).toBeVisible()` on the picker element before calling scroll |
+| `element.scroll()` from center on tap-dense scroll views | Use `startPositionX`/`startPositionY` parameters to scroll from an edge |
 | Using `launchApp({url})` for a warm deep link | Use `device.openURL()` when app is already running; `launchApp({url})` cold-starts the app |
 | Using `--reuse` flag in CI | `--reuse` is for local iteration only; CI jobs always need a clean launch |
 | `element.scroll()` called on a non-scrollable container | Assign `testID` to the `<ScrollView>` itself, not a wrapper `<View>` (Gotcha 25) |
@@ -3389,6 +3397,224 @@ The timeline output shows:
 
 If `idle_wait` spans are long, use `--debug-synchronization 3000` to find the culprit.
 If `waitFor` polls many times before resolving, the timeout is generous — reduce it after confirming the feature's real latency.
+
+---
+
+## Additional Patterns (iteration 40 additions)
+
+### iOS PickerView / native Picker testing with `selectPickerViewColumnIndex()`
+
+React Native's `<Picker>` renders as a native `UIPickerView` on iOS. Detox provides
+`scrollPickerViewToRowIndex()` (and the `selectPickerViewColumnIndex()` helper in Detox 20+)
+to interact with these controls deterministically without relying on swipe gestures.
+
+```js
+// e2e/picker.test.js
+// Native iOS PickerView — must have testID set on the <Picker> component
+
+it('selects "Canada" from a country picker', async () => {
+  await element(by.id('country-picker-button')).tap();
+
+  // Wait for the picker modal / sheet to be visible
+  await waitFor(element(by.id('country-picker')))
+    .toBeVisible()
+    .withTimeout(3000);
+
+  // Scroll column 0 to row index 2 (0-based)
+  // Row order matches the data array passed to the Picker
+  await element(by.id('country-picker')).scrollPickerViewToRowIndex(2, 0);
+
+  // Confirm the selection label updated
+  await element(by.id('confirm-picker-button')).tap();
+  await waitFor(element(by.id('selected-country-label')))
+    .toHaveText('Canada')
+    .withTimeout(2000);
+});
+
+it('selects a year from a two-column date picker (month, year)', async () => {
+  await element(by.id('date-picker')).scrollPickerViewToRowIndex(0, 0); // month col
+  await element(by.id('date-picker')).scrollPickerViewToRowIndex(5, 1); // year col (index 5 = 6th year option)
+  await element(by.id('apply-date-button')).tap();
+});
+```
+
+**Notes:**
+- The first argument to `scrollPickerViewToRowIndex(rowIndex, colIndex)` is 0-based row index, second is 0-based column index.
+- On Android, `<Picker>` renders as a `Spinner` widget. Use `element(by.id('picker')).tap()` to open the dropdown, then `element(by.text('Canada')).tap()` to select — Android pickers are not interactable via `scrollPickerViewToRowIndex`.
+- If the Picker is inside a `<Modal>`, ensure the modal is fully visible before calling this API.
+
+---
+
+### Avoiding the Jest `expect` vs Detox `expect` namespace collision [community]
+
+Detox injects its own `expect` global into the test environment. This conflicts with Jest's
+`expect` when you import both in the same file — the last-defined global wins, causing
+one or both `expect` implementations to silently break.
+
+**Root cause**: The `testEnvironment: 'detox/runners/jest/testEnvironment'` in `jest.config.js`
+sets Detox globals before the test file runs. If you import Jest's `expect` explicitly
+(e.g., from `@jest/globals`), it overwrites Detox's `expect`. The reverse is also true
+when test files use Detox's `expect` for element assertions after setting up Jest's `expect`
+for value assertions.
+
+```js
+// BAD — importing from @jest/globals overwrites Detox's expect global in the file scope
+import { expect } from '@jest/globals';
+// All calls to expect(element(by.id('foo'))) will throw a cryptic type error:
+// "received value must be a Detox element, got: [object Object]"
+
+// GOOD — use the jestExpect alias provided by Detox's test environment
+// Detox's test environment (detox/runners/jest/testEnvironment) exposes
+// `jestExpect` as a separate global so you can use both without conflict:
+it('fills a form and asserts navigation', async () => {
+  await element(by.id('name-input')).replaceText('Alice');
+  await element(by.id('submit-button')).tap();
+
+  // Detox's expect — for element assertions
+  await expect(element(by.id('success-screen'))).toBeVisible();
+
+  // Jest's expect — for plain value assertions, exposed as jestExpect
+  const attrs = await element(by.id('success-screen')).getAttributes();
+  jestExpect(attrs.text).toBe('Welcome, Alice!');
+  jestExpect(attrs.enabled).toBe(true);
+});
+```
+
+**Alternative**: If you need Jest matchers (`toMatchObject`, `toContain`, etc.) alongside
+Detox element assertions, use the `jestExpect` alias that Detox's test environment injects:
+
+```js
+// e2e/constants.js — re-export jestExpect for clarity in test files
+// jestExpect is a global injected by detox/runners/jest/testEnvironment
+// No import needed — it is available in all test files using that environment
+```
+
+**WHY it matters [community]:** This is one of the most common setup errors in projects that
+add Detox to an existing codebase that already uses `@jest/globals` imports. The failure
+mode is a cryptic `"Matcher error: received value must be a Detox element matcher"` at
+runtime — not a compile-time error — so teams spend hours diagnosing what looks like a
+version mismatch.
+
+---
+
+### `element.scroll()` with `startPositionX`/`startPositionY` parameters (Detox 20+)
+
+Standard `element.scroll(pixels, direction)` always starts the scroll gesture from the
+center of the element. For scroll views where the center contains interactive content
+(buttons, inputs, links), the scroll gesture can accidentally trigger a tap instead of a
+scroll. Detox 20+ accepts optional `startPositionX` and `startPositionY` (normalized 0–1)
+to control where the gesture begins:
+
+```js
+// e2e/scroll-from-edge.test.js
+
+it('scrolls a feed without accidentally tapping story cards', async () => {
+  // Start scroll from the top-right corner (x=0.9, y=0.1) to avoid tapping cards
+  // that occupy the center of the screen
+  await element(by.id('stories-feed')).scroll(300, 'down', 0.9, 0.1);
+
+  await waitFor(element(by.id('story-item-15')))
+    .toBeVisible()
+    .withTimeout(5000);
+});
+
+it('scrolls a horizontal carousel from its left edge to avoid button hits', async () => {
+  // Carousel has a "skip" button in the center; scroll from left edge (x=0.1)
+  await element(by.id('onboarding-carousel')).scroll(200, 'right', 0.1, 0.5);
+  await waitFor(element(by.id('slide-2-title')))
+    .toBeVisible()
+    .withTimeout(3000);
+});
+```
+
+**API signature:**
+```js
+// element.scroll(pixels, direction, startPositionX?, startPositionY?)
+// startPositionX / startPositionY: normalized 0.0 to 1.0
+// (0.0 = left/top edge, 1.0 = right/bottom edge, 0.5 = center — default)
+```
+
+**WHY this matters [community]:** On small-screen devices (iPhone SE) or dense list UIs,
+the center of a scroll view often sits directly on top of a tappable card or button.
+`scroll()` without position args intermittently triggers a tap instead of a swipe —
+appearing as a random navigation event that causes subsequent `element not found` failures.
+
+---
+
+### 31. `adjustSliderToPosition()` is iOS-only and silently no-ops on Android [community]
+
+**Root cause**: `adjustSliderToPosition(0–1)` only works on native `UISlider` via the iOS
+`Slider` component. On Android, the same call either throws `"method not found"` or
+silently does nothing — depending on the Detox version — leaving the slider at its original
+value while the test proceeds.
+
+**WHY it's missed**: Teams develop on iOS first and ship the feature. Android tests are
+added later (or run on the same test file with `device.getPlatform()`), at which point the
+silent failure confuses them because there is no assertion error — just a wrong slider value.
+
+**Fix**: Guard the call with `device.getPlatform()` and use a coordinate-based tap fallback
+for Android:
+
+```js
+it('sets quality slider to 75%', async () => {
+  if (device.getPlatform() === 'ios') {
+    // Native slider — deterministic positioning via Detox API
+    await element(by.id('quality-slider')).adjustSliderToPosition(0.75);
+  } else {
+    // Android: calculate pixel offset from element frame and use tapAtPoint
+    const attrs = await element(by.id('quality-slider')).getAttributes();
+    const x = attrs.frame.width * 0.75;  // 75% from left edge
+    const y = attrs.frame.height / 2;
+    await element(by.id('quality-slider')).tapAtPoint({ x, y });
+  }
+
+  // Verify regardless of platform
+  const result = await element(by.id('quality-slider')).getAttributes();
+  expect(parseFloat(result.value)).toBeGreaterThan(0.7);
+});
+```
+
+---
+
+### 32. Custom `testID` collision between inner shadow and outer wrapper [community]
+
+**Root cause**: When a React Native `<View>` wraps a native component (e.g., a Pressable
+with ripple, a custom `<Switch>` wrapper), React Native sometimes renders both the outer
+JS wrapper and the inner native component with the same `testID`. Detox `element(by.id())`
+matches both — `atIndex(0)` gets the outer view, `atIndex(1)` gets the inner component.
+Tapping the outer view triggers the tap, but `getAttributes()` on it returns `enabled:
+undefined` because the outer View doesn't have the `disabled` prop — only the inner does.
+
+**WHY it's confusing**: `expect(element(by.id('submit-button'))).toBeVisible()` passes
+on both indices. But `getAttributes().enabled` returns `undefined` on the wrapper and
+`false` on the inner Pressable, causing conditional logic to incorrectly proceed.
+
+**Fix**: Add `testID` only to the innermost interactable component, not the wrapper:
+
+```jsx
+// BAD — outer View and inner Pressable both receive testID
+<View testID="submit-button">
+  <Pressable testID="submit-button" onPress={submit} disabled={isLoading}>
+    <Text>Submit</Text>
+  </Pressable>
+</View>
+
+// GOOD — testID only on the interactive element
+<View>
+  <Pressable testID="submit-button" onPress={submit} disabled={isLoading}>
+    <Text>Submit</Text>
+  </Pressable>
+</View>
+```
+
+```js
+// In tests: use .withDescendant() to confirm you matched the right level
+await expect(
+  element(by.id('submit-button').withAncestor(by.id('form-container')))
+).toBeVisible();
+const attrs = await element(by.id('submit-button')).getAttributes();
+expect(attrs.enabled).toBe(true); // now reliable
+```
 
 ---
 
