@@ -1,6 +1,14 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 35 | score: 97/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 35 (2026-05-12): added `using` declaration for test resource cleanup (Disposable interface in
+       beforeEach/afterEach), type-safe `expect.extend` custom matchers (Jest MatcherFunction + declare module
+       augmentation, Vitest CustomMatcherResult), Vitest 2.x `vi.fn` generic type parameter change
+       (single generic vs old two-generic signature, MockedFunction vs Mock), `satisfies` operator for
+       exhaustive test fixture type-checking (fixtures validated against discriminated union schema without
+       widening), and `Awaited<ReturnType<...>>` pattern for typing async mock return values — sourced from
+       jestjs.io/docs/expect, vitest.dev/api/vi.html, vitest.dev/guide/mocking.html (verified 2026-05-12);
+       added four new rows to the Anti-Patterns Quick Reference table for the above patterns
      Iter 34 (2026-05-12): added `rootDir` inference removal migration with directory tree example
        (concrete before/after showing dist/src/index.js vs dist/index.js output path shift);
        added `types: ["*"]` anti-pattern with 20-50% build degradation warning (sourced from
@@ -4563,3 +4571,295 @@ TypeScript 5.9 changed `tsc --init` from a verbose commented template to a minim
 [community] **Pitfall:** Teams running `tsc --init` on a new project in TS 5.9+ then immediately starting to write code hit a wall of errors from `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. These are _correct_ flags but they should be adopted deliberately with team buy-in, not silently enabled by a scaffolding command. Always review each flag in the generated `tsconfig.json` before committing it — treat `tsc --init` output as a _menu of options_, not a ready-to-use config.
 
 [community] **Pitfall: enabling `stableTypeOrdering` in a production `tsconfig.json` accidentally.** Teams test with this flag and forget to remove it before shipping. The 25% compile slowdown is invisible in small projects but significant in large monorepos — it appears as a regression in CI build time with no obvious cause. Keep `stableTypeOrdering` in a separate `tsconfig.check-7.0.json` and never merge it into the main `tsconfig.json`.
+
+---
+
+## Testing-Specific TypeScript Patterns
+
+### `using` Declaration for Test Resource Cleanup (TypeScript 5.2+)
+
+The `using` keyword (explicit resource management, TypeScript 5.2) works natively inside test hooks, replacing `try/finally` and `afterEach` cleanup boilerplate. Any value that implements `Symbol.dispose` is automatically cleaned up when the `using` variable goes out of scope — including at the end of a `beforeEach` or `it` block.
+
+```typescript
+import { beforeEach, it, describe, expect } from 'vitest';
+import { DatabaseConnection } from '../db';
+
+// Test-scoped disposable: database transaction rolled back on scope exit
+class TestTransaction implements Disposable {
+  private rolledBack = false;
+  constructor(private readonly db: DatabaseConnection) {
+    db.beginTransaction();
+  }
+  [Symbol.dispose](): void {
+    if (!this.rolledBack) {
+      this.db.rollback();  // automatic cleanup — no afterEach needed
+    }
+  }
+}
+
+describe('OrderRepository', () => {
+  it('creates an order and rolls back', async () => {
+    using _tx = new TestTransaction(db);  // rollback fires when 'it' block exits
+    const order = await orderRepo.create({ items: ['a'], total: 100 });
+    expect(order.id).toBeDefined();
+    // No afterEach needed — transaction rolled back automatically on scope exit
+  });
+});
+
+// Async variant: use 'await using' for async teardown
+class TestServer implements AsyncDisposable {
+  constructor(private readonly server: http.Server) {}
+  async [Symbol.asyncDispose](): Promise<void> {
+    await new Promise<void>(resolve => this.server.close(() => resolve()));
+  }
+}
+
+describe('API integration', () => {
+  it('handles requests', async () => {
+    await using _server = new TestServer(createServer(app));
+    const res = await fetch('http://localhost:3000/health');
+    expect(res.status).toBe(200);
+    // server.close() awaited automatically when 'it' block exits
+  });
+});
+```
+
+[community] **Pitfall:** Using `using` inside `beforeEach` disposes the resource at the END of `beforeEach`, not at the end of each `it` block — the opposite of what most teams expect. The `using` scope is the function body it appears in. To share a resource across `beforeEach` + test + `afterEach`, use `DisposableStack` and manage disposal explicitly in `afterEach`, or use a test-scoped `using` inside each `it` block directly.
+
+---
+
+### Type-Safe `expect.extend` Custom Matchers (Jest / Vitest)
+
+Extending `expect` with custom matchers in TypeScript requires two steps: implementing the matcher with a typed function signature, then augmenting the `expect` module to register the new matcher in the type system.
+
+**Jest implementation:**
+
+```typescript
+// matchers/toBeValidUuid.ts
+import { expect } from '@jest/globals';
+import type { MatcherFunction } from 'expect';
+
+// MatcherFunction<[...args]> types the custom matcher's extra arguments
+const toBeValidUuid: MatcherFunction<[]> = function (received) {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const pass = typeof received === 'string' && uuidRegex.test(received);
+  return {
+    pass,
+    message: () =>
+      pass
+        ? `expected ${this.utils.printReceived(received)} NOT to be a valid UUID`
+        : `expected ${this.utils.printReceived(received)} to be a valid UUID`,
+  };
+};
+
+expect.extend({ toBeValidUuid });
+
+// Step 2: augment the module so TypeScript knows about the new matcher
+declare module 'expect' {
+  interface Matchers<R> {
+    toBeValidUuid(): R;            // for expect(value).toBeValidUuid()
+  }
+  interface AsymmetricMatchers {
+    toBeValidUuid(): void;         // for expect.toBeValidUuid() inside toEqual()
+  }
+}
+```
+
+**Vitest implementation (same structure, different import):**
+
+```typescript
+// matchers/toBeValidUuid.ts
+import { expect } from 'vitest';
+import type { CustomMatcherResult } from '@vitest/expect';
+
+// Vitest uses the same MatcherFunction / CustomMatcherResult contract as jest
+expect.extend({
+  toBeValidUuid(received: unknown): CustomMatcherResult {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const pass = typeof received === 'string' && uuidRegex.test(received);
+    return {
+      pass,
+      message: () =>
+        pass
+          ? `expected ${received} NOT to be a valid UUID`
+          : `expected ${received} to be a valid UUID`,
+    };
+  },
+});
+
+// Augment Vitest's Assertion interface
+declare module 'vitest' {
+  interface Assertion<T = unknown> {
+    toBeValidUuid(): T;
+  }
+  interface AsymmetricMatchersContaining {
+    toBeValidUuid(): void;
+  }
+}
+```
+
+**Usage in tests — fully typed:**
+
+```typescript
+import '../matchers/toBeValidUuid';   // register both runtime and types
+
+it('creates a user with a valid UUID', async () => {
+  const user = await createUser({ name: 'Alice' });
+  expect(user.id).toBeValidUuid();  // ✅ TypeScript knows this matcher exists
+  expect({ id: expect.toBeValidUuid() }).toMatchObject({ id: user.id }); // asymmetric
+});
+```
+
+[community] **Pitfall:** Placing `declare module 'expect' {}` augmentation in a file that doesn't `import` anything makes TypeScript treat the file as a **script** (not a module), causing the declaration to merge into the global scope rather than augmenting the module. Always add `export {};` at the bottom of augmentation-only `.d.ts` files to ensure the file is treated as a module.
+
+[community] **Pitfall:** Vitest 2.x changed the `Assertion` interface name — earlier versions of `@vitest/expect` used `Matchers<R>` (same as Jest). If you copy Jest matcher type augmentations into a Vitest project, you may get a "namespace not found" error. Use `interface Assertion<T>` for Vitest (≥2.x) and `interface Matchers<R>` for Jest.
+
+---
+
+### Vitest 2.x `vi.fn()` Generic Type Parameter Change
+
+Vitest 2.x changed the generic signature of `vi.fn()`. In Vitest 1.x, `vi.fn` accepted two generic parameters: `vi.fn<Args extends unknown[], Return>()`. In Vitest 2.x (and aligned with Jest's `jest.fn()`), the signature changed to a single function type parameter: `vi.fn<T extends (...args: unknown[]) => unknown>()`.
+
+```typescript
+// ❌ Vitest 1.x style — two-tuple generic (breaks in Vitest 2.x)
+const mockFn = vi.fn<[string, number], Promise<User>>();
+
+// ✅ Vitest 2.x style — single function type generic
+const mockFn = vi.fn<(id: string, count: number) => Promise<User>>();
+
+// ✅ Alternative: let inference do the work via mockImplementation
+const mockFn = vi.fn().mockImplementation(async (id: string, count: number): Promise<User> => ({
+  id,
+  name: 'Alice',
+  count,
+}));
+// mockFn is correctly typed as Mock<(id: string, count: number) => Promise<User>>
+
+// vi.Mocked<T> — deep mock wrapping with typed .mock.calls, .mockReturnValue, etc.
+import type { UserRepository } from './user-repository';
+
+const mockRepo = {
+  findById: vi.fn<(id: string) => Promise<User | null>>(),
+  save:     vi.fn<(user: User) => Promise<User>>(),
+} satisfies vi.Mocked<UserRepository>;   // satisfies verifies all interface methods are present
+
+// ✅ mockRepo.findById.mockResolvedValue(null)  — fully typed
+// ✅ mockRepo.save.mockResolvedValue({ id: '1', name: 'Alice' })
+```
+
+**`Awaited<ReturnType<...>>` for async mock return type inference:**
+
+```typescript
+// Extract the resolved type from an async function to type mockResolvedValue correctly
+async function fetchOrder(id: string): Promise<Order> { /* ... */ }
+
+type FetchOrderResult = Awaited<ReturnType<typeof fetchOrder>>;  // Order
+
+const mockFetch = vi.fn<typeof fetchOrder>();
+const sampleOrder: FetchOrderResult = {
+  id: 'ord_123',
+  total: 99.99,
+  status: 'pending',
+};
+
+mockFetch.mockResolvedValue(sampleOrder);  // type-checked against Order
+```
+
+[community] **Pitfall:** `vi.fn<[string], Promise<User>>()` (Vitest 1.x syntax) silently compiles in Vitest 2.x but produces a `Mock<unknown>` type — TypeScript infers the wrong function shape because the two-generic form is no longer the primary overload. The result: `mockFn.mockResolvedValue(user)` stops type-checking the argument, and `mockFn.mock.calls[0][0]` is typed `unknown` instead of `string`. Upgrade all two-generic `vi.fn<Args, Return>` calls to the single function-type form after upgrading to Vitest 2.x.
+
+---
+
+### `satisfies` for Exhaustive Test Fixture Type-Checking
+
+The `satisfies` operator (TypeScript 4.9+) is especially powerful in test suites: it validates that a test fixture conforms to the expected type without widening literal values, AND it errors at compile time when a new discriminant variant is added to a union but the fixture doesn't cover it.
+
+```typescript
+type ApiEvent =
+  | { type: 'request';  method: string; url: string }
+  | { type: 'response'; status: number; body: unknown }
+  | { type: 'error';    code: string;   message: string };
+
+// ✅ satisfies: each fixture is narrowly typed AND the array is validated
+//    against ApiEvent[] — compile error if a new union variant is added
+//    without a matching fixture
+const TEST_FIXTURES = [
+  { type: 'request',  method: 'GET',  url: '/api/users' },
+  { type: 'response', status: 200,    body: { id: 1 } },
+  { type: 'error',    code: 'E_AUTH', message: 'Unauthorized' },
+] satisfies ApiEvent[];
+
+// TEST_FIXTURES[0].url is string (narrow), not unknown
+// TEST_FIXTURES[0].method is string, not 'GET' | ... (exact string, not literal — use as const for literals)
+
+// ✅ Combine with as const for fully narrow fixtures
+const FIXTURES_NARROW = [
+  { type: 'request',  method: 'GET',  url: '/api/users' } as const,
+  { type: 'response', status: 200,    body: { id: 1 } } as const,
+  { type: 'error',    code: 'E_AUTH', message: 'Unauthorized' } as const,
+] satisfies readonly ApiEvent[];
+
+// FIXTURES_NARROW[0].method is 'GET' (literal), not string
+
+// ❌ When a new variant is added to ApiEvent without a fixture:
+type ApiEvent2 =
+  | { type: 'request';  method: string; url: string }
+  | { type: 'response'; status: number; body: unknown }
+  | { type: 'error';    code: string;   message: string }
+  | { type: 'timeout';  durationMs: number };  // NEW — fixture array is now incomplete
+
+// const fixtures = [...] satisfies ApiEvent2[];
+// ❌ Error: Type '{ type: "request"; ... }[]' does not satisfy 'ApiEvent2[]'
+//    because it's missing a { type: 'timeout'; ... } variant
+// This is intentional — tests are forced to cover new variants at compile time
+```
+
+[community] **Pitfall:** `satisfies ApiEvent[]` validates that every element matches one member of the union — it does NOT validate that every union member has a corresponding fixture. For exhaustive fixture coverage, combine `satisfies` with a separate object keyed by discriminant (like `Record<ApiEvent['type'], ApiEvent>`) — that enforces a key for every union member. The `satisfies ApiEvent[]` approach above only validates that existing fixtures have correct shapes; adding a new discriminant to the union does NOT cause a compile error on the array.
+
+---
+
+### `satisfies` for Complete `Record<UnionKey, ...>` Fixture Maps
+
+When you want compile-time exhaustiveness — a fixture or handler for every member of a union — use `satisfies Record<Union, V>` (not `satisfies Union[]`):
+
+```typescript
+type Status = 'idle' | 'loading' | 'success' | 'error';
+
+// ✅ Record keyed by union: MUST have an entry for every Status member
+//    Adding a new Status member causes a compile error here — exhaustive by design
+const STATUS_LABELS = {
+  idle:    'Idle',
+  loading: 'Loading...',
+  success: 'Done',
+  error:   'Something went wrong',
+} satisfies Record<Status, string>;
+
+// ❌ If 'cancelled' is added to Status:
+// type Status = 'idle' | 'loading' | 'success' | 'error' | 'cancelled';
+// satisfies Record<Status, string> → Error: Property 'cancelled' is missing
+// This is correct — the test fixture must be updated to cover the new state
+
+// Same pattern for route handlers in test suites
+type Route = '/users' | '/products' | '/orders';
+type HandlerFn = (req: MockRequest) => MockResponse;
+
+const MOCK_HANDLERS = {
+  '/users':    (req) => ({ status: 200, body: [] }),
+  '/products': (req) => ({ status: 200, body: [] }),
+  '/orders':   (req) => ({ status: 200, body: [] }),
+} satisfies Record<Route, HandlerFn>;
+// Adding a new Route type forces the mock handlers map to be updated
+```
+
+---
+
+## Anti-Patterns Quick Reference (continued additions)
+
+The following rows extend the Anti-Patterns table earlier in this guide with testing-specific entries:
+
+| Anti-pattern | Why it's harmful | What to do instead |
+|---|---|---|
+| `const` instead of `using` for test resources | Cleanup only runs if code reaches the `afterEach`/teardown call — early returns and exceptions skip it | Implement `Disposable` / `AsyncDisposable` and declare with `using` / `await using` inside each `it` block |
+| `declare module 'expect'` in a script (no `export {}`) | File treated as a script, merging augmentation into global scope rather than the module | Add `export {};` to all module-augmentation-only files |
+| `vi.fn<[Args], Return>()` two-generic form in Vitest 2.x | Returns `Mock<unknown>` — type checking on `.mockResolvedValue`, `.mock.calls` is silently disabled | Use single function-type generic: `vi.fn<(arg: T) => R>()` |
+| `satisfies ApiEvent[]` expecting exhaustiveness over union variants | Array satisfies validates element shapes, not union coverage — new discriminants are not caught | Use `satisfies Record<Union['discriminant'], Union>` for exhaustive keyed coverage |
+| Casting test fixtures with `as MyType` | Type cast bypasses shape validation — adding a field to `MyType` doesn't error on the stale fixture | Use `satisfies MyType` for validation without widening, or `const x: MyType = { ... }` for full assignment checking |

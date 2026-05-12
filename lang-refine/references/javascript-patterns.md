@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 49 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 50 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -4562,5 +4562,362 @@ Promise.resolve().then(() => {
 }).then(data => process(data));
 console.log(sideEffectDone); // false — not run yet
 ```
+
+---
+
+## String Well-Formedness — `isWellFormed` / `toWellFormed` (ES2024 / Baseline 2023)
+
+JavaScript strings are UTF-16 encoded. A "lone surrogate" is a code unit in the `\uD800`–`\uDFFF` range that does not have its paired partner — it is invalid UTF-16 and causes `encodeURI`, `TextEncoder`, and many other APIs to throw or produce garbled output. `isWellFormed()` detects lone surrogates; `toWellFormed()` replaces them with the Unicode replacement character `U+FFFD`.
+
+```javascript
+// ── Detection ──────────────────────────────────────────────────────────
+const good = 'Hello, 🌍';          // well-formed — emoji is a proper surrogate pair
+const bad  = 'query=\uD800value';  // lone surrogate — malformed UTF-16
+
+good.isWellFormed(); // true
+bad.isWellFormed();  // false
+
+// ── The failure mode without well-formedness checks ────────────────────
+try {
+  encodeURI(bad); // URIError: URI malformed — the lone surrogate is not encodable
+} catch (e) {
+  console.error(e.message); // 'URI malformed'
+}
+
+// ── Sanitize before encoding ───────────────────────────────────────────
+function safeEncodeURI(str) {
+  return encodeURI(str.toWellFormed()); // replaces \uD800 → � before encoding
+}
+safeEncodeURI('query=\uD800value'); // 'query=%EF%BF%BDvalue' — safe
+
+// ── TextEncoder: also fails on lone surrogates by default ────────────
+const encoder = new TextEncoder();
+// encoder.encode('\uD800') → TypeError in strict mode / garbled in some engines
+const clean = '\uD800some text'.toWellFormed(); // 'replacement char + some text'
+encoder.encode(clean); // safe UTF-8 bytes
+
+// ── Validation guard for user-supplied input ──────────────────────────
+function validateStringInput(input) {
+  if (!input.isWellFormed()) {
+    throw new TypeError('Input contains invalid UTF-16 (lone surrogate)');
+  }
+  return input;
+}
+
+// ── toWellFormed replaces EACH lone surrogate with U+FFFD ─────────────
+'\uD800\uD801'.toWellFormed(); // '��' — two lone surrogates → two replacements
+'𐀀'.toWellFormed(); // '𐀀' — valid pair left unchanged (U+10000)
+```
+
+**When it matters:** user-generated content (search queries, filenames, copy-pasted text from some apps) can contain lone surrogates. Without sanitization, they silently break `encodeURI`, `encodeURIComponent`, `TextEncoder.encode`, `postMessage`, `JSON.stringify` in some runtimes, and `fetch` body serialization.
+
+---
+
+## RegExp `v` Flag — Unicode Sets and String Properties (ES2024 / Baseline September 2023)
+
+The `v` flag is the next generation of Unicode-aware regex (superseding `u`). It enables three new capabilities: **set notation** (intersection, subtraction, union) in character classes, **string Unicode properties** (`\p{...}` matching multi-code-point sequences like emoji flags), and stricter character-class syntax that catches bugs the `u` flag silently ignored.
+
+```javascript
+// ── v flag vs u flag ─────────────────────────────────────────────────
+// u: each \p matches a single code point
+// v: \p can match a Unicode string (multiple code points)
+// Cannot combine u and v — SyntaxError
+
+// ── String properties (v only): match emoji flag sequences ────────────
+const flagSeq = /\p{RGI_Emoji_Flag_Sequence}/v;
+flagSeq.test('🇺🇳'); // true — flag emoji is a 2-code-point RGI sequence
+// With /u, \p{RGI_Emoji_Flag_Sequence} is a SyntaxError
+
+// Match any emoji (multi-code-point aware)
+const anyEmoji = /\p{RGI_Emoji}/v;
+anyEmoji.test('👨‍👩‍👧‍👦'); // true — family emoji (ZWJ sequence of 8 code points)
+
+// ── Set notation: intersection (&&) ──────────────────────────────────
+// Only lowercase Greek letters
+const lowerGreek = /[\p{Lowercase_Letter}&&\p{Script_Extensions=Greek}]/v;
+lowerGreek.test('α');  // true
+lowerGreek.test('Α');  // false — uppercase Greek
+lowerGreek.test('a');  // false — Latin lowercase
+
+// ── Set notation: subtraction (--) ────────────────────────────────────
+// ASCII letters minus vowels (consonants only)
+const consonants = /[[a-zA-Z]--[aeiouAEIOU]]/v;
+consonants.test('b');  // true
+consonants.test('e');  // false — vowel subtracted
+
+// ── Set notation: nested character classes ────────────────────────────
+// Digits and uppercase letters, combined
+const alphaNum = /[[\d][A-Z]]/v;
+alphaNum.test('5');  // true
+alphaNum.test('B');  // true
+alphaNum.test('b');  // false
+
+// ── Checking the v flag ───────────────────────────────────────────────
+const re = /\p{Emoji}/v;
+re.unicodeSets; // true — confirms v flag is set (not available on u-flag regex)
+
+// ── Gotcha: u and v are mutually exclusive ────────────────────────────
+// /\p{Emoji}/uv; // SyntaxError: Cannot combine u and v flags
+// Migrate: replace /u with /v when you need set notation or string properties
+
+// ── Strict character class syntax (v catches bugs u silently ignored) ─
+// /[a-{]/u; // valid (no error) — but {  is treated as literal
+// /[a-{]/v; // SyntaxError — range endpoints must be characters, not meta chars
+// This strictness catches class typos that previously produced wrong matches
+```
+
+**Migration from `u` to `v`:** Most `/u` patterns work unchanged under `/v`. The two breaking cases are: (1) character classes that used `{` or `}` as literals (now a SyntaxError — escape them as `\{` `\}`), and (2) character classes with `|` inside them (now a SyntaxError — use set notation `[a||b]` instead).
+
+**Testing use case:** use `/\p{Emoji_Presentation}/v` in input validators to correctly detect emoji in user fields; use string properties to validate flag emoji or other multi-code-point sequences without hand-rolling code-point loops.
+
+---
+
+## Resizable and Growable ArrayBuffers (ES2024 / Baseline 2024)
+
+`ArrayBuffer` now supports a `maxByteLength` option at construction time, enabling in-place growth and shrinkage without copying. `SharedArrayBuffer` gains a `grow()` method for one-directional growth (never shrink, since other threads may be reading). Both changes eliminate the allocation-and-copy overhead that was previously unavoidable when working with dynamically-sized binary data.
+
+```javascript
+// ── Resizable ArrayBuffer ─────────────────────────────────────────────
+const buf = new ArrayBuffer(8, { maxByteLength: 64 });
+console.log(buf.byteLength);  // 8
+console.log(buf.resizable);   // true
+console.log(buf.maxByteLength); // 64
+
+// Grow
+buf.resize(32);
+console.log(buf.byteLength);  // 32 — new bytes are zero-initialized
+
+// Shrink (unlike SharedArrayBuffer, plain ArrayBuffer can shrink)
+buf.resize(4);
+console.log(buf.byteLength);  // 4
+
+// Error cases
+buf.resize(0);   // valid — byteLength becomes 0
+// buf.resize(65); // RangeError: exceeds maxByteLength (64)
+// buf.resize(-1); // RangeError: negative size
+
+// ── TypedArray and DataView track the buffer's current size ──────────
+const view = new Uint8Array(buf);
+buf.resize(16);
+console.log(view.length); // 16 — automatically reflects new size
+
+// ── Growable SharedArrayBuffer ────────────────────────────────────────
+const shared = new SharedArrayBuffer(8, { maxByteLength: 256 });
+console.log(shared.growable);  // true
+console.log(shared.byteLength); // 8
+
+shared.grow(64);
+console.log(shared.byteLength); // 64 — workers sharing this buffer see the new size
+
+// SharedArrayBuffer can only GROW, not shrink
+// shared.grow(4); // TypeError: cannot shrink a SharedArrayBuffer
+
+// ── Practical: streaming binary protocol decoder ──────────────────────
+class BinaryDecoder {
+  #buf;
+  #view;
+  #writeOffset = 0;
+
+  constructor(initialCapacity = 1024, maxCapacity = 1024 * 1024) {
+    this.#buf  = new ArrayBuffer(initialCapacity, { maxByteLength: maxCapacity });
+    this.#view = new Uint8Array(this.#buf);
+  }
+
+  append(chunk) {
+    const needed = this.#writeOffset + chunk.byteLength;
+    if (needed > this.#buf.byteLength) {
+      // Grow to next power of two that fits — no new allocation, just resize
+      const newSize = Math.min(
+        2 ** Math.ceil(Math.log2(needed)),
+        this.#buf.maxByteLength,
+      );
+      this.#buf.resize(newSize);
+    }
+    this.#view.set(chunk, this.#writeOffset);
+    this.#writeOffset += chunk.byteLength;
+  }
+
+  get bytes() {
+    return this.#view.subarray(0, this.#writeOffset);
+  }
+}
+```
+
+**Why it matters over manual reallocation:** before ES2024, growing a buffer required `new ArrayBuffer(newSize)`, copying via `new Uint8Array(newBuf).set(oldData)`, and discarding the old buffer. `resize()` / `grow()` do this in the engine's native memory allocator — typically O(1) amortized with no data copy when the OS has address-space room.
+
+---
+
+## Node.js 24 Test Runner Enhancements
+
+Node.js 24 adds several testing-relevant improvements to `node:test`. These reduce boilerplate, improve reliability in CI, and close feature gaps with Jest/Vitest.
+
+### Auto-awaiting Subtests (Node.js 24+)
+
+Before Node.js 24, every `t.test()` call inside a parent test had to be `await`ed explicitly, or the parent would complete before the child. In Node.js 24 the runner automatically waits for all subtests — the promise no longer needs to be awaited or returned.
+
+```javascript
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Node.js <24: HAD to await t.test() — forgetting silently passed the parent
+// test('parent', async (t) => {
+//   await t.test('child', () => { assert.ok(false); }); // required await
+// });
+
+// Node.js 24+: awaiting is optional — runner waits automatically
+test('parent', (t) => {
+  t.test('child 1', () => assert.equal(1 + 1, 2));
+  t.test('child 2', () => assert.equal('hello'.length, 5));
+  // No await needed — parent waits for both children before reporting
+});
+
+// Nested describe + it also benefiting from auto-await
+describe('UserService', (t) => {
+  describe('create', () => {
+    test('returns new user', async () => {
+      const user = await userService.create({ name: 'Alice' });
+      assert.equal(user.name, 'Alice');
+    });
+    // No need to return or await the inner test
+  });
+});
+```
+
+**Gotcha:** If you relied on NOT awaiting a subtest to skip it (a brittle pattern from v22 era), that no longer works in Node.js 24 — all registered subtests run regardless of whether they are awaited.
+
+### Global Setup and Teardown (Node.js 24+)
+
+`node:test` now supports module-level `before` / `after` hooks that run once for the entire test file, equivalent to Jest's `beforeAll` at the module root.
+
+```javascript
+import { before, after, beforeEach, afterEach, test } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Runs once for the entire test file — not inside describe
+before(async () => {
+  // Start shared resources: DB, mock server, etc.
+  await db.connect();
+  await mockServer.start();
+});
+
+after(async () => {
+  // Tear down after ALL tests in this file complete
+  await db.disconnect();
+  await mockServer.stop();
+});
+
+beforeEach(async () => {
+  await db.truncate('users');  // clean state before each test
+});
+
+test('creates a user', async () => {
+  await db.insert('users', { name: 'Alice' });
+  const users = await db.query('SELECT * FROM users');
+  assert.equal(users.length, 1);
+});
+
+test('lists users', async () => {
+  await db.insert('users', { name: 'Bob' });
+  const users = await db.query('SELECT * FROM users');
+  assert.equal(users[0].name, 'Bob');
+});
+```
+
+**Difference from `describe`-level hooks:** module-level `before`/`after` (outside any `describe`) run for the entire file. `describe`-level `before`/`after` run only for tests within that `describe` block. Use module-level for shared infrastructure; use `describe`-level for suite-specific setup.
+
+### Per-Test Timeout (`--test-timeout`, Node.js 24+)
+
+Before Node.js 24, `--test-timeout` set a global timeout for all tests. In Node.js 24, individual tests can override the timeout via the `timeout` option, and `--test-timeout` becomes the global default that per-test options override.
+
+```javascript
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Default (inherits --test-timeout from CLI or node:test default of 30s)
+test('fast test', async () => {
+  const result = await quickOperation();
+  assert.ok(result);
+});
+
+// Override: this test gets 10 seconds regardless of global default
+test('slow integration test', { timeout: 10_000 }, async () => {
+  const result = await slowExternalAPI();
+  assert.ok(result);
+});
+
+// Very short timeout for asserting a function DOES NOT hang
+test('should fail fast on bad input', { timeout: 500 }, async () => {
+  await assert.rejects(
+    () => parser.parse(null),
+    { name: 'TypeError' },
+  );
+});
+```
+
+```bash
+# Set global default to 5s; individual tests with { timeout } override this
+node --test --test-timeout=5000 "**/*.test.js"
+```
+
+### JSON Module Mocking in `node:test` (Node.js 24+)
+
+`t.mock.module()` now supports mocking JSON modules imported via `import ... with { type: 'json' }`, making it possible to test config-dependent code without touching the filesystem.
+
+```javascript
+import { test, mock } from 'node:test';
+import assert from 'node:assert/strict';
+
+test('uses mocked config', async (t) => {
+  // Override a JSON module for this test
+  t.mock.module('./config.json', {
+    defaultExport: { apiUrl: 'http://localhost:3001', timeout: 100 },
+  });
+
+  // Dynamically import AFTER mocking (static imports are resolved before test runs)
+  const { default: config } = await import('./config.json', { with: { type: 'json' } });
+  assert.equal(config.apiUrl, 'http://localhost:3001');
+  // Mock is automatically cleaned up when the test finishes
+});
+
+test('default config is production URL', async () => {
+  // No mock — reads the real config.json
+  const { default: config } = await import('./config.json', { with: { type: 'json' } });
+  assert.match(config.apiUrl, /^https:/);
+});
+```
+
+**Important:** always use dynamic `import()` *inside* the test body when using `t.mock.module()`. Static top-level `import` statements are hoisted and resolved before any test code runs, so they cannot be intercepted by mocks.
+
+---
+
+## Additional Community Pitfalls (2026 — String & Regex)
+
+**58. Not Using `toWellFormed()` Before `encodeURI` / `TextEncoder`** [community] — Passing a string containing lone surrogates to `encodeURI`, `encodeURIComponent`, `TextEncoder.encode`, or `fetch` body serialization throws a `URIError` or produces garbled output. WHY it causes problems: user-supplied strings (search queries, filenames, copy-pasted text from some apps) can contain lone surrogates without any visible indication. The bug only surfaces when the string passes through one of these encoding APIs, often far from where the string was originally received. Fix: validate with `str.isWellFormed()` at input boundaries; sanitize with `str.toWellFormed()` when you cannot reject malformed input.
+
+**59. Using the `u` Flag When `v` Flag Set Notation Is Needed** [community] — Attempting to use set intersection (`&&`) or string Unicode properties (`\p{RGI_Emoji_Flag_Sequence}`) with the `u` flag results in a `SyntaxError` or silent mismatch. WHY it causes problems: emoji validation regex written with `/u` will not correctly identify multi-code-point emoji sequences, silently accepting or rejecting the wrong input. Fix: migrate to the `v` flag for any pattern that needs string Unicode properties or character class set notation. Most existing `/u` patterns work unchanged under `/v`; audit for `{` `}` literals in character classes (must be escaped) and `|` inside `[...]` (must use set notation).
+
+**60. Combining `u` and `v` Flags** [community] — Writing `/pattern/uv` is always a `SyntaxError`. WHY it causes problems: developers upgrading a pattern from `/u` to `/v` sometimes accidentally keep both flags, causing an immediate runtime error. Fix: treat `v` as a strict superset of `u` — remove the `u` flag entirely when you add `v`. There is no scenario where you need both.
+
+**61. Not Awaiting Subtests in Node.js <24 While Expecting Them to Run** [community] — Before Node.js 24, calling `t.test(...)` without `await` causes the parent test to complete and report success before the child finishes — the child's assertions are never evaluated. WHY it causes problems: a test file with many nested subtests passes CI with a green checkmark while never actually executing the assertions inside the subtests. The fix is `await t.test(...)`. In Node.js 24+ this is no longer needed, but code targeting Node.js 22 LTS still requires explicit awaiting.
+
+**62. Auto-Awaiting Change in Node.js 24 Breaking Intentional Skip Patterns** [community] — Some test codebases used the pattern of registering a `t.test()` without awaiting it as an informal "skip" — the registered test would be ignored because the parent completed first. In Node.js 24, all registered subtests run automatically, so this pattern unexpectedly activates previously-silent tests. WHY it causes problems: a green CI suite starts failing after upgrading to Node.js 24 because dormant tests that were always skipped now actually execute. Fix: replace implicit non-awaiting skips with the explicit `.skip` or `{ skip: true }` option.
+
+**63. Using `buf.resize()` on a Non-Resizable ArrayBuffer** [community] — Calling `resize()` on an `ArrayBuffer` created without `{ maxByteLength }` throws a `TypeError: ArrayBuffer is not resizable`. WHY it causes problems: code that conditionally resizes a buffer fails at runtime if the buffer was created by a third-party library (WebCrypto, fetch, Node.js internal APIs) without the `resizable` flag. Fix: always check `buf.resizable` before calling `buf.resize()`, or create resizable buffers explicitly with a `maxByteLength` at construction time.
+
+---
+
+## Additional Anti-Patterns (String, Regex, and Test Runner 2026)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `encodeURI(str)` without `isWellFormed()` check | Throws `URIError` on strings with lone surrogates — common in user input | `encodeURI(str.toWellFormed())` — sanitize before encoding |
+| `new TextEncoder().encode(str)` on unvalidated strings | Lone surrogates produce garbled UTF-8 or throw in strict environments | Check `str.isWellFormed()` at input boundaries; clean with `toWellFormed()` |
+| Using `/u` flag with string Unicode properties | `\p{RGI_Emoji_Flag_Sequence}` is a `SyntaxError` under `/u` | Migrate to `/v` flag for string properties and set notation |
+| Writing `/pattern/uv` (both flags) | Always a `SyntaxError` — `v` is a strict superset of `u` | Remove the `u` flag when using `v`; they cannot coexist |
+| `[literal{bracket}]` in `/v` regex | `{` and `}` are syntax-error inside `v`-flag character classes unless escaped | Escape as `\{` and `\}` when used as literals in `[...]` |
+| `t.test(...)` without `await` in Node.js <24 | Parent test completes before child; assertions never run; false green | Always `await t.test(...)` when targeting Node.js 22; in Node.js 24+ it's auto-awaited |
+| Relying on non-awaited subtests as implicit skips (Node.js 24) | All registered subtests now auto-run — previously dormant tests execute | Use `{ skip: true }` or `test.skip(...)` for explicit skipping |
+| `buf.resize()` on buffers from third-party APIs | Most library-returned buffers are not resizable — throws `TypeError` | Check `buf.resizable === true` before calling `resize()` |
+| `sharedBuf.grow(smaller)` — shrinking a SharedArrayBuffer | `SharedArrayBuffer` can only grow, never shrink — throws `TypeError` | Use plain `ArrayBuffer` with `resize()` when two-directional sizing is needed |
 
 ---

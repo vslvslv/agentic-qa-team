@@ -1,6 +1,6 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes); training-knowledge fallback for remaining gaps -->
+<!-- lang: TypeScript | topic: test-data | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
 <!-- iter-31: Neon DB copy-on-write branching for test isolation (neon.com/docs/guides/branching-test-queries, 2026-05-08); Testcontainers Cloud 8GB/session + Turbo mode (testcontainers.com/cloud/docs, 2026-05-08) -->
@@ -8,6 +8,7 @@
 <!-- iter-33: Vitest 4.0 pool config migration (poolOptions.vmForks → top-level isolate; singleFork → maxWorkers: 1; poolMatchGlobs/environmentMatchGlobs → projects; workspace → projects); community gotcha #21; Key Resources updated (2026-05-12) -->
 <!-- iter-34: Playwright mergeTests() modular fixture composition; Playwright box fixture (box:true/box:'self') for clean test reports; Vitest 4.x singleThread also removed (not just singleFork); vi.resetModules() required with isolate:false; VITEST_MAX_WORKERS replaces VITEST_MAX_THREADS/MAX_FORKS; community gotcha #22; 2 new checklists (Playwright fixtures, Vitest 4.x config); 2 new Key Resources (2026-05-12) -->
 <!-- iter-35: Vitest 4.1 builder pattern for test.extend() (return-based, automatic TypeScript type inference); aroundEach hook (transaction-per-test pattern); test.override() per-suite fixture overrides; vi.defineHelper() for clean factory assertion stack traces; Vitest 4.x coverage.all/coverage.extensions removal + mandatory coverage.include; community gotcha #23; new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
+<!-- iter-41: Playwright 1.48 page.routeWebSocket() E2E WebSocket test data interception; Playwright 1.49 multiple globalSetup via project dependencies for composable DB seeding; Playwright 1.50 test.step.skip() for data-dependent step guarding; Playwright 1.60 test.abort() for fixture precondition enforcement; MSW v2.14 finalize() API for WS handler cleanup; faker v10.4 locale expansions (Norwegian, Japanese) for locale-sensitive test data; community gotcha #29 (Playwright WebSocket routes linger across tests without explicit teardown); updated checklists; 6 new Key Resources (2026-05-12) -->
 <!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
@@ -6244,6 +6245,10 @@ test data technical debt from accumulating.
 - [ ] `playwright.config.ts` uses `testProject.workers` to right-size parallelism per project (DB-heavy projects capped at 2–4; UI-only projects at full workers)
 - [ ] CI pipelines use `--grep @smoke` for fast pre-commit checks and `--grep @integration` for merge-queue runs; `globalSetup` gates DB provisioning on the grep filter
 - [ ] HAR fixture files (`.har`) committed to source control have a nightly CI job that deletes and re-records them to catch third-party API drift
+- [ ] Playwright ≥ 1.48: WebSocket test data uses `page.routeWebSocket()` for E2E-layer interception; fixtures call `page.unrouteAll()` in teardown when page objects are worker-scoped
+- [ ] Playwright ≥ 1.49: DB seeding split across independent setup projects with `dependencies` + `teardown` fields — no monolithic `globalSetup.ts` containing all seed logic
+- [ ] Playwright ≥ 1.50: factory-parametric tests with scenario-inapplicable steps use `step.skip(condition, reason)` rather than `if (condition) return` inside step bodies
+- [ ] Playwright ≥ 1.60: fixtures that enforce test data preconditions (test environment, no stale state) use `test.abort(message)` instead of `throw` or `expect()` for clearer failure output
 
 **Vitest configuration checklist (Vitest 4.x):**
 - [ ] `poolOptions` is NOT used — settings are top-level (`isolate`, `maxWorkers`, `pool`)
@@ -8168,3 +8173,791 @@ export default defineConfig({
 | Playwright `browserContext.setStorageState()` | Official | https://playwright.dev/docs/api/class-browsercontext#browser-context-set-storage-state | Atomically reset auth test data (cookies + localStorage + IndexedDB) within a shared context |
 | Playwright 1.51 release notes | Official | https://playwright.dev/docs/release-notes#version-151 | IndexedDB in storageState + setStorageState() for Firebase/IndexedDB auth session management |
 | Vitest 5.0 migration guide | Official | https://vitest.dev/guide/migration#vitest-5-0 | Concurrent-by-default change; `sequential` → `concurrent: false`; `@vitest/expect` package split |
+
+---
+
+## Playwright 1.48 `page.routeWebSocket()` — E2E WebSocket Test Data Interception  [community]
+
+Playwright 1.48 added `page.routeWebSocket()` and `browserContext.routeWebSocket()` — first-class
+WebSocket routing APIs for E2E tests. Unlike MSW's `ws.link()` handler (which intercepts at the
+service worker / Node.js network layer), Playwright's `routeWebSocket()` operates at the browser
+context level and is available in full E2E tests (not just component tests). This makes it the
+correct tool for injecting WebSocket test data in Playwright E2E suites.
+
+**Why it matters for test data:** Real-time features (live dashboards, collaborative editing,
+chat) rely on WebSocket streams that are hard to control in E2E tests against a real server.
+`routeWebSocket()` lets you intercept the connection and inject factory-generated message
+sequences, error scenarios, and reconnect events — without a running WebSocket server and
+without modifying the application under test.
+
+**Two modes:**
+1. **Full mock** — intercept all messages from the server, respond with factory-generated data
+2. **Selective intercept** — pass most messages through (`ws.connectToServer()`) but inject
+   specific factory-generated events for scenario coverage
+
+```typescript
+// specs/live-dashboard.spec.ts — Playwright 1.48+ WebSocket test data injection
+import { test, expect } from '@playwright/test';
+
+// Factory: generate a sequence of live metric updates
+function buildMetricSequence(
+  count: number,
+  baseValue = 42
+): Array<{ type: string; metric: string; value: number; timestamp: string }> {
+  return Array.from({ length: count }, (_, i) => ({
+    type: 'metric_update',
+    metric: 'cpu_usage_pct',
+    value: Math.min(100, baseValue + i * 5),    // escalating CPU values
+    timestamp: new Date(Date.now() + i * 1000).toISOString(),
+  }));
+}
+
+test('live dashboard displays escalating CPU metric stream', async ({ page }) => {
+  // Install the WebSocket route before navigating — ensures no real WS connection is made
+  await page.routeWebSocket('wss://metrics.example.com/stream', (ws) => {
+    const updates = buildMetricSequence(5, 30);
+
+    // Send factory-generated updates with realistic timing
+    updates.forEach((update, index) => {
+      setTimeout(() => {
+        ws.send(JSON.stringify(update));
+      }, index * 200);
+    });
+
+    // Handle messages sent from the page to the "server"
+    ws.onMessage((message) => {
+      const parsed = JSON.parse(message as string);
+      if (parsed.type === 'subscribe') {
+        // Acknowledge subscription immediately
+        ws.send(JSON.stringify({ type: 'subscribed', channel: parsed.channel }));
+      }
+    });
+  });
+
+  await page.goto('/dashboard/metrics');
+
+  // Initial render: shows connecting/loading state
+  await expect(page.getByTestId('metric-status')).toContainText('Connecting');
+
+  // After first factory message: initial value visible
+  await expect(page.getByTestId('cpu-value')).toContainText('30', { timeout: 1000 });
+
+  // After all 5 factory messages: final escalated value (30 + 4*5 = 50)
+  await expect(page.getByTestId('cpu-value')).toContainText('50', { timeout: 2000 });
+});
+
+test('dashboard shows reconnect banner on WebSocket close', async ({ page }) => {
+  let wsInstance: Parameters<Parameters<typeof page.routeWebSocket>[1]>[0] | null = null;
+
+  await page.routeWebSocket('wss://metrics.example.com/stream', (ws) => {
+    wsInstance = ws;
+    // Send one initial metric so the dashboard enters "connected" state
+    ws.send(JSON.stringify({
+      type: 'metric_update', metric: 'cpu_usage_pct', value: 40,
+      timestamp: new Date().toISOString(),
+    }));
+  });
+
+  await page.goto('/dashboard/metrics');
+  await expect(page.getByTestId('cpu-value')).toContainText('40', { timeout: 1000 });
+
+  // Simulate server-side connection close (e.g., server restart)
+  wsInstance!.close({ code: 1001, reason: 'Server going away' });
+
+  // The component should show a reconnection banner
+  await expect(page.getByTestId('reconnect-banner')).toBeVisible({ timeout: 2000 });
+  await expect(page.getByTestId('reconnect-banner')).toContainText('Reconnecting');
+});
+```
+
+**Selective passthrough with `ws.connectToServer()` — inject specific events into a real connection:**
+
+```typescript
+// Use connectToServer() when you need the real WS server but want to inject
+// specific factory-generated events for scenario coverage
+test('dashboard handles out-of-band alert injection', async ({ page }) => {
+  await page.routeWebSocket('wss://metrics.example.com/stream', (ws) => {
+    // Connect to the real server — most messages pass through transparently
+    const server = ws.connectToServer();
+
+    // After 500ms, inject a factory-generated critical alert into the stream
+    // (as if the server had sent it — bypasses the need to trigger it server-side)
+    setTimeout(() => {
+      ws.send(JSON.stringify({
+        type: 'critical_alert',
+        message: 'CPU usage exceeded 95% threshold',
+        severity: 'critical',
+        timestamp: new Date().toISOString(),
+      }));
+    }, 500);
+
+    // Optionally: intercept specific server messages and modify them
+    // (e.g., escalate a 'warning' to 'critical' for specific test scenarios)
+    server.onMessage((message) => {
+      const parsed = JSON.parse(message as string);
+      // Pass most messages through unchanged
+      ws.send(message);
+    });
+  });
+
+  await page.goto('/dashboard/metrics');
+  // Wait for the injected critical alert to trigger the UI response
+  await expect(page.getByTestId('critical-alert-banner')).toBeVisible({ timeout: 1500 });
+});
+```
+
+**Comparison: `routeWebSocket()` vs MSW `ws.link()` for WebSocket test data:**
+
+| Concern | `page.routeWebSocket()` (Playwright 1.48+) | MSW `ws.link()` |
+|---|---|---|
+| Test layer | E2E (full browser) | Component / unit (jsdom or browser-mode) |
+| Setup | Call before `page.goto()` — no server required | Add handler to `setupServer()` or `setupWorker()` |
+| Message sequence factories | Full support via `ws.send()` in `setTimeout` loops | Full support via `client.send()` in `setTimeout` loops |
+| `connectToServer()` passthrough | Yes — selective interception of real WS | Yes — via `server.connectToServer()` |
+| Fixture scoping | Lives in Playwright test body or fixture teardown | Lives in `server.resetHandlers()` / `afterEach` |
+| TypeScript types | `WebSocketRoute` interface | `ws.EventMap` type from MSW |
+| Auth headers on WS upgrade | Visible via `ws.url()` URL params | Not inspectable in service worker layer |
+
+**Tradeoff:** `routeWebSocket()` does not persist across navigations. If your test navigates
+to a new page after installing the route, you must re-install it. For multi-page E2E flows
+with persistent WebSocket connections, use `browserContext.routeWebSocket()` instead — it
+applies to all pages in the context for its lifetime.
+
+---
+
+## Playwright 1.49 Multiple `globalSetup` via Project Dependencies — Composable DB Seeding  [community]
+
+Playwright 1.49 solidified support for multiple independent `globalSetup` / `globalTeardown`
+projects using the `dependencies` + `teardown` project fields. This enables compositional
+test data provisioning: each database tier, service, or feature area can have its own
+dedicated setup project — eliminating the monolithic `globalSetup.ts` anti-pattern.
+
+**Why it matters:** A single `globalSetup.ts` that runs all seed scripts sequentially has
+two problems: (1) it becomes a maintenance bottleneck — every team's seed logic is in one
+file; (2) it always runs all seeds even when only a subset of tests is being run. The
+project-dependency model solves both: each setup project owns its seed domain and is only
+executed when a test project that depends on it is included in the run.
+
+```typescript
+// playwright.config.ts — composable DB seeding via project dependencies
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  projects: [
+    // ── Setup projects (seed domains) ────────────────────────────────────────
+    {
+      name: 'seed:users',
+      testMatch: /setup\/seed-users\.ts/,
+      teardown: 'teardown:users',
+    },
+    {
+      name: 'seed:catalog',
+      testMatch: /setup\/seed-catalog\.ts/,
+      teardown: 'teardown:catalog',
+    },
+    {
+      name: 'seed:orders',
+      // Orders depend on users existing — sequential within setup projects
+      dependencies: ['seed:users'],
+      testMatch: /setup\/seed-orders\.ts/,
+      teardown: 'teardown:orders',
+    },
+
+    // ── Teardown projects ─────────────────────────────────────────────────────
+    {
+      name: 'teardown:users',
+      testMatch: /setup\/teardown-users\.ts/,
+    },
+    {
+      name: 'teardown:catalog',
+      testMatch: /setup\/teardown-catalog\.ts/,
+    },
+    {
+      name: 'teardown:orders',
+      testMatch: /setup\/teardown-orders\.ts/,
+    },
+
+    // ── Test projects — each declares which seed domains it requires ──────────
+    {
+      name: 'auth-flows',
+      testMatch: '**/*.auth.spec.ts',
+      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['seed:users'],        // only user seed runs for auth tests
+    },
+    {
+      name: 'catalog-browse',
+      testMatch: '**/*.catalog.spec.ts',
+      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['seed:catalog'],      // only catalog seed runs for browse tests
+    },
+    {
+      name: 'checkout',
+      testMatch: '**/*.checkout.spec.ts',
+      use: { ...devices['Desktop Chrome'] },
+      // Checkout tests need both users and orders (orders dep already includes users)
+      dependencies: ['seed:orders'],
+    },
+  ],
+});
+```
+
+```typescript
+// setup/seed-users.ts — owns all user seed logic
+import { test as setup } from '@playwright/test';
+import { db } from '../db';
+import { userFactory } from '../factories/user.factory';
+
+setup('seed users', async () => {
+  // Create the canonical test user set — used by all auth tests
+  await userFactory.create({ id: 'usr-free-001', subscriptionTier: 'free' });
+  await userFactory.create({ id: 'usr-premium-001', subscriptionTier: 'premium' });
+  await userFactory.create({ id: 'usr-suspended-001', status: 'suspended' });
+
+  // Store auth state for reuse (avoids repeated login in tests)
+  // This replaces the "login once, save storageState" pattern from a single globalSetup
+  await db.user.createMany({ data: await userFactory.buildList(10) });
+});
+```
+
+```typescript
+// setup/teardown-users.ts — paired teardown project
+import { test as teardown } from '@playwright/test';
+import { db } from '../db';
+
+teardown('teardown users', async () => {
+  // Delete in correct FK order — orders before users
+  await db.order.deleteMany({ where: { userId: { startsWith: 'usr-' } } });
+  await db.user.deleteMany({ where: { id: { startsWith: 'usr-' } } });
+});
+```
+
+**Selective seeding when running a subset of tests:**
+
+```bash
+# Only 'auth-flows' project runs → only 'seed:users' setup runs (catalog and orders skipped)
+npx playwright test --project=auth-flows
+
+# Only 'checkout' project runs → 'seed:orders' runs (which triggers 'seed:users' as a dep)
+npx playwright test --project=checkout
+
+# Targeted tag filter — only tests tagged @smoke; setup projects are still respected
+npx playwright test --grep @smoke --project=auth-flows
+```
+
+**Key tradeoff:** The project-dependency setup only runs seed projects whose test projects are
+included in the current run. This is the desired behaviour for CI efficiency — but it means
+a developer running `npx playwright test --project=checkout` must ensure the `seed:users`
+project can complete successfully in their local environment. A missing dependency (e.g., the
+users DB table hasn't been migrated) fails in setup, not in the test — which produces a
+clearer error message than a FK violation mid-test.
+
+---
+
+## Playwright 1.50 `test.step.skip()` — Data-Dependent Step Guarding  [community]
+
+Playwright 1.50 added `test.step.skip()` — a method to conditionally skip a named test step
+based on runtime data. This is directly useful for factory-driven E2E tests where setup
+steps (e.g., "seed premium user", "add payment method") may be inapplicable for certain
+test data configurations.
+
+**Why it matters:** E2E tests that combine multiple factory-seeded scenarios in a single
+spec file sometimes need to bypass infrastructure steps when the test data for a given
+scenario does not require them. Without `test.step.skip()`, the choice was: (1) split into
+separate spec files (more files, more maintenance), or (2) use `if (condition) return`
+inside a step, which leaves the step as "passed" in reports instead of "skipped" —
+obscuring what actually ran.
+
+```typescript
+// specs/user-onboarding.spec.ts — data-dependent step guarding
+import { test, expect } from '@playwright/test';
+import { userFactory } from '../factories/user.factory';
+
+// Parametric test: same flow, different factory data
+const onboardingScenarios = [
+  { tier: 'free' as const,       requiresPayment: false, requiresTeamSetup: false },
+  { tier: 'premium' as const,    requiresPayment: true,  requiresTeamSetup: false },
+  { tier: 'enterprise' as const, requiresPayment: true,  requiresTeamSetup: true  },
+];
+
+for (const scenario of onboardingScenarios) {
+  test(`onboarding flow for ${scenario.tier} user`, async ({ page }) => {
+    const user = await userFactory.create({ subscriptionTier: scenario.tier });
+
+    await test.step('navigate to onboarding', async () => {
+      await page.goto(`/onboarding?userId=${user.id}`);
+    });
+
+    // Payment step — skip for free tier (not applicable to this factory data)
+    await test.step('add payment method', async (step) => {
+      step.skip(!scenario.requiresPayment,
+        `Payment step not applicable for ${scenario.tier} tier`);
+
+      await page.getByRole('button', { name: 'Add Payment Method' }).click();
+      await page.getByLabel('Card number').fill('4242424242424242');
+      await page.getByRole('button', { name: 'Save Card' }).click();
+      await expect(page.getByTestId('payment-confirmed')).toBeVisible();
+    });
+
+    // Team setup step — skip for non-enterprise tiers
+    await test.step('configure team', async (step) => {
+      step.skip(!scenario.requiresTeamSetup,
+        `Team setup not applicable for ${scenario.tier} tier`);
+
+      await page.getByRole('button', { name: 'Invite Team Members' }).click();
+      // Inject a factory-generated team member via the UI
+      await page.getByLabel('Email').fill('teammate@example.com');
+      await page.getByRole('button', { name: 'Send Invite' }).click();
+      await expect(page.getByTestId('invite-sent')).toBeVisible();
+    });
+
+    // Always-run step — completes onboarding for all tiers
+    await test.step('complete onboarding', async () => {
+      await page.getByRole('button', { name: 'Finish Setup' }).click();
+      await expect(page.getByTestId('dashboard')).toBeVisible();
+    });
+  });
+}
+```
+
+**What the test report shows:**
+- Free tier: `navigate to onboarding` ✓ | `add payment method` ↷ skipped | `configure team` ↷ skipped | `complete onboarding` ✓
+- Premium tier: all 4 steps ✓ except `configure team` ↷ skipped
+- Enterprise tier: all 4 steps ✓
+
+This makes factory-parametric test reports self-documenting: reviewers immediately see which
+steps were applicable to each scenario without reading the factory configuration.
+
+**`test.step.skip()` vs `test.skip()`:**
+
+| Method | Granularity | Use case |
+|---|---|---|
+| `test.skip(condition, reason)` | Entire test | Factory data that makes the whole test irrelevant |
+| `step.skip(condition, reason)` | Single step | Factory data that makes one infrastructure step inapplicable |
+| `test.fixme(condition, reason)` | Entire test | Factory data exercise that is known broken / under construction |
+
+---
+
+## Playwright 1.60 `test.abort()` — Factory Precondition Enforcement in Fixtures  [community]
+
+Playwright 1.60 added `test.abort(message?)` — a method that immediately fails the current
+test with a custom message. Unlike `test.skip()` (which marks the test as skipped and
+continues to the next), `test.abort()` marks it as failed and halts execution. This is
+designed to be called from within fixtures or route handlers when a precondition violation
+is detected that makes continuing the test actively harmful or misleading.
+
+**Why it matters for test data:** Factory-driven test suites have implicit preconditions.
+A checkout test assumes the factory-created user has a payment method. A multi-tenant test
+assumes the factory-created tenant is not shared with another concurrent test. When these
+preconditions are violated — due to a CI environment misconfiguration, a leaked DB state,
+or a factory bug — tests can produce false positives or corrupt shared state. `test.abort()`
+lets you add lightweight runtime guards in fixtures that detect the violation and fail fast
+with a descriptive message, rather than producing confusing assertion failures deep in the test.
+
+```typescript
+// fixtures/factory-guards.ts — precondition enforcement with test.abort()
+import { test as base } from '@playwright/test';
+import { db } from '../db';
+import { userFactory } from '../factories/user.factory';
+
+// Guard: ensure no stale test data from a previous run is present
+// This detects leaked state when transaction rollback did not fire
+async function assertNoStaleTestData(userId: string): Promise<void> {
+  const existing = await db.user.findUnique({ where: { id: userId } });
+  if (existing) {
+    test.abort(
+      `Stale test data detected: user ${userId} already exists in DB before factory create. ` +
+      'This indicates a teardown failure in a previous test. ' +
+      'Run `npm run db:clean-test-data` to clear stale records.'
+    );
+  }
+}
+
+// Guard: prevent test data from accidentally reaching production endpoints
+async function assertTestEnvironment(dbUrl: string): Promise<void> {
+  if (!dbUrl.includes('test') && !dbUrl.includes('localhost') && !dbUrl.includes('127.0.0.1')) {
+    test.abort(
+      `Factory attempted to write to a non-test database: ${dbUrl}. ` +
+      'Set TEST_DATABASE_URL to a test/local database before running E2E tests.'
+    );
+  }
+}
+
+type GuardedFixtures = {
+  guardedUser: { id: string; email: string; tier: string };
+};
+
+export const test = base.extend<GuardedFixtures>({
+  guardedUser: async ({ }, use) => {
+    const userId = `usr-e2e-${Date.now()}`;
+
+    // Enforce preconditions before factory create — abort immediately if violated
+    await assertTestEnvironment(process.env.TEST_DATABASE_URL ?? '');
+    await assertNoStaleTestData(userId);
+
+    const user = await userFactory.create({ id: userId, subscriptionTier: 'premium' });
+    await use({ id: user.id, email: user.email, tier: user.subscriptionTier });
+
+    // Teardown — clean up regardless of test outcome
+    await db.user.delete({ where: { id: user.id } }).catch(() => {
+      // Suppress "not found" errors — test may have deleted the user itself
+    });
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// specs/checkout.spec.ts — uses guarded fixture; test.abort() fires on precondition failure
+import { test, expect } from '../fixtures/factory-guards';
+
+test('premium checkout succeeds with factory user', async ({ page, guardedUser }) => {
+  // If guardedUser fixture calls test.abort(), this test body never runs
+  await page.goto(`/checkout?userId=${guardedUser.id}`);
+  await page.getByRole('button', { name: 'Proceed to Payment' }).click();
+  await expect(page.getByTestId('payment-form')).toBeVisible();
+});
+```
+
+**`test.abort()` from inside a `page.route()` handler — detecting invariant violations mid-test:**
+
+```typescript
+test('checkout never posts to production endpoint', async ({ page }) => {
+  // Route handler calls test.abort() if the SUT accidentally calls the real payment processor
+  await page.route('https://api.stripe.com/**', (route) => {
+    test.abort(
+      'Test made a real request to Stripe API. ' +
+      'Ensure the payment factory mock is active and the MSW service worker is registered.'
+    );
+    return route.abort();
+  });
+
+  await page.goto('/checkout');
+  // ... rest of the test
+});
+```
+
+**`test.abort()` vs `test.skip()` vs `expect().toBeTruthy()` for precondition checking:**
+
+| Approach | Test outcome | Use case |
+|---|---|---|
+| `test.skip(condition)` | Skipped (not failed) | Feature not yet implemented; environment not available |
+| `test.abort(message)` | Failed with message | Detected invariant violation that indicates a bug or env misconfiguration |
+| `expect(precondition).toBeTruthy()` | Failed as assertion | Inline postcondition / data assertion within test body |
+| `throw new Error(msg)` | Failed (generic error) | Works but produces unhelpful stack traces in fixture code |
+
+---
+
+## MSW v2.14 `finalize()` API — WebSocket Handler Cleanup  [community]
+
+MSW v2.14.4 (April 2026) added a `finalize()` method to WebSocket handler event listeners.
+This provides a deterministic cleanup hook for MSW WebSocket handlers — equivalent to what
+`server.resetHandlers()` provides for HTTP handlers — but for the internal state of a
+WebSocket listener registration itself.
+
+**Why it matters for test data:** MSW `ws.link()` handlers that register `addEventListener`
+listeners accumulate internal state across tests when `server.resetHandlers()` is called.
+`resetHandlers()` removes the handler from the server's handler list, but any `setTimeout`
+callbacks or generator state inside the handler's closure continues running. The `finalize()`
+callback fires when the handler is removed — letting you cancel timers, close generator
+iterators, and release resources that the handler's factory closure holds.
+
+```typescript
+// mocks/websocket-handlers.ts — MSW v2.14+ finalize() for clean handler teardown
+import { ws } from 'msw';
+import { faker } from '@faker-js/faker';
+
+const orderUpdates = ws.link('wss://api.example.com/orders/:orderId/stream');
+
+// Streaming status factory — generates updates on a timer
+function buildTimedStatusStream(
+  orderId: string,
+  onMessage: (msg: string) => void
+): { cancel: () => void } {
+  let cancelled = false;
+  const statuses = ['pending', 'paid', 'shipped', 'delivered'];
+
+  statuses.forEach((status, i) => {
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        onMessage(JSON.stringify({
+          orderId, status,
+          timestamp: new Date(Date.now() + i * 1000).toISOString(),
+        }));
+      }
+    }, i * 100);
+  });
+
+  return { cancel: () => { cancelled = true; } };
+}
+
+export const wsHandlers = [
+  orderUpdates.addEventListener('connection', ({ client, params }, { finalize }) => {
+    const orderId = params.orderId as string;
+
+    // Start the timed factory stream
+    const stream = buildTimedStatusStream(orderId, (msg) => client.send(msg));
+
+    // finalize() fires when this handler is removed (server.resetHandlers() / server.close())
+    // Use it to cancel pending timers so they don't fire after the test ends
+    finalize(() => {
+      stream.cancel();
+    });
+
+    client.addEventListener('close', () => {
+      stream.cancel();   // also cancel on client-initiated close
+    });
+  }),
+];
+```
+
+```typescript
+// vitest.setup.ts — MSW server with clean WebSocket handler teardown
+import { setupServer } from 'msw/node';
+import { wsHandlers } from './mocks/websocket-handlers';
+
+const server = setupServer(...wsHandlers);
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => {
+  // resetHandlers() triggers finalize() on any removed WS handlers
+  // This cancels pending setTimeout callbacks from the factory stream
+  server.resetHandlers();
+});
+afterAll(() => server.close());
+```
+
+**Before v2.14 (without `finalize()`):**
+
+```typescript
+// Common bug: handler removed by resetHandlers(), but timer fires 100ms later
+// The client.send() call on the now-removed client causes an unhandled error
+// in the next test's MSW server state — producing cryptic failures.
+orderUpdates.addEventListener('connection', ({ client }) => {
+  setTimeout(() => {
+    client.send(JSON.stringify({ status: 'shipped' }));  // fires AFTER test ends
+  }, 500);
+  // No cleanup hook — timer runs even after server.resetHandlers()
+});
+```
+
+**`finalize()` cleanup pattern vs `server.close()` teardown:**
+
+| Pattern | When it fires | Use case |
+|---|---|---|
+| `finalize()` callback | When handler is removed via `resetHandlers()` | Per-test cleanup of handler-specific resources (timers, generators) |
+| `client.addEventListener('close')` | When the WS client closes the connection | Per-connection cleanup |
+| `server.close()` in `afterAll` | Once at suite end | Full server teardown |
+
+---
+
+## `faker` v10.4 Locale Expansions — Locale-Sensitive Factory Test Data  [community]
+
+faker v10.4.0 (March 2025) added significant locale expansions for Norwegian (`nb_NO`) and
+Japanese (`ja`) — two locales that expose locale-specific rendering bugs in address forms,
+name display, and character encoding that the default `en` locale will never trigger.
+
+**Why it matters:** Web applications commonly have bugs in non-Latin locale handling: Japanese
+full-width numbers in phone fields, Norwegian `æ/ø/å` characters breaking regex validation,
+right-to-left cursor positioning in bidirectional-enabled inputs. Factories using only English
+faker data miss these bugs. Adding locale-specific factory variants to your test suite makes
+character encoding and locale rendering bugs discoverable at factory authoring time.
+
+**New in v10.4 — Norwegian locale additions:**
+
+```typescript
+// factories/locale-norway.factory.ts — Norwegian locale test data (faker v10.4+)
+import { fakerNB_NO } from '@faker-js/faker';
+
+interface NorwegianAddress {
+  id: string;
+  streetAddress: string;
+  postalCode: string;      // Norwegian format: 4 digits (e.g., 0150)
+  city: string;
+  country: 'NO';
+  phoneNumber: string;     // Norwegian format: +47 XX XX XX XX
+  sex: string;             // now includes 'male', 'female', and locale-aware values
+  zodiacSign: string;      // v10.4 addition: zodiac signs in Norwegian
+}
+
+export function buildNorwegianAddress(
+  overrides: Partial<NorwegianAddress> = {}
+): NorwegianAddress {
+  return {
+    id: fakerNB_NO.string.uuid(),
+    streetAddress: fakerNB_NO.location.streetAddress(),
+    postalCode: fakerNB_NO.location.zipCode(),
+    city: fakerNB_NO.location.city(),
+    country: 'NO',
+    phoneNumber: fakerNB_NO.phone.number(),
+    sex: fakerNB_NO.person.sex(),              // respects Norwegian locale sex definitions
+    zodiacSign: fakerNB_NO.person.zodiacSign(), // v10.4: Norwegian zodiac sign strings
+    ...overrides,
+  };
+}
+
+// Locale-stress test data: Norwegian characters that break ASCII-only validation
+export const NorwegianEdgeCases = {
+  // Names with æ, ø, å — break regex /^[a-zA-Z\s]+$/ validators
+  nameWithAe: () => fakerNB_NO.person.fullName({ sex: 'female' }),
+  // City containing ø — useful for city/country field validation tests
+  cityWithOslash: () => 'Tromsø',
+  // Postal code: 4-digit Norwegian format (different from 5-digit German)
+  postalCode: () => fakerNB_NO.location.zipCode(),  // returns e.g. '0150'
+};
+```
+
+**New in v10.4 — Japanese locale expansions (animal breeds for locale-specific content):**
+
+```typescript
+// factories/locale-japan.factory.ts — Japanese locale test data (faker v10.4+)
+import { fakerJA } from '@faker-js/faker';
+
+// v10.4 added animal breed data to the Japanese locale:
+// cat breeds (猫の品種), bear types (クマの種類), cattle breeds (牛の品種),
+// bird species (鳥の種類), fish species (魚の種類), horse breeds (馬の品種)
+// Useful for: e-commerce (pet/animal product categories), data entry forms,
+// content management systems with locale-specific taxonomy
+
+interface AnimalProduct {
+  id: string;
+  species: string;
+  breed: string;
+  japaneseName: string;
+}
+
+export function buildJapaneseAnimalProduct(
+  overrides: Partial<AnimalProduct> = {}
+): AnimalProduct {
+  const species = fakerJA.helpers.arrayElement(
+    ['cat', 'bird', 'fish'] as const
+  );
+
+  // Use the animal module for locale-accurate breed names in Japanese
+  const breedMap = {
+    cat:  () => fakerJA.animal.cat(),      // e.g., 'アビシニアン'
+    bird: () => fakerJA.animal.bird(),     // e.g., 'アマツバメ'
+    fish: () => fakerJA.animal.fish(),     // e.g., 'アイナメ'
+  };
+
+  return {
+    id: fakerJA.string.uuid(),
+    species,
+    breed: breedMap[species](),
+    japaneseName: fakerJA.person.fullName(),    // Japanese character names
+    ...overrides,
+  };
+}
+
+// Locale-stress test data: Japanese multi-byte characters
+export const JapaneseEdgeCases = {
+  // Full-width number characters — break ASCII-only phone number validators
+  fullWidthPhone: '０３－１２３４－５６７８',
+  // Kanji in name fields — test font rendering and byte-length validation
+  kanjiName: fakerJA.person.lastName() + ' ' + fakerJA.person.firstName(),
+  // Japanese postal code: NNN-NNNN (7 digits with hyphen)
+  postalCode: fakerJA.location.zipCode(),   // e.g., '100-0001'
+  // Japanese address in character order (prefecture → city → street — reverse of Western)
+  address: fakerJA.location.streetAddress(),
+};
+```
+
+**Combining locale factories in a parametric i18n test suite:**
+
+```typescript
+// specs/address-form.spec.ts — parametric locale test using v10.4 locale factories
+import { test, expect } from '@playwright/test';
+import { buildNorwegianAddress, NorwegianEdgeCases } from '../factories/locale-norway.factory';
+import { JapaneseEdgeCases } from '../factories/locale-japan.factory';
+import { buildGermanAddress } from '../factories/international.factory';
+
+// Parametric locale test — same form, different locale factory data
+const localeTestCases = [
+  { locale: 'nb-NO', address: buildNorwegianAddress(), label: 'Norwegian (æøå chars)' },
+  { locale: 'de-DE', address: buildGermanAddress(),   label: 'German (umlauts)'       },
+  {
+    locale: 'ja-JP',
+    address: {
+      street: JapaneseEdgeCases.address,
+      postalCode: JapaneseEdgeCases.postalCode,
+      city: '東京',
+      country: 'JP',
+    },
+    label: 'Japanese (kanji, full-width)',
+  },
+];
+
+for (const { locale, address, label } of localeTestCases) {
+  test(`address form accepts ${label}`, async ({ page }) => {
+    await page.goto(`/profile/address?locale=${locale}`);
+    await page.getByLabel('Street').fill(address.street);
+    await page.getByLabel('Postal Code').fill(address.postalCode);
+    await page.getByLabel('City').fill(address.city);
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('success-message')).toBeVisible();
+  });
+}
+```
+
+---
+
+29. **[community] Playwright WebSocket route handlers installed via `page.routeWebSocket()` linger across navigations and can bleed into subsequent test assertions if not explicitly closed.**
+    When a test installs a WebSocket route on a `page` object and then the page navigates (e.g., via a redirect or a `page.goto()` call later in the test), the route handler remains active on the page-level route registry. Unlike HTTP routes installed with `page.route()`, which can be removed with `page.unroute()`, WebSocket routes stay bound for the lifetime of the page. If the same page object is reused across test steps (e.g., in a Playwright fixture with `scope: 'worker'`), the WebSocket handler from a previous test step can still intercept connections in subsequent steps — causing the next test to receive factory-generated messages it didn't expect.
+
+    ```typescript
+    // Anti-pattern: page-scoped WS route bleeds into reused worker-scoped page
+    test.extend({
+      sharedPage: async ({ browser }, use) => {
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await use(page);       // page is shared across all tests in the worker
+        await context.close();
+      },
+    });
+
+    test('test A — installs WS route', async ({ sharedPage }) => {
+      await sharedPage.routeWebSocket('wss://api.example.com/ws', (ws) => {
+        ws.send(JSON.stringify({ type: 'test-a-data' }));
+      });
+      await sharedPage.goto('/realtime-feature');
+      // ... assertions
+      // WS route remains active on sharedPage after this test ends!
+    });
+
+    test('test B — expects no WS route (but test A route is still active)', async ({ sharedPage }) => {
+      await sharedPage.goto('/realtime-feature');
+      // Factory-generated message from test A may arrive — causes flaky assertion
+    });
+
+    // Fix: use context-level routing OR close/unroute between tests
+    // Option 1: browserContext.routeWebSocket() with explicit handler removal
+    // Option 2: use page-scoped (not worker-scoped) pages so each test gets a fresh page
+    // Option 3: call page.unrouteAll({ behavior: 'ignoreErrors' }) in fixture teardown
+
+    // Correct fixture:
+    test.extend({
+      freshPage: async ({ browser }, use) => {
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await use(page);
+        await page.unrouteAll({ behavior: 'ignoreErrors' });  // clear WS and HTTP routes
+        await context.close();
+      },
+    });
+    ```
+
+    The `page.unrouteAll({ behavior: 'ignoreErrors' })` call in fixture teardown is the most defensive fix — it clears all HTTP and WebSocket routes from the page regardless of how they were installed, preventing bleed-through to subsequent tests that share the page object.
+
+---
+
+## Key Resources (iter-41 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright `WebSocketRoute` API docs | Official | https://playwright.dev/docs/api/class-websocketroute | Full API: `ws.send()`, `ws.onMessage()`, `ws.connectToServer()`, `ws.close()`, `ws.protocols()` |
+| Playwright 1.48 release notes | Official | https://playwright.dev/docs/release-notes#version-148 | `routeWebSocket()` — intercept and mock WebSocket connections in E2E tests |
+| Playwright global setup teardown | Official | https://playwright.dev/docs/test-global-setup-teardown | Project `dependencies` + `teardown` for composable DB seeding (multiple independent setup projects) |
+| Playwright `test.abort()` docs | Official | https://playwright.dev/docs/api/class-test#test-abort | Fail fast from fixture or route handler on precondition violation (v1.60+) |
+| Playwright `test.step.skip()` docs | Official | https://playwright.dev/docs/api/class-test#test-step | Per-step conditional skip for data-dependent test steps (v1.50+) |
+| MSW v2.14 release notes | Official | https://github.com/mswjs/msw/releases/tag/v2.14.4 | `finalize()` API for WebSocket handler cleanup on `resetHandlers()` |
+| faker v10.4.0 release notes | Official | https://github.com/faker-js/faker/releases/tag/v10.4.0 | Norwegian locale additions (zodiac, sex defs, vehicles); Japanese animal breed data (cat/bird/fish) |

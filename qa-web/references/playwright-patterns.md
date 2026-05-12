@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context) -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required) -->
 
 ---
 
@@ -2326,6 +2326,54 @@ export default defineConfig({
 
 > A single `eslint-plugin-playwright` rule (`no-focused-test`) prevents `test.only()`
 > from being merged. Enable it as `error`, not `warn`, in your CI lint step. [community]
+
+**ESLint v9 flat config (`eslint.config.js`) — required for new projects in 2025+:**
+
+ESLint v9 (released April 2024) made flat config the default and deprecated `.eslintrc.*`. Projects created with ESLint v9+ must use `eslint.config.js`. The `eslint-plugin-playwright` package supports flat config from v1.6+.
+
+```typescript
+// eslint.config.js — flat config for ESLint v9+ projects
+import playwright from 'eslint-plugin-playwright';
+
+export default [
+  {
+    // Apply only to e2e test files
+    files: ['e2e/**/*.spec.ts', 'e2e/**/*.ts'],
+    plugins: { playwright },
+    rules: {
+      ...playwright.configs['flat/recommended'].rules,
+      // Customize on top of the recommended preset:
+      'playwright/no-wait-for-timeout':         'error',
+      'playwright/no-useless-await':            'error',
+      'playwright/no-focused-test':             'error',
+      'playwright/prefer-web-first-assertions': 'error',
+      'playwright/no-conditional-in-test':      'warn',
+      'playwright/valid-expect':                'error',
+      'playwright/no-page-pause':               'error',
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.property.name='highlight']",
+          message:  "locator.highlight() is a debug tool — remove before committing.",
+        },
+        {
+          selector: "CallExpression[callee.property.name='pickLocator']",
+          message:  "page.pickLocator() is a debug tool — remove before committing.",
+        },
+      ],
+    },
+  },
+];
+```
+
+```bash
+# Install eslint-plugin-playwright v1.6+ for flat config support
+npm install --save-dev eslint-plugin-playwright@latest
+```
+
+> If your project still uses `.eslintrc.*` (ESLint v8 or earlier), the `jsonc` config in the section above remains valid. ESLint v9 introduced flat config but kept legacy config support via `ESLINT_USE_FLAT_CONFIG=false`. Check your ESLint version: `npx eslint --version`. Projects scaffolded with `create-next-app` or `vite` after early 2025 default to flat config. [community]
+
+> **Gotcha:** `eslint-plugin-playwright` versions before v1.6 do not export `configs['flat/recommended']` — importing it causes `TypeError: Cannot read properties of undefined (reading 'rules')`. Pin `eslint-plugin-playwright@^1.6.0` when migrating to flat config. [community]
 
 ---
 

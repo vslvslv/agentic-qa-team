@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 46 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 47 | score: 95/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -50,6 +50,7 @@
      Iter 44 (2026-05-12): 100/100 (+0) — added Executor.map() buffersize parameter (Python 3.14); ProcessPoolExecutor.terminate_workers() / kill_workers(); fnmatch.filterfalse(); community gotcha #42 (unbounded Executor.map backpressure); sourced from docs.python.org/3/library/concurrent.futures.html + docs.python.org/3/library/fnmatch.html
      Iter 45 (2026-05-12): 100/100 (+0) — added inspect.ispackage() / CO_HAS_DOCSTRING / CO_METHOD / frame.f_generator idioms (Python 3.14); Signature.format(quote_annotation_strings=False); community gotcha #43 (free-threaded shared iterator race); sourced from docs.python.org/3/library/inspect.html + docs.python.org/3/howto/free-threading-python.html
      Iter 46 (2026-05-12): 100/100 (+0) — added structured logging with StructuredLogMessage t-string processor; adaptive threading strategy pattern; asyncio.timeout() dynamic rescheduling; community gotcha #44 (f_locals cross-thread crash in free-threaded mode); sourced from peps.python.org/pep-0750/ + docs.python.org/3/library/asyncio-task.html + practitioner synthesis
+     [testing-focus run] Iter 47 (2026-05-12): 95/100 (+310 lines) — added comprehensive Testing section covering pytest fixtures/scopes/yield teardown/conftest.py, @pytest.mark.parametrize + pytest.param + indirect, built-in fixtures (tmp_path, monkeypatch, caplog, capsys, capfd), pytest.raises/warns/approx, pytest 8.x/9.x new features (RaisesGroup, HIDDEN_PARAM, subtests, native TOML config), Hypothesis property-based testing (@given, @settings, @example, @composite, st.* strategies, assume/note/target, database), and community gotchas #45 (fixture scope leakage), #46 (monkeypatch vs patch namespace), #47 (Hypothesis filter() rejection ratio); sourced from docs.pytest.org/en/stable/changelog.html + docs.pytest.org/en/stable/how-to/fixtures.html + practitioner synthesis
 -->
 
 ## Core Philosophy
@@ -7421,4 +7422,931 @@ with ThreadPoolExecutor(max_workers=4) as ex:
 ```
 
 **Rule:** Frame objects are not thread-safe. If you need locals from another thread's frame (e.g., for profiling or debugging), snapshot them as a plain `dict` on the owning thread and pass the dict across the boundary. Never share raw frame objects across threads.
+
+---
+
+## Testing Patterns: pytest, Hypothesis, and unittest
+
+This section covers testing-specific idioms that are not Python language features but are essential to the Python testing ecosystem. All patterns apply to pytest 8.x/9.x unless noted otherwise.
+
+---
+
+### pytest Fixtures: Scopes, Yield Teardown, and `conftest.py`
+
+Fixtures are pytest's dependency-injection mechanism. A fixture function provides a value (or resource) to test functions that declare it as a parameter. Scopes control how often a fixture is created and destroyed.
+
+| Scope | Created | Destroyed | Use for |
+|---|---|---|---|
+| `function` (default) | Before each test | After each test | Cheap, isolated setup |
+| `class` | Once per `TestCase` class | After the last test in the class | Class-level shared state |
+| `module` | Once per module file | After the last test in the module | Expensive DB connections per file |
+| `package` | Once per package directory | After the last test in the package | Shared config across related modules |
+| `session` | Once per `pytest` invocation | After all tests | Global resources (test DB, server, tmpdir) |
+
+```python
+# conftest.py — shared fixtures auto-discovered by pytest in the same dir and below
+import pytest
+from collections.abc import Iterator
+import sqlite3
+
+
+@pytest.fixture(scope="session")
+def db_connection() -> Iterator[sqlite3.Connection]:
+    """Session-scoped: one real DB connection for the entire test run."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    yield conn            # setup complete — hand connection to tests
+    conn.close()          # teardown runs once after all tests finish
+
+
+@pytest.fixture(scope="module")
+def seeded_db(db_connection: sqlite3.Connection) -> sqlite3.Connection:
+    """Module-scoped: seed data once per module, rolls back after."""
+    db_connection.execute("INSERT INTO users VALUES (1, 'Alice')")
+    db_connection.execute("INSERT INTO users VALUES (2, 'Bob')")
+    db_connection.commit()
+    yield db_connection
+    db_connection.execute("DELETE FROM users")
+    db_connection.commit()
+
+
+@pytest.fixture                          # scope="function" is the default
+def fresh_cursor(seeded_db: sqlite3.Connection):
+    """Function-scoped: each test gets a fresh cursor; changes are rolled back."""
+    cursor = seeded_db.cursor()
+    yield cursor
+    seeded_db.rollback()                 # undo any writes made by this test
+
+
+# tests/test_users.py
+def test_count_users(fresh_cursor):
+    fresh_cursor.execute("SELECT COUNT(*) FROM users")
+    assert fresh_cursor.fetchone()[0] == 2
+
+
+def test_add_user(fresh_cursor, seeded_db):
+    fresh_cursor.execute("INSERT INTO users VALUES (3, 'Carol')")
+    fresh_cursor.execute("SELECT COUNT(*) FROM users")
+    assert fresh_cursor.fetchone()[0] == 3
+    # rollback in fresh_cursor fixture undoes this insert; module count stays 2
+```
+
+**Key rules:**
+- Higher-scoped fixtures must use equally-high or higher scope for their own dependencies (function fixture can use session fixture, but not vice versa).
+- Always use `yield` for teardown — it guarantees cleanup even when the test raises.
+- Put widely-shared fixtures in `conftest.py`; keep test-file-specific fixtures in the test file itself.
+
+---
+
+### `autouse` Fixtures and Implicit Setup
+
+`autouse=True` makes a fixture apply to every test in its scope automatically, without each test function listing it as a parameter.
+
+```python
+import pytest
+import logging
+
+
+@pytest.fixture(autouse=True, scope="function")
+def reset_logging():
+    """Clear log handlers before each test so captured logs don't bleed through."""
+    root = logging.getLogger()
+    original_handlers = root.handlers[:]
+    root.handlers.clear()
+    yield
+    root.handlers = original_handlers
+
+
+@pytest.fixture(autouse=True, scope="session")
+def configure_test_env(tmp_path_factory):
+    """Session-wide: write a config file once and set an env var for all tests."""
+    import os
+    cfg = tmp_path_factory.mktemp("config") / "settings.toml"
+    cfg.write_text('[app]\nenv = "test"\n')
+    os.environ["APP_CONFIG"] = str(cfg)
+    yield
+    del os.environ["APP_CONFIG"]
+```
+
+**When to use `autouse`:** Cross-cutting concerns (resetting singletons, faking time, clearing caches) that every test in a scope must apply. Avoid for setup that only a subset of tests needs — use explicit fixture parameters instead to keep test intent visible.
+
+---
+
+### `@pytest.mark.parametrize` — Parametric Tests
+
+`@pytest.mark.parametrize` runs one test function multiple times with different arguments. It is the preferred alternative to copy-pasting test functions.
+
+```python
+import pytest
+
+
+# ── Basic parametrize ─────────────────────────────────────────────────────────
+@pytest.mark.parametrize("value,expected", [
+    (2, True),
+    (3, True),
+    (4, False),
+    (9, False),
+    (17, True),
+])
+def test_is_prime(value: int, expected: bool) -> None:
+    assert is_prime(value) == expected
+
+
+def is_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    for i in range(2, int(n ** 0.5) + 1):
+        if n % i == 0:
+            return False
+    return True
+
+
+# ── pytest.param: mark individual cases ──────────────────────────────────────
+@pytest.mark.parametrize("a,b,expected", [
+    (1, 2, 3),
+    (0, 0, 0),
+    pytest.param(-1, -1, -2, id="negative-sum"),
+    pytest.param(10**9, 10**9, 2 * 10**9, id="large-numbers"),
+    pytest.param(1, "x", None, marks=pytest.mark.xfail(raises=TypeError)),
+])
+def test_add(a, b, expected):
+    assert a + b == expected
+
+
+# ── Stacking parametrize: Cartesian product ───────────────────────────────────
+@pytest.mark.parametrize("encoding", ["utf-8", "latin-1", "ascii"])
+@pytest.mark.parametrize("mode", ["r", "rb"])
+def test_file_open(tmp_path, encoding, mode):
+    """Runs 6 times: 3 encodings × 2 modes."""
+    f = tmp_path / "sample.txt"
+    f.write_bytes(b"hello")
+    if "b" not in mode:
+        with f.open(mode, encoding=encoding) as fh:
+            assert "hello" in fh.read()
+    else:
+        with f.open(mode) as fh:
+            assert b"hello" in fh.read()
+
+
+# ── Indirect parametrize: feed values through a fixture ──────────────────────
+@pytest.fixture
+def db_url(request):
+    """Fixture that transforms a string param into a connection URL."""
+    return f"sqlite:///{request.param}"
+
+
+@pytest.mark.parametrize("db_url", [":memory:", "/tmp/test.db"], indirect=True)
+def test_connect(db_url):
+    """Runs twice: once with :memory: and once with /tmp/test.db."""
+    import sqlite3
+    conn = sqlite3.connect(db_url.replace("sqlite:///", ""))
+    assert conn is not None
+    conn.close()
+```
+
+**pytest 8.4+ addition — `pytest.HIDDEN_PARAM`:** Hides a parameter set from test IDs and `--collect-only` output, useful for internal sentinel values:
+
+```python
+@pytest.mark.parametrize("x", [1, 2, pytest.HIDDEN_PARAM(3)])
+def test_values(x):
+    # Test runs 3 times; third run omitted from collected test ID display
+    assert isinstance(x, int)
+```
+
+---
+
+### pytest 9.0+ Subtests (Alternative to Parametrize)
+
+Subtests let you run multiple assertions in one test function, reporting each failure independently. Unlike `parametrize`, subtest values can be computed at runtime (not just at collection time).
+
+```python
+import pytest
+
+
+def test_many_integers(subtests):
+    """
+    Each with-block is a subtest — failures are independent.
+    pytest reports each failed subtest separately with its label.
+    """
+    for n in range(1, 6):
+        with subtests.test(msg=f"check {n} is positive", n=n):
+            assert n > 0           # all pass
+
+    for label, val in [("zero", 0), ("negative", -1), ("ok", 5)]:
+        with subtests.test(label):
+            assert val > 0         # "zero" and "negative" fail; "ok" passes
+                                   # pytest reports 2 subtest failures; test continues
+```
+
+**When to use subtests vs parametrize:**
+- `parametrize`: Values known at collection time; clean isolation between cases; prefer for unit tests.
+- `subtests`: Values computed at runtime; one test with many assertions; useful for integration tests that stream results.
+
+---
+
+### Built-in Fixtures: `tmp_path`, `monkeypatch`, `caplog`, `capsys`
+
+```python
+import os
+import logging
+import pytest
+
+
+# ── tmp_path: isolated temporary directory per test ──────────────────────────
+def test_write_report(tmp_path):
+    report = tmp_path / "report.txt"
+    report.write_text("Summary: OK")
+    assert report.read_text() == "Summary: OK"
+    assert report.exists()
+
+
+# ── tmp_path_factory: session-scoped shared tmpdir ───────────────────────────
+@pytest.fixture(scope="session")
+def shared_dir(tmp_path_factory):
+    d = tmp_path_factory.mktemp("shared")
+    (d / "seed.txt").write_text("data")
+    return d
+
+
+# ── monkeypatch: temporarily modify env, sys.path, attributes, dicts ──────────
+def get_greeting() -> str:
+    import os
+    return f"Hello from {os.environ.get('APP_ENV', 'unknown')}"
+
+
+def test_greeting_staging(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "staging")
+    assert get_greeting() == "Hello from staging"
+    # env var restored automatically after test
+
+
+def test_patch_attribute(monkeypatch):
+    import math
+    monkeypatch.setattr(math, "pi", 3.0)     # override math.pi for this test only
+    assert math.pi == 3.0
+
+
+def test_patch_dict(monkeypatch):
+    config = {"mode": "prod", "debug": False}
+    monkeypatch.setitem(config, "mode", "test")
+    monkeypatch.setitem(config, "debug", True)
+    assert config["mode"] == "test"          # restored after test
+
+
+# ── caplog: capture log output ────────────────────────────────────────────────
+def process_order(order_id: int) -> None:
+    logging.getLogger(__name__).info("Processing order %d", order_id)
+    if order_id < 0:
+        logging.getLogger(__name__).warning("Invalid order ID: %d", order_id)
+
+
+def test_order_logging(caplog):
+    with caplog.at_level(logging.INFO):
+        process_order(42)
+    assert "Processing order 42" in caplog.text
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "INFO"
+
+
+def test_warning_logged(caplog):
+    with caplog.at_level(logging.WARNING):
+        process_order(-1)
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+# ── capsys: capture stdout/stderr ─────────────────────────────────────────────
+def print_summary(items: list[str]) -> None:
+    for item in items:
+        print(f"- {item}")
+
+
+def test_print_output(capsys):
+    print_summary(["apple", "banana"])
+    captured = capsys.readouterr()
+    assert captured.out == "- apple\n- banana\n"
+    assert captured.err == ""
+```
+
+---
+
+### `pytest.raises`, `pytest.warns`, and `pytest.approx`
+
+```python
+import pytest
+import warnings
+
+
+# ── pytest.raises — assert an exception is raised ────────────────────────────
+def parse_age(value: str) -> int:
+    n = int(value)
+    if n < 0 or n > 150:
+        raise ValueError(f"Age out of range: {n}")
+    return n
+
+
+def test_invalid_string_raises():
+    with pytest.raises(ValueError):
+        parse_age("not-a-number")
+
+
+def test_out_of_range_message():
+    with pytest.raises(ValueError, match=r"Age out of range: -5"):
+        parse_age("-5")
+
+
+def test_exception_info():
+    with pytest.raises(ValueError) as exc_info:
+        parse_age("200")
+    assert "out of range" in str(exc_info.value)
+    assert exc_info.type is ValueError
+
+
+# ── pytest.raises for ExceptionGroup (Python 3.11+, pytest 8.4+) ─────────────
+# pytest.RaisesGroup replaces the pattern of catching ExceptionGroup manually
+import asyncio
+
+
+async def parallel_tasks():
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(asyncio.sleep(-1))      # raises ValueError
+        tg.create_task(asyncio.sleep(-2))      # raises ValueError
+
+
+def test_task_group_exceptions():
+    with pytest.RaisesGroup(ValueError, ValueError):
+        asyncio.run(parallel_tasks())
+
+# With match patterns per sub-exception:
+# with pytest.RaisesGroup(pytest.RaisesExc(ValueError, match="invalid")):
+#     asyncio.run(parallel_tasks())
+
+
+# ── pytest.warns — assert a warning is emitted ───────────────────────────────
+def legacy_api(x: int) -> int:
+    warnings.warn("legacy_api is deprecated, use new_api()", DeprecationWarning, stacklevel=2)
+    return x * 2
+
+
+def test_deprecation_warning():
+    with pytest.warns(DeprecationWarning, match="deprecated"):
+        result = legacy_api(5)
+    assert result == 10
+
+
+# ── pytest.approx — floating-point comparison ────────────────────────────────
+def test_float_arithmetic():
+    assert 0.1 + 0.2 == pytest.approx(0.3)               # passes (rel tolerance 1e-6)
+    assert 1.0 / 3.0 == pytest.approx(0.333_333_3, rel=1e-6)
+
+    # Works with sequences and dicts
+    assert [0.1, 0.2, 0.3] == pytest.approx([0.1, 0.2, 0.3])
+    assert {"x": 0.1, "y": 0.2} == pytest.approx({"x": 0.1, "y": 0.2})
+
+    # abs tolerance: for values near zero where relative tolerance is meaningless
+    assert 1e-10 == pytest.approx(0.0, abs=1e-8)
+```
+
+---
+
+### pytest Marks: `xfail`, `skip`, `skipif`, `usefixtures`
+
+```python
+import sys
+import pytest
+
+
+# ── skip — unconditionally skip this test ────────────────────────────────────
+@pytest.mark.skip(reason="Pending implementation of the payment module")
+def test_payment_flow():
+    ...
+
+
+# ── skipif — skip based on a runtime condition ───────────────────────────────
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-only file descriptor test")
+def test_fd_limit():
+    import resource
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    assert hard > 1000
+
+
+# ── xfail — expected failure (test marked as known broken) ───────────────────
+@pytest.mark.xfail(reason="Bug #1234: sort is unstable for NaN values")
+def test_sort_nan():
+    import math
+    data = [1.0, math.nan, 2.0]
+    data.sort()
+    assert not any(math.isnan(x) for x in data)   # may fail — that's expected
+
+
+# strict=True: XPASS (unexpected pass) is treated as a test failure
+@pytest.mark.xfail(strict=True, raises=NotImplementedError)
+def test_unimplemented_feature():
+    raise NotImplementedError("Feature not yet built")
+
+
+# ── usefixtures — apply a fixture without taking it as an argument ────────────
+@pytest.mark.usefixtures("reset_logging")
+def test_something_with_clean_logs():
+    import logging
+    logging.info("test message")
+    # reset_logging fixture runs; no need to list it as a parameter
+
+
+# ── Custom marks — register in pyproject.toml to avoid PytestUnknownMarkWarning
+# [tool.pytest.ini_options]
+# markers = [
+#   "slow: marks tests as slow (deselect with '-m not slow')",
+#   "integration: marks integration tests requiring external services",
+# ]
+@pytest.mark.slow
+def test_large_dataset():
+    data = list(range(10_000_000))
+    assert len(data) == 10_000_000
+```
+
+---
+
+### pytest Configuration (`pyproject.toml` / `pytest.toml`)
+
+pytest 9.0 introduced native TOML support (no longer INI-compatibility mode) and a unified `strict` option.
+
+```toml
+# pyproject.toml — recommended single source of truth
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",   # unregistered marks are errors
+    "-ra",                # show summary for all except passed
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m not slow')",
+    "integration: requires external services",
+    "smoke: fast critical-path tests",
+]
+log_cli = true
+log_cli_level = "INFO"
+filterwarnings = [
+    "error",                          # all warnings → errors
+    "ignore::DeprecationWarning:six", # except from 'six' package
+]
+
+# pytest 9.0+ native TOML: can also use a standalone pytest.toml / .pytest.toml
+# [pytest]
+# strict = true    # enables strict_config + strict_markers + strict_parametrization_ids + strict_xfail
+```
+
+---
+
+### Property-Based Testing with Hypothesis
+
+Hypothesis generates hundreds of randomised inputs to find edge cases that hand-written tests miss. It shrinks failing inputs to the minimal reproducing example automatically.
+
+#### Core Decorators: `@given`, `@settings`, `@example`
+
+```python
+from hypothesis import given, settings, example, HealthCheck
+from hypothesis import strategies as st
+
+
+# ── @given — the entry point for property-based tests ────────────────────────
+@given(st.integers())
+def test_addition_commutative(n: int) -> None:
+    """For any integer n, n + 0 == n (identity property)."""
+    assert n + 0 == n
+
+
+@given(st.integers(), st.integers())
+def test_addition_symmetric(a: int, b: int) -> None:
+    assert a + b == b + a
+
+
+# ── @example — always run this specific case in addition to generated ones ────
+@given(st.text())
+@example("")                           # always test the empty string
+@example("hello\x00world")            # always test embedded null
+def test_round_trip_encoding(s: str) -> None:
+    assert s.encode("utf-8").decode("utf-8") == s
+
+
+# ── @settings — tune the search budget ───────────────────────────────────────
+@settings(max_examples=500)           # run 500 random cases instead of default 100
+@given(st.lists(st.integers(), min_size=1))
+def test_min_is_in_list(xs: list[int]) -> None:
+    assert min(xs) in xs
+
+
+@settings(
+    max_examples=50,
+    suppress_health_check=[HealthCheck.too_slow],   # suppress slow-data warning
+)
+@given(st.text(max_size=100))
+def test_strip_idempotent(s: str) -> None:
+    assert s.strip() == s.strip().strip()
+```
+
+#### Key Strategies
+
+```python
+from hypothesis import given
+from hypothesis import strategies as st
+
+
+# ── Primitive strategies ──────────────────────────────────────────────────────
+@given(st.integers(min_value=1, max_value=1000))
+def test_sqrt_squared(n: int) -> None:
+    import math
+    assert math.isclose(math.sqrt(n) ** 2, n, rel_tol=1e-9)
+
+
+@given(st.floats(allow_nan=False, allow_infinity=False))
+def test_float_abs_nonneg(x: float) -> None:
+    assert abs(x) >= 0
+
+
+@given(st.text(alphabet=st.characters(whitelist_categories=("Lu", "Ll")), min_size=1))
+def test_upper_lower(s: str) -> None:
+    assert s.upper().lower() == s.lower()
+
+
+# ── Collection strategies ──────────────────────────────────────────────────────
+@given(st.lists(st.integers(), min_size=0, max_size=20))
+def test_sort_length_preserved(xs: list[int]) -> None:
+    assert len(sorted(xs)) == len(xs)
+
+
+@given(st.dictionaries(keys=st.text(max_size=10), values=st.integers()))
+def test_dict_round_trip(d: dict[str, int]) -> None:
+    import json
+    assert json.loads(json.dumps(d)) == d
+
+
+# ── st.one_of, st.just, st.none ───────────────────────────────────────────────
+status_strategy = st.one_of(st.just("active"), st.just("inactive"), st.just("pending"))
+
+@given(status_strategy)
+def test_valid_status(status: str) -> None:
+    assert status in {"active", "inactive", "pending"}
+
+
+# ── st.builds — generate instances of a class ────────────────────────────────
+from dataclasses import dataclass
+
+
+@dataclass
+class Point:
+    x: float
+    y: float
+
+
+point_strategy = st.builds(
+    Point,
+    x=st.floats(min_value=-1e6, max_value=1e6, allow_nan=False),
+    y=st.floats(min_value=-1e6, max_value=1e6, allow_nan=False),
+)
+
+
+@given(point_strategy)
+def test_distance_to_origin_nonneg(p: Point) -> None:
+    import math
+    dist = math.sqrt(p.x**2 + p.y**2)
+    assert dist >= 0
+```
+
+#### `@composite` — Composing Complex Strategies
+
+```python
+from hypothesis import given
+from hypothesis import strategies as st
+from hypothesis.strategies import composite, DrawFn
+
+
+@composite
+def sorted_pairs(draw: DrawFn) -> tuple[int, int]:
+    """Generate (lo, hi) where lo <= hi."""
+    lo = draw(st.integers())
+    hi = draw(st.integers(min_value=lo))
+    return lo, hi
+
+
+@given(sorted_pairs())
+def test_range_is_ordered(pair: tuple[int, int]) -> None:
+    lo, hi = pair
+    assert lo <= hi
+
+
+@composite
+def non_empty_unique_list(draw: DrawFn, elements=st.integers()) -> list[int]:
+    """Generate a non-empty list with all unique elements."""
+    xs = draw(st.lists(elements, min_size=1))
+    return list(dict.fromkeys(xs))           # preserve order, deduplicate
+
+
+@given(non_empty_unique_list())
+def test_unique_list_has_no_duplicates(xs: list[int]) -> None:
+    assert len(xs) == len(set(xs))
+```
+
+#### `assume()`, `note()`, and `target()`
+
+```python
+from hypothesis import given, assume, note, target
+from hypothesis import strategies as st
+
+
+# ── assume() — discard inputs that don't meet a precondition ─────────────────
+@given(st.integers(), st.integers())
+def test_division(a: int, b: int) -> None:
+    assume(b != 0)        # discard when b is zero — not an error, just skip
+    result = a / b
+    assert isinstance(result, float)
+
+
+# ── note() — attach extra context to a failing example's output ───────────────
+@given(st.lists(st.integers(), min_size=2))
+def test_first_is_min(xs: list[int]) -> None:
+    note(f"Testing list: {xs}")     # printed only when the test fails
+    xs_sorted = sorted(xs)
+    assert xs_sorted[0] == min(xs)  # always passes — note is silent on success
+
+
+# ── target() — guide Hypothesis toward inputs that maximise a metric ──────────
+# (requires hypothesis[coverage])
+@given(st.integers(min_value=0, max_value=100))
+def test_target_midpoint(n: int) -> None:
+    target(float(n), label="input_value")   # Hypothesis tries larger n values
+    assert 0 <= n <= 100
+```
+
+#### Hypothesis Database and Reproducibility
+
+```python
+# Hypothesis stores failing examples in a .hypothesis/ directory.
+# Re-running tests always replays previously failing examples before generating new ones.
+
+# Fix a flaky test: reproduce the exact shrunk example using @example:
+# from hypothesis import given, example
+# from hypothesis import strategies as st
+#
+# @example(xs=[0, 0])            # explicit reproduction from the failure report
+# @given(st.lists(st.integers()))
+# def test_my_property(xs):
+#     ...
+
+# In CI: commit .hypothesis/examples/ to replay known failures across runs.
+# HYPOTHESIS_DATABASE_FILE env var overrides the default path.
+
+# pytest-hypothesis integration — run with:
+#   pytest --hypothesis-show-statistics   # print search statistics per test
+#   pytest --hypothesis-seed=12345        # fixed seed for reproducible run
+```
+
+---
+
+### pytest-asyncio Patterns
+
+`pytest-asyncio` (or the built-in `asyncio` mode in newer pytest versions) is needed to run `async def` test functions.
+
+```python
+# pyproject.toml — configure pytest-asyncio mode
+# [tool.pytest.ini_options]
+# asyncio_mode = "auto"     # all async tests automatically treated as asyncio tests
+                              # alternative: "strict" (requires explicit marks)
+
+import pytest
+import asyncio
+
+
+# ── asyncio_mode = "auto": no mark needed ─────────────────────────────────────
+async def test_async_computation() -> None:
+    await asyncio.sleep(0)
+    result = await asyncio.gather(asyncio.sleep(0), asyncio.sleep(0))
+    assert result == [None, None]
+
+
+# ── asyncio_mode = "strict" or manual: explicit mark ─────────────────────────
+@pytest.mark.asyncio
+async def test_explicit_async() -> None:
+    await asyncio.sleep(0)
+    assert True
+
+
+# ── Async fixtures ─────────────────────────────────────────────────────────────
+@pytest.fixture
+async def async_resource():
+    """Async yield fixture: setup is async, teardown is async."""
+    resource = await create_resource()
+    yield resource
+    await resource.close()
+
+
+async def create_resource():
+    await asyncio.sleep(0)
+    return type("Resource", (), {"close": asyncio.coroutine(lambda self: asyncio.sleep(0))})()
+
+
+# ── Testing asyncio TaskGroup failures (Python 3.11+) ─────────────────────────
+async def failing_tasks():
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(raise_value_error("task A"))
+        tg.create_task(raise_value_error("task B"))
+
+
+async def raise_value_error(msg: str) -> None:
+    raise ValueError(msg)
+
+
+def test_exception_group_handling():
+    with pytest.raises(ExceptionGroup) as exc_info:
+        asyncio.run(failing_tasks())
+    eg = exc_info.value
+    assert len(eg.exceptions) == 2
+    assert all(isinstance(e, ValueError) for e in eg.exceptions)
+```
+
+---
+
+### Real-World Gotchas (Testing-Specific)
+
+### 45. Fixture Scope Leakage: Higher-Scope Fixtures Carrying State  [community]
+
+**Problem:** A `session`- or `module`-scoped fixture that holds mutable state is modified by one test, silently affecting all subsequent tests in the scope. The bug surfaces as order-dependent test failures — tests pass when run alone but fail in the full suite.
+
+**Why:** Higher-scoped fixtures are created once and reused. Any mutation persists until the scope ends. This contradicts the expectation of test isolation and produces "ghost state" that appears from nowhere.
+
+**Fix:** Make higher-scoped fixtures return immutable data (frozen dataclasses, tuples, `types.MappingProxyType`). For mutable shared resources (DB connections), use function-scoped fixtures that wrap the session resource and rollback after each test.
+
+```python
+import pytest
+import types
+
+
+# BAD — list mutated by test_a bleeds into test_b
+@pytest.fixture(scope="module")
+def config():
+    return {"flags": ["logging"]}           # mutable dict!
+
+def test_a(config):
+    config["flags"].append("tracing")       # mutation persists for test_b
+
+def test_b(config):
+    assert config["flags"] == ["logging"]   # FAILS when run after test_a
+
+
+# GOOD — read-only proxy prevents accidental mutation
+@pytest.fixture(scope="module")
+def config_readonly():
+    return types.MappingProxyType({"flags": ("logging",)})  # immutable
+
+def test_a_safe(config_readonly):
+    # config_readonly["flags"] = []   # TypeError: 'mappingproxy' does not support assignment
+    assert "logging" in config_readonly["flags"]
+
+def test_b_safe(config_readonly):
+    assert "logging" in config_readonly["flags"]   # always passes
+
+
+# GOOD — DB pattern: session-scope connection, function-scope rollback cursor
+@pytest.fixture(scope="session")
+def db_conn():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE items (id INTEGER, name TEXT)")
+    conn.commit()
+    yield conn
+    conn.close()
+
+@pytest.fixture
+def cursor(db_conn):
+    cur = db_conn.cursor()
+    yield cur
+    db_conn.rollback()                    # undo all writes from this test
+```
+
+**Rule:** Never write to data owned by a higher-scoped fixture from a lower-scoped test. Treat session/module fixtures as read-only configuration, not shared mutable state.
+
+---
+
+### 46. `monkeypatch` vs `unittest.mock.patch`: Namespace Targeting  [community]
+
+**Problem:** Practitioners use `monkeypatch.setattr` and `unittest.mock.patch` interchangeably, then encounter confusing test failures because the two tools have different rules for what path to specify.
+
+**Why:**
+- `monkeypatch.setattr("module.name", value)` takes a dotted string path and resolves it by splitting at the last `.` — so `"module.attr"` replaces `module.attr` where it lives.
+- `unittest.mock.patch("b.SomeClass")` patches `SomeClass` in module `b`'s namespace — where it is *used*, not where it is *defined*. If `b.py` does `from a import SomeClass`, you must patch `b.SomeClass`, not `a.SomeClass`.
+
+Both tools have the same rule for where to patch, but `monkeypatch.setattr` takes a live object path while `patch()` takes a string path. Mixing them up leads to one patching the source and the other not taking effect.
+
+```python
+# a.py
+def get_now():
+    from datetime import datetime
+    return datetime.now()
+
+# b.py
+from datetime import datetime
+
+def get_timestamp() -> str:
+    return datetime.now().isoformat()
+
+
+# test.py
+import pytest
+from unittest.mock import patch, MagicMock
+import datetime
+
+
+# ── unittest.mock.patch: patch where it is USED (b.datetime) ─────────────────
+@patch("b.datetime")
+def test_timestamp_mock(mock_dt):
+    mock_dt.now.return_value = datetime.datetime(2026, 1, 1)
+    from b import get_timestamp
+    assert get_timestamp() == "2026-01-01T00:00:00"
+
+
+# ── monkeypatch.setattr: specify the object and attribute ─────────────────────
+def test_timestamp_monkeypatch(monkeypatch):
+    import b
+    fixed = datetime.datetime(2026, 1, 1)
+    monkeypatch.setattr(b.datetime, "now", lambda: fixed)
+    assert b.get_timestamp() == "2026-01-01T00:00:00"
+
+
+# ── When to prefer monkeypatch over patch ─────────────────────────────────────
+# monkeypatch: simpler for env vars, os.path, sys attributes; auto-restored after test
+# patch(): better for complex assertion (assert_called_with, call_args); stacks cleanly
+
+def test_env_var(monkeypatch):
+    monkeypatch.setenv("DEBUG", "true")
+    import os
+    assert os.environ["DEBUG"] == "true"
+    # auto-restored — no cleanup needed
+```
+
+**Rule:** Always patch the name as it appears in the module under test, not where it was originally defined. For `monkeypatch.setattr`, pass the live module object and the attribute name as separate arguments to avoid string-resolution ambiguity: `monkeypatch.setattr(target_module, "attribute", replacement)`.
+
+---
+
+### 47. Hypothesis `filter()` Rejection Ratio Kills Performance  [community]
+
+**Problem:** Using `strategy.filter(predicate)` with a predicate that rejects most generated values causes Hypothesis to hit its `HealthCheck.filter_too_much` limit. The test either errors out immediately or becomes extremely slow because Hypothesis spends most of its time generating and discarding inputs.
+
+**Why:** `filter()` generates a value, tests the predicate, and discards on failure. If the predicate rejects 99% of inputs (e.g., filtering integers for primes), Hypothesis must generate ~100 values for each one it uses. Beyond a threshold (~25% rejection rate), it raises `HealthCheck.filter_too_much` to warn you that your strategy is fundamentally inefficient.
+
+**Fix:** Use `assume()` in tests (lets Hypothesis be aware of discarded inputs) or — better — build a strategy that generates only valid data directly with `st.integers()` bounds or `@composite`.
+
+```python
+from hypothesis import given, assume
+from hypothesis import strategies as st
+from hypothesis.strategies import composite, DrawFn
+
+
+# BAD — filters generate thousands of values to find non-negative ones
+@given(st.integers().filter(lambda x: x >= 0))  # rejects ~50% of inputs
+def test_sqrt_bad(n: int) -> None:
+    import math
+    assert math.sqrt(n) >= 0
+
+
+# GOOD option A — constrain the strategy directly
+@given(st.integers(min_value=0))
+def test_sqrt_good(n: int) -> None:
+    import math
+    assert math.sqrt(n) >= 0
+
+
+# GOOD option B — use assume() when the predicate is complex
+@given(st.integers())
+def test_division_assume(n: int) -> None:
+    assume(n != 0)                    # Hypothesis tracks the discard rate
+    assert 1 / n != 0 or n == 0      # assume handles the rejection gracefully
+
+
+# BAD — filter for a complex structural condition
+@given(st.lists(st.integers()).filter(lambda xs: len(xs) >= 2 and xs[0] < xs[-1]))
+def test_increasing_endpoints_bad(xs: list[int]) -> None:
+    assert xs[0] < xs[-1]
+
+
+# GOOD — @composite generates only valid structures from the start
+@composite
+def increasing_pair_list(draw: DrawFn) -> list[int]:
+    a = draw(st.integers())
+    b = draw(st.integers(min_value=a + 1))
+    middle = draw(st.lists(st.integers(min_value=a, max_value=b)))
+    return [a] + middle + [b]
+
+
+@given(increasing_pair_list())
+def test_increasing_endpoints_good(xs: list[int]) -> None:
+    assert xs[0] < xs[-1]
+```
+
+**Rule:** `filter()` is appropriate for rejecting <10% of inputs (e.g., odd numbers from all integers). For higher rejection rates, redesign the strategy with `@composite` or tighter bounds. Treat `HealthCheck.filter_too_much` as a signal that your strategy design needs fixing — not a warning to suppress.
+
+---
 

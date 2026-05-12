@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 41 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -12,10 +12,11 @@
 <!-- new (2026-05-12 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default (no flag needed on Node 22.18+), run .ts test files with bare `node`; Node.js 24 test runner — auto-wait subtests (BREAKING: t.test() no longer returns Promise), global setup/teardown, per-test --test-timeout, JSON module mocking; Node.js native TS limitations for test files: no enums, no decorators, no parameter properties, no legacy namespaces; Vitest 4.1 — mockThrow/mockThrowOnce API, GitHub Actions Job Summary reporter with flaky-test highlighting + permalink URLs, agent reporter mode (AI coding agents), Vite 8 dependency deduplication, browser mode locator strict-mode enforcement; Vitest 5.0 beta additional: multi-environment merge reports (non-sharded), configDefaults.reporters, logger.formatError, JUnit jest-junit-compatible naming, locator-as-object representation; Vitest 3.2 — custom project name colors, locators.extend browser API, V8 AST-aware coverage remapping, watchTriggerPatterns for non-static file relationships; community gotchas: Node.js native TS execution fails for NestJS (decorators unsupported), Node.js 24 t.test() promise removal breaks existing pipelines, Vitest 4.1 strict browser locators catch multi-match bugs silently hidden before -->
 <!-- new (2026-05-12 iter 39): Node.js 24.14.0 LTS (Mar 2026) — `expectFailure` test option for explicitly marking xfail test cases in the built-in test runner (analogous to pytest's @pytest.mark.xfail); `env` option on the `run()` function for per-invocation environment variables; community gotcha: `expectFailure` at the integration level — using `expectFailure` as a quarantine mechanism without fixing the root cause accumulates known failures that are never addressed -->
 <!-- new (2026-05-12 iter 40): Node.js 26.0.0 (May 5, 2026) — TypeScript type stripping fully stable: `--experimental-transform-types` flag removed, bare `node .ts` works without any flag for erasable syntax on any supported Node.js 26 version; Temporal API enabled by default (replaces `new Date()` for time-sensitive unit tests); V8 14.6 — `Map.prototype.getOrInsertComputed`, `Iterator.concat()`; Node.js 26.1.0 (May 7, 2026) — `node:test` randomization: `--test-randomize` + `--test-random-seed=N` flags detect hidden order-dependencies at the unit and integration test levels; `getTestContext()` API accesses current TestContext from helper functions; `AbortSignal.timeout()` mock support in MockTimers; `testId` added to test event objects for structured test tracing; Vitest 4.1.6 (May 11, 2026) stable patch; community gotcha: Node.js 26 removes `--experimental-transform-types` — teams that explicitly passed the flag in CI scripts (e.g., `node --experimental-transform-types server.ts`) now see an "unknown flag" error on Node 26 upgrade -->
+<!-- new (2026-05-12 iter 41): TypeScript 5.9 — new `tsc --init` defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) silently break test tsconfigs that extend the root tsconfig; `import defer` lazy module evaluation affects test setup performance; `--module node20` stable (replaces unstable `nodenext` for Node 20 environments); BREAKING: `ArrayBuffer` type hierarchy change — `Buffer`/`TypedArray` no longer assignable to `ArrayBuffer` in test files using Node.js buffer types; Zod/tRPC cache-instantiation optimisation reduces "excessive type instantiation" errors in large test suites using `expect.schemaMatching`; `verbatimModuleSyntax:true` as `tsc --init` default breaks test files that import type-only symbols without `import type`; community gotchas: TS 5.9 `ArrayBuffer` change breaks `Buffer` usage in integration test helpers (gotcha #45), TS 5.9 `verbatimModuleSyntax` default breaks non-type test imports (gotcha #46) -->
 
 ---
 
-> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI. New patterns (2026 iter 37): Playwright Agents (v1.56 — planner/generator/healer AI agents for e2e test creation and maintenance; pyramid governance required), Playwright v1.57 Speedboard reporter tab for identifying slow e2e tests + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, Playwright v1.59 page.screencast API, Playwright v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo-element option + webSocketRoute.protocols() for WebSocket integration tests + testInfoError.errorContext improved failure diagnostics; Vitest 4.1 vi.defineHelper (clean stack traces in custom assertions) + coverage.changed (per-PR coverage delta without slowing CI) + page.mark()/locator.mark() trace annotations in browser mode; TypeScript 6.0 esModuleInterop always true breaks legacy `import * as X` in test files + #/ subpath import shorthand. New patterns (2026 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default, run `.ts` unit test files with bare `node` (no transpiler); Node.js 24 test runner — auto-wait subtests (BREAKING: `t.test()` no longer returns Promise), global setup/teardown, per-test `--test-timeout`; Node.js native TS limitations: no enums, no decorators, no parameter properties — NestJS integration tests cannot use bare `node`; Vitest 4.1 — `mockThrow`/`mockThrowOnce` for cleaner unit error scenarios, GitHub Actions Job Summary reporter (flaky-test highlighting + permalink URLs), agent reporter mode (AI coding tools get minimal output); Vitest 5.0 beta — multi-environment merge reports (non-sharded), JUnit jest-junit naming, `configDefaults.reporters`; Vitest 3.2 — `locators.extend` browser API, V8 AST-aware coverage, `watchTriggerPatterns`. New patterns (2026 iter 40): Node.js 26 (May 2026) — type stripping fully stable (no flags required on any supported Node 26 version), `--experimental-transform-types` removed (teams that used the flag explicitly in CI scripts will see "unknown flag" errors on Node 26 upgrade); Temporal API on by default (V8 14.6) — `Temporal.Now.plainDateTimeISO()` replaces `new Date()` for time-sensitive tests where timezone semantics matter; `node:test` randomization (`--test-randomize` + `--test-random-seed=N`) surfaces hidden unit-test order-dependencies without external tooling; `getTestContext()` enables context-free access to the current test from helper functions; `Iterator.concat()` (V8 14.6) for composing test data iterators at the unit level; Vitest 4.1.6 stable (May 11, 2026).
+> **Quick reference:** Unit (fast, isolated, < 10 ms) → Integration (real I/O, no browser) → System/E2e (full stack, browser or API). Ratio heuristic: 70/20/10. Alternatives: Testing Trophy (Dodds) for React/TypeScript UI, Honeycomb (Spotify) for microservices, Google Small/Medium/Large for distributed systems. Top TypeScript anti-patterns: `vi.mock() as any`, skipping integration layer because "TypeScript caught it", ignoring path alias config in test runner, record-and-playback e2e generators, AI-generated unit suites without integration counterparts. New patterns (2026): Trace-based integration testing (OpenTelemetry + Tracetest), AI pyramid shape governance, container DB parity, Neon DB branch-per-test-run isolation, Fowler 5-layer microservice pyramid (adds component test level). New patterns (2026 iter 33): Test Double taxonomy by level (Classical=integration, Mockist=unit), Vitest 3.x inline workspace + multi-browser instances, Playwright 1.50+ Clock API + Aria Snapshots + tsconfig option, TypeScript 7.0 migration preparation (`--stableTypeOrdering`, deprecated option removal, native TS port 10-15x speedup). New patterns (2026 iter 34): Vitest 4.0 browser mode stable + `toMatchScreenshot` visual regression + `expect.schemaMatching` (Zod/Valibot) + test tags + `aroundEach` hooks; Playwright v1.60 `test.abort()` + ARIA snapshot on page + `await using` teardown + `--only-changed`. New patterns (2026 iter 35): TypeScript 6.0 silently breaks test `tsconfig.json` (`types` defaults to `[]`, `strict` defaults to `true`, `module` defaults to `esnext`, `rootDir` defaults to `.`) — most test configs need explicit opt-ins after upgrading; Vitest 5.0.0-beta.2 (May 5, 2026) in active development — inline expect package, `sequential` removal, `.vitest/` directory restructure; Playwright v1.60 adds `tracing.startHar()` first-class HAR API + `locator.drop()` for drag-and-drop e2e tests. New patterns (2026 iter 36): Vitest 3.2 — Annotation API (structured test metadata for JUnit/HTML reporters), Scoped Fixtures (`scope:'file'|'worker'` in `test.extend`), `using vi.spyOn()` automatic spy restore, Test Signal API (AbortSignal for timeout cleanup), `sequence.groupOrder` replaces `&&`-chained CI commands for fail-fast ordering; TypeScript 5.8 — `--module node18` stable, `import with {type:'json'}` replaces deprecated `assert`, faster watch mode; Vitest 3.2 `workspace` config key deprecated in favour of inline `test.projects`. Key 2026 insight (Justin Searls / Fowler): "People love debating test ratios, but it's a distraction. Nearly zero teams write expressive tests that establish clear boundaries, run quickly & reliably, and only fail for useful reasons." Quality of test cases > pyramid ratio compliance. ISTQB note: the four formal test levels are unit → integration → system → acceptance; the pyramid covers the first three; acceptance test level maps to UAT/stakeholder validation and is often outside CI. New patterns (2026 iter 37): Playwright Agents (v1.56 — planner/generator/healer AI agents for e2e test creation and maintenance; pyramid governance required), Playwright v1.57 Speedboard reporter tab for identifying slow e2e tests + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, Playwright v1.59 page.screencast API, Playwright v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo-element option + webSocketRoute.protocols() for WebSocket integration tests + testInfoError.errorContext improved failure diagnostics; Vitest 4.1 vi.defineHelper (clean stack traces in custom assertions) + coverage.changed (per-PR coverage delta without slowing CI) + page.mark()/locator.mark() trace annotations in browser mode; TypeScript 6.0 esModuleInterop always true breaks legacy `import * as X` in test files + #/ subpath import shorthand. New patterns (2026 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default, run `.ts` unit test files with bare `node` (no transpiler); Node.js 24 test runner — auto-wait subtests (BREAKING: `t.test()` no longer returns Promise), global setup/teardown, per-test `--test-timeout`; Node.js native TS limitations: no enums, no decorators, no parameter properties — NestJS integration tests cannot use bare `node`; Vitest 4.1 — `mockThrow`/`mockThrowOnce` for cleaner unit error scenarios, GitHub Actions Job Summary reporter (flaky-test highlighting + permalink URLs), agent reporter mode (AI coding tools get minimal output); Vitest 5.0 beta — multi-environment merge reports (non-sharded), JUnit jest-junit naming, `configDefaults.reporters`; Vitest 3.2 — `locators.extend` browser API, V8 AST-aware coverage, `watchTriggerPatterns`. New patterns (2026 iter 40): Node.js 26 (May 2026) — type stripping fully stable (no flags required on any supported Node 26 version), `--experimental-transform-types` removed (teams that used the flag explicitly in CI scripts will see "unknown flag" errors on Node 26 upgrade); Temporal API on by default (V8 14.6) — `Temporal.Now.plainDateTimeISO()` replaces `new Date()` for time-sensitive tests where timezone semantics matter; `node:test` randomization (`--test-randomize` + `--test-random-seed=N`) surfaces hidden unit-test order-dependencies without external tooling; `getTestContext()` enables context-free access to the current test from helper functions; `Iterator.concat()` (V8 14.6) for composing test data iterators at the unit level; Vitest 4.1.6 stable (May 11, 2026). New patterns (2026 iter 41): TypeScript 5.9 — new `tsc --init` prescriptive defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) that silently break test tsconfigs inheriting the root tsconfig; `--module node20` stable option for Node 20 LTS environments (replaces `nodenext` which may receive future breaking changes); BREAKING `ArrayBuffer` type hierarchy change — `Buffer` and `TypedArray` are no longer a subtype of `ArrayBuffer`, breaking integration test helpers that pass `Buffer` where `ArrayBuffer` is expected; `import defer` lazy module evaluation for expensive test setup modules; Zod/tRPC type instantiation cache improvement reduces "excessive type instantiation depth" errors in test suites using `expect.schemaMatching` on deep schemas; `verbatimModuleSyntax:true` new `tsc --init` default requires `import type` for type-only symbols — silently breaks test files with plain `import` of type-only exports after running `tsc --init` and inheriting the new defaults.
 
 ---
 
@@ -2866,6 +2867,170 @@ test('createOrder times out after 5 s when DB is slow', async (t) => {
 
 ---
 
+### TypeScript 5.9: New Defaults and Breaking Changes for Test Pipelines  [community]
+
+TypeScript 5.9 introduced several changes that affect TypeScript test pipelines, particularly teams that use `tsc --init` to scaffold `tsconfig.json` files or inherit root tsconfigs in test-specific extends chains.
+
+**New `tsc --init` prescriptive defaults (TypeScript 5.9):**
+
+TypeScript 5.9 replaced the verbose, commented-out `tsc --init` template with a concise, opinionated `tsconfig.json` that enables the following settings by default:
+
+| Setting | New default (TS 5.9) | Previous default | Test pipeline impact |
+|---------|---------------------|------------------|---------------------|
+| `module` | `nodenext` | `commonjs` | Changes how imports resolve at test time — `require()` of ESM modules may now fail |
+| `verbatimModuleSyntax` | `true` | not set | Requires `import type` for type-only symbols — breaks test files using plain `import` |
+| `moduleDetection` | `force` | `auto` | All `.ts` files are treated as modules — global-scope test files (e.g., legacy Jasmine specs without `import`) now require `export {}` |
+| `isolatedModules` | `true` | not set | Disallows `const enum` and `namespace` in test files — may require changes in legacy test helpers |
+| `target` | `esnext` | `es2016` | Test files now use native ESNext semantics |
+| `strict` | `true` | not set | Enables all strict flags — `noImplicitAny`, `strictNullChecks`, etc. |
+
+The critical risk: teams running `tsc --init` on a new project or when setting up a new test tsconfig file, then using `extends: ./tsconfig.json` in their test config, will inherit all the new defaults. If the root `tsconfig.json` was previously generated by an older `tsc --init` and then manually maintained, the test config inherits a stable baseline. But if the root is regenerated with TS 5.9's `tsc --init`, all consuming test tsconfigs inherit the new defaults simultaneously — often triggering dozens of TypeScript errors in test files.
+
+```json
+// tsconfig.json — generated by tsc --init in TypeScript 5.9 (new concise format)
+// WARNING: inheriting this in tsconfig.test.json will pull in verbatimModuleSyntax: true
+// and moduleDetection: force — audit test files before running tsc --init upgrade
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "esnext",
+    "strict": true,
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true
+  }
+}
+```
+
+```json
+// tsconfig.test.json — after TS 5.9 tsc --init, explicitly override settings
+// that break the integration test level
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // verbatimModuleSyntax: true requires import type for type-only symbols.
+    // For test files that import both values and types from the same module,
+    // enable the setting and fix imports rather than disabling it.
+    // "verbatimModuleSyntax": false, // only disable if migration is not feasible
+    "moduleResolution": "nodenext",
+    // isolatedModules: true — const enum in test helpers must be replaced with const objects
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src", "tests"]
+}
+```
+
+**`--module node20` stable option:**
+
+TypeScript 5.9 adds `--module node20` as a stable alias for the Node.js 20 module resolution semantics. Unlike `nodenext` (which tracks the latest Node.js semantics and may receive future breaking changes), `node20` is frozen at Node.js 20 behaviour — it supports `require()` of ECMAScript modules (stabilised in Node 20's `require(esm)` implementation). For TypeScript test pipelines targeting Node.js 20 LTS specifically, `"module": "node20"` is the safer choice than `"module": "nodenext"` if you want to avoid future breaking changes from new Node.js releases.
+
+```json
+// tsconfig.integration.json — node20 for Node 20 LTS environments
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // "module": "node20" — stable, frozen at Node 20 semantics
+    // Safer than "nodenext" for teams on Node 20 LTS CI environments
+    // that don't want to track Node 22/24/26 module changes
+    "module": "node20",
+    "moduleResolution": "node20",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src", "tests/integration"]
+}
+```
+
+**`import defer` for lazy test setup modules:**
+
+TypeScript 5.9 adds support for the `import defer` ECMAScript proposal. A deferred import delays module execution until its first export is accessed. For test setup files that conditionally import heavy modules (e.g., a test helper that imports a full database client even for test cases that don't use the DB), `import defer` can improve test startup time at the unit test level.
+
+```typescript
+// tests/helpers/setup.ts — import defer for conditionally-used modules
+// TypeScript 5.9 + "--module preserve" or "esnext" required
+import defer * as dbHelpers from './db-helpers.js';
+import defer * as seedData from './seed-data.js';
+
+// At unit test level: if dbHelpers is never accessed, the module is never evaluated
+// → zero DB client startup overhead for pure logic test cases
+export function getDbHelper() {
+  return dbHelpers; // first access here triggers module evaluation
+}
+
+export function getSeedData() {
+  return seedData;
+}
+```
+
+Note: `import defer` is only available with `--module preserve` or `--module esnext` — not with `--module commonjs`. Test environments using CommonJS output cannot use deferred imports. Vitest with `environment: 'node'` supports deferred imports natively when the project uses ESM.
+
+**Type instantiation cache for Zod in test files:**
+
+TypeScript 5.9 adds caching of intermediate type instantiations during generic type resolution. The practical effect for test files: large Zod schemas used in `expect.schemaMatching()` or `z.infer<typeof Schema>` type assertions no longer produce "type instantiation is excessively deep and possibly infinite" errors in test files with 10+ chained Zod validators. If your test suite previously required `// @ts-expect-error` suppressions around complex Zod schema assertions, TypeScript 5.9 may eliminate the need for them.
+
+```typescript
+// src/orders/order.schema.test-d.ts — type-level test on a complex Zod schema (TS 5.9)
+// Previously: chained Zod schemas with > 10 levels of nesting caused TS2321
+// TypeScript 5.9: cache instantiation on mappers resolves this
+import { expectType } from 'expect-type';
+import { z } from 'zod';
+import { OrderLineSchema, OrderSchema } from './order.schema.js';
+
+// Deep nested Zod schema — no longer causes "excessive type instantiation" in TS 5.9
+type OrderLine = z.infer<typeof OrderLineSchema>;
+type Order = z.infer<typeof OrderSchema>;
+
+// These assertions now resolve without TS compiler performance warnings
+expectType<string>({} as Order['customerId']);
+expectType<OrderLine[]>({} as Order['items']);
+```
+
+[official: typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html]
+
+---
+
+45. **TypeScript 5.9 `ArrayBuffer` type hierarchy change breaks integration test helpers using `Buffer`** [community] — TypeScript 5.9 modified the `ArrayBuffer` type hierarchy: `Buffer` (Node.js) and the standard `TypedArray` types (`Uint8Array`, `Int8Array`, etc.) are no longer assignable to `ArrayBuffer`. Previously, functions typed as `(data: ArrayBuffer) => void` accepted `Buffer` values without complaint. After upgrading to TypeScript 5.9, any integration test helper that passes a `Buffer` to a function expecting `ArrayBuffer` produces a `TS2345` error: `Argument of type 'Buffer' is not assignable to parameter of type 'ArrayBuffer'`. This is particularly common in integration test helpers for file upload, cryptographic operations (HMAC signature verification), and binary protocol testing. Fix: (1) update `@types/node` to the latest version first — many `@types/node` function signatures were updated alongside TS 5.9; (2) use `buffer.buffer` to access the underlying `ArrayBuffer` from a `Buffer`; (3) type the helper function to accept `ArrayBufferLike` instead of `ArrayBuffer` for maximum compatibility. In test files, prefer `Uint8Array<ArrayBuffer>` over plain `Uint8Array` for explicit buffer type annotations after the TS 5.9 upgrade.
+
+```typescript
+// BEFORE TypeScript 5.9 — no type error
+function processPayload(data: ArrayBuffer): void { /* ... */ }
+const buf = Buffer.from('test-payload');
+processPayload(buf);  // TS 5.9: error TS2345: Buffer not assignable to ArrayBuffer
+
+// AFTER TypeScript 5.9 — correct patterns
+// Option 1: extract the underlying ArrayBuffer
+processPayload(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+
+// Option 2: widen the parameter type to ArrayBufferLike
+function processPayloadCompat(data: ArrayBufferLike): void { /* ... */ }
+processPayloadCompat(buf);  // Buffer is assignable to ArrayBufferLike ✓
+
+// Option 3: use Uint8Array explicitly for Node.js binary data
+const bytes = new Uint8Array(buf);
+processPayload(bytes.buffer);  // Uint8Array.buffer is ArrayBuffer ✓
+```
+
+The most common test-file location for this error: integration test helpers that build HTTP request bodies from `Buffer` (e.g., multipart form data, binary file upload fixtures, WebSocket frame helpers). Run `tsc --noEmit` immediately after upgrading to TypeScript 5.9 to enumerate all affected files before running the test suite. [official: typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html — ArrayBuffer type hierarchy]
+
+46. **TypeScript 5.9 `verbatimModuleSyntax: true` default from `tsc --init` breaks type-only test imports** [community] — TypeScript 5.9's new `tsc --init` template enables `verbatimModuleSyntax: true` by default. When this flag is active, every `import` that refers only to type-level symbols (interfaces, type aliases, enum types used as types) must use `import type` syntax. Plain `import { SomeInterface }` of a type-only symbol is a compile error: `TS1484: 'SomeInterface' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled`. This is a widespread issue in test files because test code naturally imports both concrete classes and their associated types from the same modules, and the pattern `import { OrdersService, type Order }` (inline `type` modifier) is often missed during initial migration. The failure mode is insidious: it appears only when `tsc --noEmit` runs — Vitest (which uses esbuild for transpilation) silently ignores `verbatimModuleSyntax` and processes the imports correctly, so tests pass locally but `tsc --noEmit` in CI fails. Fix: run the TypeScript compiler's fix-all for `TS1484` (`tsc --fix 1484` in newer TS versions, or use the VS Code bulk-fix "add type keyword to all type imports"); add `"verbatimModuleSyntax": true` to the root tsconfig incrementally so errors surface one file at a time rather than all at once on `tsc --init` regeneration. Add `tsc --noEmit` as a mandatory CI step to catch this class of errors before the test runner runs.
+
+```typescript
+// BEFORE: works in Vitest (esbuild), fails tsc --noEmit with verbatimModuleSyntax: true
+import { OrdersService, Order, CreateOrderInput } from '../../src/orders/orders.service.js';
+//                      ^^^^^ ^^^^^^^^^^^^^^^^ — type-only; TS1484 error
+
+// AFTER: verbatimModuleSyntax-compliant test file
+import { OrdersService } from '../../src/orders/orders.service.js';
+import type { Order, CreateOrderInput } from '../../src/orders/orders.service.js';
+
+// Or equivalently using inline type modifier (single import statement):
+import { OrdersService, type Order, type CreateOrderInput } from '../../src/orders/orders.service.js';
+```
+
+The key diagnostic step: if your test suite passes but `tsc --noEmit` fails with `TS1484` errors, this gotcha is the cause. Add `"verbatimModuleSyntax": true` to the `tsconfig.json` before running `tsc --init` upgrade so the errors surface incrementally, and run `tsc --noEmit` on the CI check step *before* running the test runner. [official: typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html — tsc --init; typescriptlang.org/tsconfig#verbatimModuleSyntax]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -2906,6 +3071,7 @@ test('createOrder times out after 5 s when DB is slow', async (t) => {
 | Vitest 4.0 Release | Tool | https://vitest.dev/blog/vitest-4.html | Browser mode stable, toMatchScreenshot visual regression, expect.schemaMatching (Zod/Valibot), Playwright trace support |
 | Vitest 4.1 Release | Tool | https://vitest.dev/blog/vitest-4-1.html | Test tags + --tags-filter, aroundEach/aroundAll hooks, --detect-async-leaks, viteModuleRunner:false, test.extend builder pattern |
 | TypeScript 5.8 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html | `--module node18` stable, `import with {type:'json'}` replaces assert form, granular return-expression branch checking, `--erasableSyntaxOnly` + Node.js type-stripping |
+| TypeScript 5.9 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | New `tsc --init` prescriptive defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`); `import defer` lazy module evaluation; `--module node20` stable; BREAKING: `ArrayBuffer` type hierarchy change breaks `Buffer` usage in test helpers; type instantiation cache for Zod/tRPC reduces test compilation errors |
 | TypeScript 6.0 Release Notes | Official | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | `--stableTypeOrdering`, deprecated option removal path, TS 7.0 migration preparation; `--erasableSyntaxOnly` for Node.js type-stripping; BREAKING: `types:[]`, `strict:true`, `module:esnext`, `rootDir:.` new defaults |
 | Vitest 5.0 Beta | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Next major version (beta May 2026): inline expect, sequential removal, .vitest/ directory restructure, V8 worker coverage — audit before upgrading |
 | Playwright Agents | Tool | https://playwright.dev/docs/test-agents | v1.56+: planner/generator/healer AI agents for e2e test creation; pyramid governance required to prevent e2e over-generation |

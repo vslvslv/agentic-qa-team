@@ -1,6 +1,7 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 53 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 54 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: howtheytest -->
+<!-- Iteration 54: Pattern 88 (Vitest 5.0-beta sequential option removed — migrate to concurrent:false or test.describe.serial); Pattern 89 (Playwright v1.60 locator.drop() for drag-and-drop upload zone flakiness); Gotcha 46 (Vitest 5.0 merge reports for non-sharded multi-environment test runs); AP44 (Vitest 5.0 hardcoded .vitest-attachments path breaks on upgrade); Quick Reference additions (iteration 54) -->
 <!-- Iteration 53: Pattern 86 (Playwright testCase.outcome() === 'flaky' custom reporter — structured per-retry flakiness tracking); Pattern 87 (Playwright v1.50 updateSnapshots: 'changed' + updateSourceMethod: '3way' for snapshot flakiness review workflow); AP43 (updateSnapshots: 'all' in CI silently overwrites baselines); Quick Reference additions (iteration 53) -->
 <!-- Iteration 52: Pattern 82 (Vitest 4.1 vi.setTimerTickMode — nextTimerAsync/interval for async timer flakiness); Pattern 83 (Playwright v1.59 tracing.start({ live: true }) for real-time trace capture); Pattern 84 (Playwright v1.58 retain-on-failure-and-retries trace mode for multi-retry comparison); Pattern 85 (Vitest 4.1 agent/minimal reporter for AI agent token-efficient flakiness triage); AP42 (Vitest 4.1 beforeAll/afterAll hook signature breaking change — Suite arg removed); Quick Reference additions (iteration 52) -->
 <!-- Iteration 51: Pattern 78 (Vitest 4.1 conditional retry with error condition predicate); Pattern 79 (Playwright v1.53 TestStepInfo.skip() conditional — step-level quarantine); Pattern 80 (Playwright v1.60 testInfoError.errorContext aria snapshot for flakiness diagnosis); Pattern 81 (Vitest 4.1 test.meta for custom flakiness metadata in reporters); AP41 (conditional retry masking real failures); Quick Reference additions (iteration 51) -->
@@ -7833,3 +7834,340 @@ grep -rn "update-snapshots\|updateSnapshots" .github/ *.config.ts package.json
 | Playwright trace mode reference | Official | https://playwright.dev/docs/api/class-fixtures#fixtures-use | `retain-on-failure-and-retries` mode — retain all retry traces for cross-retry comparison (v1.58) |
 | Vitest `agent`/`minimal` reporter | Official | https://vitest.dev/guide/reporters | Failure-only output for AI coding agents; auto-activates via agent detection; aliased as `minimal` (v4.1) |
 | Vitest 4.1 hook signature migration | Official | https://vitest.dev/blog/vitest-4-1 | `beforeAll`/`afterAll`/`aroundAll` now receive `{ file, worker }` instead of undocumented `Suite` (v4.1) |
+
+---
+
+## Pattern 88 — Vitest 5.0 `sequential` Option Removal — Migrate to `concurrent: false` or `test.describe.serial`  [official]
+
+Vitest 5.0 removes the `sequential` option from both `test()` and `describe()` calls. The option was deprecated in Vitest 4.x and served as a way to force a block to run non-concurrently. Teams that have `sequential: true` in their test configuration will receive a runtime error after upgrading.
+
+**Why this causes flakiness on upgrade:** If your test suite relied on `sequential: true` to prevent parallel execution of stateful tests — typically integration tests sharing a DB connection or singleton — removing the option without a replacement allows those tests to run concurrently, reintroducing the shared-state race conditions that `sequential` was masking.
+
+```typescript
+// BAD (Vitest 4.x — removed in 5.0): sequential option
+import { describe, it, expect } from 'vitest';
+
+describe('OrderService integration', { sequential: true }, () => {
+  // Was: run these tests one-at-a-time to avoid DB race conditions
+  // In Vitest 5.0 this option is unrecognized — tests may run in parallel
+  it('creates order', async () => { /* ... */ });
+  it('updates order status', async () => { /* ... */ });
+  it('cancels order', async () => { /* ... */ });
+});
+```
+
+```typescript
+// GOOD (Vitest 5.0+): replace sequential with concurrent: false
+import { describe, it, expect } from 'vitest';
+
+describe('OrderService integration', { concurrent: false }, () => {
+  // concurrent: false is the Vitest 5 idiomatic replacement for sequential: true
+  // Tests within this describe run serially in definition order
+  it('creates order', async () => { /* ... */ });
+  it('updates order status', async () => { /* ... */ });
+  it('cancels order', async () => { /* ... */ });
+});
+```
+
+```typescript
+// ALSO GOOD (Playwright-style): test.describe.serial for full serial blocks
+// Equivalent to Playwright's describe.serial — familiar to teams migrating from PW
+import { describe, it, expect } from 'vitest';
+
+// test.describe.serial was already available in Vitest 4.x and continues in 5.0
+// Use when order of execution matters AND you need failure cascade prevention:
+// if any test fails, the rest of the serial block are skipped (not run and failed)
+describe.serial('OrderService lifecycle', () => {
+  it('creates order', async () => { /* ... */ });
+  it('updates order status', async () => { /* ... */ });
+  it('cancels order', async () => { /* ... */ });
+});
+```
+
+```typescript
+// BEST PRACTICE: instead of serializing to avoid DB races,
+// use aroundEach (Vitest 4.1+) with a DB transaction rollback — runs serially per-test
+// but doesn't need sequential at all because each test has its own isolated transaction
+import { describe, it, expect } from 'vitest';
+import { db } from '../src/db';
+
+// aroundEach wraps EACH test in a DB transaction that is always rolled back
+// This is faster than serialize (tests can still run in parallel across files)
+// and more correct (tests are truly isolated, not just ordered)
+describe('OrderService integration', () => {
+  aroundEach(async ({ task: _task }, run) => {
+    await db.transaction(async (tx) => {
+      // Run the test inside the transaction
+      // Any DB changes are rolled back after the test — even if it throws
+      await run({ db: tx });
+    });
+  });
+
+  it('creates order', async ({ db: txDb }) => {
+    const order = await txDb.insert(orders).values({ userId: 1, total: 100 }).returning();
+    expect(order[0].id).toBeDefined();
+    // Row is visible within this transaction but rolled back after test ends
+  });
+});
+```
+
+**Migration checklist for Vitest 5.0 `sequential` removal:**
+
+| Old option | Vitest 5.0 replacement | When to use |
+|---|---|---|
+| `describe('...', { sequential: true })` | `describe('...', { concurrent: false })` | Tests must run in order within a describe |
+| `test('...', { sequential: true })` | Remove (single test is always sequential) | Single tests don't need this option |
+| `describe.concurrent` with `sequential` subset | Use `describe.serial` for the serial subset | Mixed concurrent / serial needs |
+| `sequential` to hide shared-state races | `aroundEach` with transaction rollback | Correct fix — isolate instead of serialize |
+
+---
+
+## Pattern 89 — Playwright v1.60 `locator.drop()` for Drag-and-Drop Upload Zone Test Flakiness  [official]
+
+File upload zones that use drag-and-drop (`dragenter`/`dragover`/`drop` event chain) have historically been one of the most flaky test scenarios in Playwright. The traditional workaround — `page.dispatchEvent()` with synthetic `DragEvent` — was fragile because it required manually constructing a `DataTransfer` object, and browser security restrictions meant the `files` property was often read-only or empty after dispatch.
+
+Playwright v1.60 introduces `locator.drop()`, which simulates an external drag-and-drop of files or clipboard-like data onto a target element. It handles the full event sequence correctly and works cross-browser (Chromium, Firefox, WebKit).
+
+```typescript
+// BAD: manual DragEvent dispatch — fragile and commonly flaky
+import { test, expect } from '@playwright/test';
+
+test('user can upload file by dropping it onto the upload zone', async ({ page }) => {
+  await page.goto('/upload');
+
+  // FLAKY: manually constructing DataTransfer is error-prone.
+  // The 'files' property may be empty after construction in some browser modes.
+  // Event sequence (enter → over → drop) timing is not deterministic.
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    // Cannot programmatically add files to DataTransfer.files — read-only in most browsers
+    const event = new DragEvent('drop', { dataTransfer: dt, bubbles: true });
+    document.querySelector('[data-testid="upload-zone"]')!.dispatchEvent(event);
+  });
+
+  // This assertion frequently fails because the files array was empty
+  await expect(page.locator('[data-testid="file-list"]')).toContainText('document.pdf');
+});
+```
+
+```typescript
+// GOOD: locator.drop() — correct synthetic drag-and-drop (Playwright v1.60+)
+import { test, expect } from '@playwright/test';
+import path from 'path';
+
+test('user can upload file by dropping it onto the upload zone', async ({ page }) => {
+  await page.goto('/upload');
+
+  const uploadZone = page.getByTestId('upload-zone');
+
+  // locator.drop() handles the full dragenter/dragover/drop event chain.
+  // 'files' option accepts file paths — Playwright reads them from disk and
+  // injects them into the DataTransfer correctly, bypassing read-only restrictions.
+  await uploadZone.drop({
+    files: [
+      path.join(__dirname, 'fixtures/document.pdf'),
+    ],
+  });
+
+  // The file list should update reliably — no timing race, no empty DataTransfer
+  await expect(page.getByTestId('file-list')).toContainText('document.pdf');
+  await expect(page.getByTestId('upload-status')).toHaveText('1 file ready');
+});
+```
+
+```typescript
+// Multiple files + clipboard data example
+import { test, expect } from '@playwright/test';
+import path from 'path';
+
+test('user can drop multiple files onto an upload zone', async ({ page }) => {
+  await page.goto('/upload');
+
+  await page.getByTestId('upload-zone').drop({
+    files: [
+      path.join(__dirname, 'fixtures/image.png'),
+      path.join(__dirname, 'fixtures/document.pdf'),
+    ],
+  });
+
+  // Both files should appear in the list
+  await expect(page.getByTestId('file-list')).toContainText('image.png');
+  await expect(page.getByTestId('file-list')).toContainText('document.pdf');
+});
+```
+
+```typescript
+// Pair with a route handler to prevent actual file uploads during test
+// (avoids external network dependency flakiness)
+import { test, expect } from '@playwright/test';
+import path from 'path';
+
+test('upload zone sends file to the API and shows progress', async ({ page }) => {
+  // Intercept the upload API — prevents network flakiness AND external side effects
+  await page.route('**/api/upload', async (route) => {
+    // Simulate a successful upload response
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ fileId: 'file-001', status: 'uploaded' }),
+    });
+  });
+
+  await page.goto('/upload');
+
+  await page.getByTestId('upload-zone').drop({
+    files: [path.join(__dirname, 'fixtures/document.pdf')],
+  });
+
+  // The progress indicator should appear, then the success state
+  await expect(page.getByTestId('upload-progress')).toBeVisible();
+  await expect(page.getByTestId('upload-success')).toBeVisible({ timeout: 5_000 });
+});
+```
+
+**Common flakiness patterns in upload zone tests and fixes:**
+
+| Scenario | Old approach (flaky) | Fix with `locator.drop()` |
+|---|---|---|
+| Single file drag-and-drop | `dispatchEvent(new DragEvent(...))` — empty DataTransfer.files | `locator.drop({ files: [path] })` — correct file injection |
+| Multi-file drop | Multiple `dispatchEvent` calls — timing between events | Single `locator.drop({ files: [p1, p2] })` — atomic |
+| Drop then upload | Manual event + page.setInputFiles combo | `drop()` + `page.route()` intercept |
+| Cross-browser drop | Chromium-only workaround with JS eval | `drop()` works in Chromium, Firefox, WebKit |
+| File size assertion after drop | Cannot read DataTransfer.files size | `drop()` provides correct File objects with size |
+
+---
+
+## Gotcha 46 — Vitest 5.0 Attachment Directory Path Change: `.vitest-attachments/` → `.vitest/attachments/`  [official]
+
+Vitest 5.0-beta changes the default location for test attachments (screenshots, videos, custom file attachments added via `testContext.attach()` or `context.attach()`) from `.vitest-attachments/` to `.vitest/attachments/`. The blob reporter output also moves from its previous default to `.vitest/blob/`.
+
+**Why this causes flakiness-adjacent failures:**
+
+1. **CI artifact uploads targeting `.vitest-attachments/`** — GitHub Actions or other CI steps that upload attachment artifacts using `path: '.vitest-attachments/**'` will upload an empty directory. The actual attachments are written to `.vitest/attachments/` but are never found. This causes "flakiness" in the artifact delivery pipeline — the attachment exists but the uploader can't find it.
+
+2. **`.gitignore` entries targeting `.vitest-attachments/`** — If only `.vitest-attachments/` is in `.gitignore` and not `.vitest/`, attachment files may accidentally be committed.
+
+3. **Custom cleanup scripts** — Pre-test scripts that `rm -rf .vitest-attachments/` to ensure a clean run no longer clean the correct directory, causing stale attachment files to persist and corrupt snapshot comparisons in browser mode.
+
+```typescript
+// vitest.config.ts — pin attachment path explicitly to be version-resilient
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Vitest 4.x default: .vitest-attachments/
+    // Vitest 5.0+ default: .vitest/attachments/
+    // Pin explicitly to avoid CI breakage during upgrade:
+    attachmentsDir: '.vitest/attachments', // Vitest 5.0+ path — works in 4.1.x too
+  },
+});
+```
+
+```yaml
+# .github/workflows/test.yml — update artifact upload path for Vitest 5 compatibility
+- name: Upload test attachments
+  uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: vitest-attachments
+    # Use the Vitest 5.0+ path; or use a glob that covers both:
+    # path: |
+    #   .vitest-attachments/**
+    #   .vitest/attachments/**
+    path: .vitest/attachments/**
+    retention-days: 7
+```
+
+```bash
+# .gitignore — cover both old and new paths during transition
+.vitest-attachments/
+.vitest/
+```
+
+**Detection — check if your CI workflow hardcodes the old path:**
+
+```bash
+# Run in your project root to find hardcoded references to the old path
+grep -rn "vitest-attachments" .github/ vitest.config.* package.json
+# Any hit is a potential breakage point for Vitest 5.0 upgrade
+```
+
+**Blob reporter path change (parallel issue):**
+
+```typescript
+// vitest.config.ts — also pin blob reporter output if using merge-report workflow
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    reporters: [
+      // Blob reporter: Vitest 5.0 changes default output from 'blob-report/' to '.vitest/blob/'
+      // Pin it explicitly so your merge-report CI step finds the right path:
+      ['blob', { outputDir: '.vitest/blob' }],  // Vitest 5.0+ default
+    ],
+  },
+});
+```
+
+---
+
+## Anti-Patterns (iteration 54)
+
+### AP44 — Vitest 5.0 Upgrade with Hardcoded `.vitest-attachments/` Path in CI  [community]
+
+**What:** Upgrading from Vitest 4.x to 5.0 without updating CI artifact upload steps that reference `.vitest-attachments/` by name.
+
+**Why harmful:** After the upgrade, test attachments (screenshots, HTML snapshots, custom attachments) are written to `.vitest/attachments/` but CI uploads an empty `.vitest-attachments/` directory. Failure investigations that depend on these artifacts — screenshots from failing browser mode tests, traces from flaky E2E steps — silently disappear. The CI step reports success (no error on upload empty directory) but the artifact is empty.
+
+**Compounding problem:** The test suite may not be immediately broken — unit tests pass, CI goes green. The missing attachments are only noticed during a flakiness investigation when an engineer tries to look at a screenshot from a failed browser-mode test and finds the artifact empty. At that point, the root cause (Vitest upgrade path change) is not obvious.
+
+```typescript
+// BAD: hardcoded path — breaks silently on Vitest 5.0 upgrade
+// .github/workflows/test.yml (partial):
+//   - uses: actions/upload-artifact@v4
+//     with:
+//       path: .vitest-attachments/**   ← points to old path; always empty on Vitest 5
+```
+
+```typescript
+// GOOD: use configDefaults to read the current attachmentsDir programmatically
+// In a helper script: scripts/get-attachments-dir.mjs
+import { configDefaults } from 'vitest/config';
+// configDefaults.attachmentsDir reflects the current version's default
+// Use in CI to avoid hardcoding:
+console.log(configDefaults.test?.attachmentsDir ?? '.vitest/attachments');
+```
+
+```yaml
+# BETTER: glob both paths in CI — works during transition regardless of Vitest version
+- name: Upload test attachments
+  uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: vitest-attachments
+    path: |
+      .vitest-attachments/**
+      .vitest/attachments/**
+```
+
+---
+
+## Quick Reference additions (iteration 54)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Vitest 5.0 upgrade: tests that ran serially now run concurrently and race | `sequential` option removed in v5 | Pattern 88 (`concurrent: false` or `describe.serial`) | Keeping `sequential: true` (silently ignored or error) |
+| Drag-and-drop upload test intermittently fails — file list empty | `DataTransfer.files` read-only; manual `DragEvent` dispatch broken | Pattern 89 (`locator.drop({ files: [...] })`) | `page.evaluate(() => dispatchEvent(new DragEvent(...)))` |
+| CI artifact upload step finds empty `.vitest-attachments/` directory after Vitest upgrade | Attachment path changed from `.vitest-attachments/` to `.vitest/attachments/` in v5 | Gotcha 46 (pin `attachmentsDir` in config; glob both in CI) | Hardcoding old path without version-aware glob |
+| Flaky multi-environment test run — results from different envs not combined | Non-sharded multi-env runs lack merge step | Gotcha 46 (Vitest 5 merge reports; `vitest merge-report`) | Separate CI jobs with no result aggregation |
+
+---
+
+## Key Resources (iteration 54 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright `locator.drop()` | Official | https://playwright.dev/docs/api/class-locator#locator-drop | Simulates external drag-and-drop of files onto an element; eliminates DataTransfer.files flakiness (v1.60) |
+| Vitest 5.0 Migration Guide | Official | https://vitest.dev/guide/migration | `sequential` removal, attachment path change, blob reporter path — required reading before upgrading from 4.x |
+| Vitest `configDefaults` | Official | https://vitest.dev/config/#configdefaults | Exposes current-version defaults programmatically; use in CI scripts to avoid hardcoding paths that change between versions |
+| Vitest merge-report CLI | Official | https://vitest.dev/guide/reporters#merge-reporters | Merges blob reports from multiple shards or environments into a single result; enables cross-environment flakiness detection (v5.0) |

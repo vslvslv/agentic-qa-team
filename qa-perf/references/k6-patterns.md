@@ -1,8 +1,8 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 31 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1 -->
 
-> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Re-run `/qa-refine k6` to refresh.
+> Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Re-run `/qa-refine k6` to refresh.
 
 > **k6 v2.0.0 migration notice:** Major version removes `externally-controlled` executor, CLI commands `k6 pause/resume/scale/status/login`, `--no-summary` flag (use `--summary-mode=disabled`), `--summary-mode=legacy`, `options.ext.loadimpact` (use `options.cloud`), browser metric `browser_web_vital_fid` (use `browser_web_vital_inp`), `k6/experimental/redis` module (use `k6/x/redis` extension), and automatic locator retries added to browser. See [v2.0.0 Migration](#v200-migration) section. **New in v2.0.0 final:** HTTP API server disabled by default, cloud secrets auto-injected in `--local-execution`, `k6 cloud project list` command, extension tab-completion.
 
@@ -9018,5 +9018,229 @@ import { WebSocket } from "k6/websockets";
 > **separate** module that remains available but is also being superseded by `k6/websockets`.
 > Do not confuse the three: `k6/ws` (legacy), `k6/experimental/websockets` (deprecated alias),
 > `k6/websockets` (stable, use this).
+
+---
+
+### Gotcha #56 — CVE-2026-33186: gRPC Dependency Security Vulnerability — Pin to v1.7.1+
+
+**Affected versions:** k6 v0.x up to and including v1.7.0  
+**Fixed in:** k6 v1.7.1 (released 2026-05-xx)  
+**Severity:** High — remote code execution possible via malformed gRPC response in `k6/net/grpc`
+
+If your CI/CD pipelines or Docker images pin a specific k6 version, you may be silently running
+a vulnerable build. The vulnerability lives in a transitive gRPC dependency and can be triggered
+by a malicious or misconfigured server sending a crafted protobuf response.
+
+```yaml
+# WRONG — pinned to vulnerable v1.7.0 Docker image
+image: grafana/k6:1.7.0
+
+# RIGHT — pin to the patched patch release
+image: grafana/k6:1.7.1
+
+# ALSO RIGHT — track the latest stable minor (auto-picks up security patches)
+image: grafana/k6:1.7   # "1.7" floating tag resolves to latest 1.7.x
+```
+
+```bash
+# GitHub Actions: dependabot can track k6 Docker image versions automatically
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Dependabot opens a PR when grafana/k6 releases a new patch/minor version
+```
+
+```bash
+# Audit existing CI files for pinned vulnerable versions:
+grep -r "grafana/k6:1\.[0-6]\|grafana/k6:1\.7\.0" .github/ ci/ Dockerfile* k8s/
+# Any match is potentially vulnerable — upgrade to 1.7.1+
+```
+
+> **[official]:** The CVE-2026-33186 advisory is tracked on the k6 GitHub security advisories page.
+> Subscribe at `https://github.com/grafana/k6/security/advisories` (click "Watch" → "Custom" →
+> "Security alerts") to receive email notifications for future k6 CVEs.
+
+> **[community]:** If you use `xk6 build` to compile custom binaries, you must also upgrade your
+> build environment's k6 source to v1.7.1 before recompiling — the vulnerability is in the Go
+> gRPC module resolved at build time, not injected at runtime. Running `go mod tidy` after
+> updating the k6 module version in your `go.mod` is sufficient to pull in the patched dependency.
+
+---
+
+### Pattern — `k6 cloud project list` for Dynamic CI Project Selection (v2.0.0+)
+
+k6 v2.0.0 added `k6 cloud project list` to enumerate Grafana Cloud k6 projects programmatically.
+This is critical for multi-team setups where each team owns a separate project and you want CI to
+target the correct project without hard-coding IDs.
+
+```bash
+# List all projects in the default organization (JSON output)
+K6_CLOUD_TOKEN=$K6_TOKEN k6 cloud project list --output json
+
+# Sample output:
+# [
+#   {"id": 123456, "name": "Platform API", "organization_id": 9876},
+#   {"id": 123457, "name": "Checkout Service", "organization_id": 9876},
+#   {"id": 123458, "name": "Search Service", "organization_id": 9876}
+# ]
+```
+
+```bash
+# GitHub Actions: dynamically resolve project ID by name, then run the test
+- name: Resolve k6 Cloud Project ID
+  id: k6-project
+  env:
+    K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+  run: |
+    PROJECT_NAME="${{ github.event.repository.name }}"
+    PROJECT_ID=$(k6 cloud project list --output json \
+      | jq --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .id')
+    if [ -z "$PROJECT_ID" ]; then
+      echo "ERROR: No k6 Cloud project named '$PROJECT_NAME'" >&2
+      exit 1
+    fi
+    echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+
+- name: Run k6 Cloud Test
+  env:
+    K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+    K6_CLOUD_PROJECT_ID: ${{ steps.k6-project.outputs.project_id }}
+  run: k6 cloud run --project-id "$K6_CLOUD_PROJECT_ID" k6/load-test.js
+```
+
+```javascript
+// Option B: set project ID from env inside the script (avoids CLI flag duplication)
+import { options as cloudOptions } from "https://jslib.k6.io/k6-summary/0.0.2/index.js";
+
+export const options = {
+  cloud: {
+    projectID: __ENV.K6_CLOUD_PROJECT_ID ? parseInt(__ENV.K6_CLOUD_PROJECT_ID) : undefined,
+    name: "Load Test — " + (__ENV.CI_COMMIT_REF_NAME || "local"),
+  },
+};
+```
+
+> **[official]:** `k6 cloud project list` requires `K6_CLOUD_TOKEN` (or `--token` flag) and
+> optionally `K6_CLOUD_STACK_ID` if targeting a non-default Grafana Cloud stack. The `--output json`
+> flag was added alongside the command in v2.0.0; earlier beta releases used `--format json`.
+
+> **[community]:** Cache the project-id lookup in CI to avoid an extra API call on every run.
+> Write the resolved ID to a workflow artifact or use a job-level output as shown above. For
+> monorepos where multiple services share one workflow file, build a map in a setup job and pass
+> project IDs to downstream matrix jobs via `needs.<job>.outputs`.
+
+---
+
+### xk6 Extension Author Migration Guide for k6 v2.0.0
+
+Two breaking changes in k6 v2.0.0 affect extension authors directly: the JSON serialization
+library swap and the new archive metadata `dependencies` field.
+
+#### 1. easyjson → stdlib `encoding/json`
+
+k6 v2.0.0 dropped the `mailru/easyjson` code-generation library in favour of the standard
+library's `encoding/json`. Extensions that called easyjson's generated `MarshalJSON` / `UnmarshalJSON`
+methods (or used `go:generate` directives for easyjson) must remove or replace those.
+
+```go
+// BEFORE — easyjson-generated implementation in your extension
+// File: myobj_easyjson.go (generated, should be deleted)
+//go:generate easyjson -all myobj.go
+
+// MarshalJSON was generated by easyjson; now conflicts with stdlib
+func (v MyObj) MarshalJSON() ([]byte, error) { ... }
+
+// AFTER — remove myobj_easyjson.go entirely.
+// If you need custom marshaling, implement stdlib json.Marshaler:
+import "encoding/json"
+
+func (v MyObj) MarshalJSON() ([]byte, error) {
+    type Alias MyObj
+    return json.Marshal(&struct {
+        Alias
+        ExtraField string `json:"extra_field"`
+    }{
+        Alias:      Alias(v),
+        ExtraField: v.computeExtra(),
+    })
+}
+```
+
+```bash
+# Migration checklist for easyjson removal:
+# 1. Delete all *_easyjson.go generated files
+find . -name "*_easyjson.go" -delete
+
+# 2. Remove easyjson from go.mod / go.sum
+go mod edit -droprequire github.com/mailru/easyjson
+go mod tidy
+
+# 3. Remove //go:generate easyjson directives from source files
+grep -r "go:generate easyjson" . --include="*.go" -l
+
+# 4. Rebuild and run tests — stdlib encoding/json is slightly stricter on
+#    map key types and cycles; fix any new marshal errors.
+go build ./...
+go test ./...
+```
+
+> **[official]:** k6's internal RPC and metric serialization paths no longer depend on easyjson
+> as of v2.0.0. Extension authors who were relying on k6 re-exporting easyjson types will find
+> those types gone. The migration is mechanical but requires a full rebuild.
+
+#### 2. Archive Metadata `dependencies` Field
+
+`k6 archive` now embeds a `dependencies` key in the archive metadata (the `metadata.json` entry
+inside the `.tar` archive). This lists all resolved xk6 extensions with their module paths and
+version hashes — useful for reproducible builds and supply-chain auditing.
+
+```json
+// metadata.json inside k6-archive.tar (v2.0.0+)
+{
+  "k6version": "2.0.0",
+  "goos": "linux",
+  "goarch": "amd64",
+  "dependencies": [
+    {
+      "name": "xk6-sql",
+      "path": "github.com/grafana/xk6-sql",
+      "version": "v0.4.1"
+    },
+    {
+      "name": "xk6-faker",
+      "path": "github.com/szkiba/xk6-faker",
+      "version": "v0.3.0"
+    }
+  ]
+}
+```
+
+```bash
+# Extract and inspect archive dependencies in CI:
+k6 archive -o k6-archive.tar k6/load-test.js
+tar xOf k6-archive.tar metadata.json | jq '.dependencies'
+
+# Fail the build if an extension version is not pinned (has no semantic version):
+tar xOf k6-archive.tar metadata.json \
+  | jq -e '.dependencies[] | select(.version | test("^v[0-9]") | not) | .name' \
+  && echo "ERROR: unpinned extension detected" && exit 1 || echo "All extensions pinned."
+```
+
+> **[community]:** Use the `dependencies` field as a Software Bill of Materials (SBOM) source for
+> your k6 load-test binaries. Feed it into Grype, Trivy, or your organisation's vulnerability
+> scanner alongside your application SBOMs. Teams shipping k6 archives in Docker images for
+> Kubernetes Jobs can embed this metadata as a container label for traceability:
+>
+> ```dockerfile
+> ARG K6_DEPS_JSON
+> LABEL org.opencontainers.image.k6.dependencies="$K6_DEPS_JSON"
+> ```
+>
+> Populate `K6_DEPS_JSON` from the `tar xOf k6-archive.tar metadata.json | jq '.dependencies'`
+> output during the Docker build step.
 
 

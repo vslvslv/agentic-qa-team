@@ -1,7 +1,8 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 25 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25) | community: production lessons -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
+<!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
 <!-- new in iteration 25: The Bug Catcher Rule (formal principle for interaction inclusion), BDD-style scenario sentence pattern, V4 statusCode class matching (success/clientError/serverError), mTLS client certificate workaround for VerifierV3, ConsumerVersionSelector fallbackBranch TypeScript type gap, status code range matching feature request #1600, community lessons 50-53 (5 reasons contract testing fails, BDD-style naming prevents duplicate interactions, status code class matching avoids unnecessary provider states, mTLS/client-cert provider verification) -->
 <!-- new in iteration 17: pact-js v16 breaking changes and migration guide (Node ≥20, PactV4→Pact, MatchersV3→Matchers rename, addAsynchronousInteraction, v16.3 interaction metadata), updated Pact Specification Version Reference table, community lesson 28 (v16 upgrade gotchas) -->
 <!-- new in iteration 18: contract_requiring_verification_published webhook (supersedes contract_content_changed, Pact Broker 2.82.0+), pact-js v16.2 withMatchingRules for async/sync interactions, pact-js v16.4 addInteractionReference, PactFlow Drift (spec-driven provider compliance CI), updated Pact Specification Version Reference table with v16.1–v16.4, community lesson 29 (deprecated webhook event), community lesson 30 (Drift for BDCT gap) -->
@@ -4625,3 +4626,243 @@ export const productionSelectors = selectors as ConsumerVersionSelector[];
 52. **[community] V4 statusCode class matching eliminates unnecessary provider states for error contracts.** A common but wasteful pattern: teams write separate provider states for every HTTP error a consumer might receive — `'given service returns 500'`, `'given service returns 502'`, `'given service returns 503'` — each requiring its own state handler. The provider tests run 3x longer to verify the same consumer behavior: "show a generic error boundary for any 5xx." Pact V4's `statusCode('serverError')` class matcher collapses these into a single interaction: one state (`'given InventoryService is unavailable'`), one state handler, one interaction. If the provider legitimately returns different 5xx codes in different failure modes, CDC is not the right tool — a thin integration smoke test that verifies each failure mode's actual behavior is more appropriate.
 
 53. **[community] mTLS provider verification requires the test server to run without TLS, which sometimes conflicts with the provider's initialization logic.** Providers that enforce mTLS at the application layer (not the load balancer) — where `express.Request.socket.getPeerCertificate()` is called in middleware — cannot be correctly tested by the pact-js verifier because the verifier connects over plain HTTP and no client certificate is presented. The plain HTTP workaround (Option 1 above) causes these providers to reject every request with a 401 or 403 in the middleware. The correct fix for such providers is to wrap the TLS validation middleware in an environment check: `if (process.env.NODE_ENV !== 'pact-test') { /* validate cert */ }` — this is the same pattern used for disabling auth middleware in unit tests. Track issue #1509 for native TLS support in the pact-js verifier, which would eliminate the need for this workaround entirely.
+
+---
+
+### Multipart Form Data / File Upload Contract Testing (TypeScript — V4 DSL)
+
+File upload endpoints are frequently skipped in CDC because teams assume only JSON bodies can be contract-tested. Pact V4's `multipartBody()` and `binaryFile()` builder methods enable contract testing of `multipart/form-data` requests — useful for any consumer that uploads images, documents, or mixed-content payloads.
+
+The `multipartBody()` method is the simpler path for typical file uploads (single part, text or binary). For complex payloads with metadata + binary parts, use `binaryFile()` with explicit `withMatchingRules`.
+
+```typescript
+// file-upload.consumer.pact.spec.ts
+// Contract for a multipart/form-data file upload endpoint.
+// Uses Pact V4's multipartBody() builder — available on the addInteraction() DSL.
+import path from 'path';
+import { Pact, Matchers, SpecificationVersion } from '@pact-foundation/pact';
+import FormData from 'form-data';
+import axios from 'axios';
+import fs from 'fs';
+
+const { like } = Matchers;
+
+// Path to a small test fixture file committed alongside the test
+const testFilePath = path.resolve(__dirname, './fixtures/test-upload.txt');
+
+// Use Pact (V4 alias) — multipartBody() is only available on the V4 DSL addInteraction() builder.
+// SpecificationVersion.SPECIFICATION_VERSION_V4 explicitly pins the spec version in the pact file.
+const provider = new Pact({
+  consumer: 'DocumentService',
+  provider: 'StorageService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  spec: SpecificationVersion.SPECIFICATION_VERSION_V4,
+  logLevel: 'warn',
+  // V4: no port — auto-assigned
+});
+
+describe('DocumentService → StorageService contract (file upload)', () => {
+  it('uploads a text file via multipart form data', async () => {
+    await provider
+      .addInteraction()
+      .given('StorageService is ready to accept uploads')
+      .uponReceiving('a POST /upload request with a text file attachment')
+      .withRequest('POST', '/upload', (builder) => {
+        // multipartBody(contentType, filePath, mimePartName, boundary?)
+        // contentType: MIME type of the file part
+        // filePath: absolute path to a test fixture file
+        // mimePartName: the form field name (matches FormData.append key)
+        builder.multipartBody('text/plain', testFilePath, 'file');
+      })
+      .willRespondWith(200, (builder) => {
+        builder.jsonBody({
+          fileId: like('FILE-abc123'),
+          size: like(1024),
+          status: like('uploaded'),
+        });
+      })
+      .executeTest(async (mockServer) => {
+        const form = new FormData();
+        form.append('file', fs.createReadStream(testFilePath));
+        const response = await axios.post(`${mockServer.url}/upload`, form, {
+          headers: form.getHeaders(),
+        });
+        expect(response.data.fileId).toBeDefined();
+        expect(response.data.status).toBe('uploaded');
+      });
+  });
+});
+```
+
+**For complex multipart requests (metadata + binary file)** — use `binaryFile()` with `matchingRules`:
+
+```typescript
+// image-upload.consumer.pact.spec.ts
+// Complex multipart: JSON metadata part + binary image part.
+// Uses binaryFile() with explicit matching rules on Content-Type header and body parts.
+import path from 'path';
+import { Pact, Matchers, SpecificationVersion } from '@pact-foundation/pact';
+import FormData from 'form-data';
+import axios from 'axios';
+import fs from 'fs';
+
+const { like, regex } = Matchers;
+
+const boundary = '----PactTestBoundary123';
+const testImagePath = path.resolve(__dirname, './fixtures/test-image.jpg');
+// Create a minimal multipart body fixture for the pact body record
+const multipartFixturePath = path.resolve(__dirname, './fixtures/image-upload.bin');
+
+const provider = new Pact({
+  consumer: 'GalleryApp',
+  provider: 'ImageService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  spec: SpecificationVersion.SPECIFICATION_VERSION_V4,
+  logLevel: 'warn',
+});
+
+describe('GalleryApp → ImageService contract (complex multipart)', () => {
+  it('uploads an image with metadata', async () => {
+    await provider
+      .addInteraction()
+      .given('ImageService is ready to accept image uploads')
+      .uponReceiving('a POST /images request with a JPEG image and metadata')
+      .withRequest('POST', '/images', (builder) => {
+        builder
+          .headers({
+            // Explicit Content-Type with boundary — matched by regex at verification
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          })
+          // binaryFile: records the raw multipart body bytes from a fixture file.
+          // At provider verification, the body bytes are replayed and matched.
+          .binaryFile(
+            `multipart/form-data; boundary=${boundary}`,
+            multipartFixturePath
+          )
+          .matchingRules({
+            body: [
+              {
+                // Match the image part by content type, not by byte-exact content
+                path: '$.image',
+                rules: [Matchers.contentType('image/jpeg')],
+              },
+            ],
+            header: [
+              {
+                path: 'Content-Type',
+                rules: [
+                  regex(
+                    'multipart/form-data;\\s*boundary=.*',
+                    `multipart/form-data; boundary=${boundary}`
+                  ),
+                ],
+              },
+            ],
+          });
+      })
+      .willRespondWith(201, (builder) => {
+        builder.jsonBody({
+          imageId: like('IMG-001'),
+          url: like('https://storage.example.com/img/IMG-001.jpg'),
+        });
+      })
+      .executeTest(async (mockServer) => {
+        const form = new FormData();
+        form.append('image', fs.createReadStream(testImagePath), {
+          filename: 'test.jpg',
+          contentType: 'image/jpeg',
+        });
+        const response = await axios.post(`${mockServer.url}/images`, form, {
+          headers: form.getHeaders(),
+        });
+        expect(response.data.imageId).toBeDefined();
+      });
+  });
+});
+```
+
+**Key points:**
+- `multipartBody(contentType, filePath, mimePartName)` is the simplest V4 multipart API — it handles the boundary, MIME encoding, and content-type header automatically. Use this for most single-file upload scenarios
+- `binaryFile(contentType, fixturePath)` records raw bytes from a fixture file — use it with `.matchingRules` when you need content-type-based matching on specific parts rather than byte-exact replay
+- `Matchers.contentType('image/jpeg')` matches the MIME content type of a binary part without byte-for-byte comparison — essential for image/PDF uploads where byte content varies between test runs
+- The `SpecificationVersion` enum (`import { SpecificationVersion } from '@pact-foundation/pact'`) is available in pact-js v13+ and explicitly pins the Pact spec version in the constructor; `SpecificationVersion.SPECIFICATION_VERSION_V4` is the recommended value for all new TypeScript projects
+- The fixture file (`test-upload.txt`, `image-upload.bin`) must be committed to version control alongside the test — use small, minimal files; the actual content is not tested by the contract (content-type is)
+- `multipartBody()` and `binaryFile()` are only available on the `Pact` (V4) class's `addInteraction()` DSL — they are NOT available in `PactV3`
+
+**Anti-pattern:** Matching the binary file body byte-for-byte using `equal()` on the multipart content. Binary fixtures differ between machines (line endings, encoding) and change whenever the fixture is regenerated. Use `Matchers.contentType()` for binary parts and `like()` for metadata fields.
+
+---
+
+### `SpecificationVersion` Enum Reference (TypeScript)
+
+The `SpecificationVersion` enum allows explicit declaration of which Pact specification version a consumer test targets. Without it, pact-js defaults to Pact V2 for HTTP interactions (backward-compatible but missing V3/V4 capabilities).
+
+```typescript
+import { Pact, PactV3, SpecificationVersion } from '@pact-foundation/pact';
+
+// SpecificationVersion enum values:
+// SPECIFICATION_VERSION_V2 — PactV2: basic request/response, term() matchers (legacy)
+// SPECIFICATION_VERSION_V3 — PactV3: MatchersV3, provider states with params, message pacts
+// SPECIFICATION_VERSION_V4 — PactV4 (current): plugins, auto-port, addInteraction() DSL,
+//                             .pending(), .withComment(), multipartBody(), statusCode() class matching
+
+// Explicitly specifying V4 (recommended for all new projects):
+const provider = new Pact({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  spec: SpecificationVersion.SPECIFICATION_VERSION_V4,
+  logLevel: 'warn',
+});
+
+// PactV3 with explicit V3 spec (for projects intentionally targeting V3 pact files):
+const providerV3 = new PactV3({
+  consumer: 'OrderService',
+  provider: 'InventoryService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  spec: SpecificationVersion.SPECIFICATION_VERSION_V3, // explicit; equivalent to the default
+  port: 8081,
+  logLevel: 'warn',
+});
+```
+
+**When to set `spec` explicitly:**
+- `spec: SpecificationVersion.SPECIFICATION_VERSION_V4` — use for all new projects; enables V4 features: plugin architecture, auto-port, interaction metadata, `multipartBody()`, `statusCode()` class matching
+- `spec: SpecificationVersion.SPECIFICATION_VERSION_V3` — use when your provider verification infrastructure is on a version that cannot process V4 pact files (e.g., pact-jvm < 4.4 or pact-ruby < 1.25). V3 pact files are still the right choice for these legacy provider stacks
+- Omitting `spec` — acceptable but not recommended; the default is V2 for `PactV3` and V4 for `Pact` (V4 alias). Making it explicit documents intent and prevents confusion when reading the code
+
+---
+
+### Additional Community Production Lessons [community]
+
+54. **[community] EADDRINUSE errors with PactV3's `provider.setup()` + `provider.finalize()` lifecycle API.** Teams that use the older manual lifecycle API (`provider.setup()` / `provider.finalize()`) instead of `executeTest()` frequently encounter "Address already in use (os error 98)" errors when the `afterAll` hook fails to call `provider.finalize()`. The `finalize()` call releases the mock server port; omitting it leaves the port bound until the OS reclaims it, causing the next test run to fail with EADDRINUSE. The fix: always pair `setup()` with `finalize()` in a `try/finally` block, or migrate to `executeTest()` which handles server lifecycle automatically:
+
+```typescript
+// FRAGILE: manual lifecycle — finalize() not guaranteed if test throws
+beforeAll(async () => { await provider.setup(); });
+afterAll(async () => { await provider.finalize(); }); // ← skipped if beforeAll threw
+
+// SAFE: executeTest() handles lifecycle — no manual setup/finalize needed
+await provider
+  .given('...')
+  .uponReceiving('...')
+  .withRequest({ ... })
+  .willRespondWith({ ... })
+  .executeTest(async (mockServer) => { /* test here */ });
+
+// IF you must use the manual API (e.g., shared mock server across multiple it() blocks):
+// wrap in try/finally so finalize() always runs
+beforeAll(async () => { await provider.setup(); });
+afterAll(async () => {
+  try { /* verify interactions */ }
+  finally { await provider.finalize(); } // ← guaranteed to run
+});
+```
+
+This issue is tracked as pact-js issue #1568. It is most common in projects that copy-paste PactV2-era test patterns which used the manual lifecycle API before `executeTest()` was introduced in pact-js v12+. The correct migration is to move to `executeTest()` — it was designed specifically to eliminate this class of resource-leak issue.
+
+55. **[community] Jest `--watch` and `--watchAll` modes print a non-fatal "Global tracing subscriber" warning on every file re-run (pact-js issue #1438).** When running Pact consumer tests with `jest --watch`, a warning appears in the console on each re-trigger: `"Failed to initialise global tracing subscriber - a global default trace dispatcher has already been set"`. This is a cosmetic issue — tests pass normally and no functionality is affected. The root cause is pact-js's Rust telemetry layer attempting to re-initialize a global trace dispatcher that Jest's hot-reload already initialized. Setting `PACT_DO_NOT_TRACK=true` does not suppress this warning. **Workaround:** suppress the warning at the Jest configuration level by filtering stderr output, or simply accept the noise during local watch-mode development. Do not use this warning as a signal that tests are failing — verify actual test results from the Jest output, not from the tracing subscriber message. This does not affect CI runs (which use `jest --ci` or `jest --runInBand`, not watch mode).
+
+56. **[community] Multipart form data contracts over-specify binary content when the fixture file changes on disk.** Teams that use `binaryFile()` or `multipartBody()` without `Matchers.contentType()` matching rules record the raw bytes of a specific test fixture into the pact file. When the fixture file is regenerated (e.g., a test image re-exported at a different quality level, or a fixture updated for a new test case), the pact file content changes — triggering a `contract_content_changed` webhook event and a provider re-verification run for what is effectively a test-infrastructure change, not a contract change. **Best practice:** always use `Matchers.contentType('image/jpeg')` on binary body parts rather than byte-exact matching; use `like()` for metadata fields. The contract captures "the consumer sends a JPEG image" without locking to specific bytes — the provider verifies that it accepts `image/jpeg` content, which is the actual contract requirement.
+
+57. **[community] Omitting `spec: SpecificationVersion.SPECIFICATION_VERSION_V4` causes `multipartBody()` and `statusCode()` class matching to fail silently.** When a `Pact` instance is constructed without an explicit `spec` option, it defaults to V2 for some DSL paths. Calling `multipartBody()`, `builder.statusCode()`, or `.pending()` on a V2 pact silently produces a pact file without the expected V4 structures — the build passes but the pact file is missing the content type rules or status code matchers. **Fix:** always set `spec: SpecificationVersion.SPECIFICATION_VERSION_V4` explicitly when using any V4-only feature. Import `SpecificationVersion` from `@pact-foundation/pact` — it is available in pact-js v13+. TypeScript will not warn you when a V4 method is called on a V2 or V3 pact instance because the builder types are shared; the type system cannot enforce the spec version / feature matrix.

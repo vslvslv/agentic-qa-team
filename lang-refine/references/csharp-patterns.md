@@ -1,5 +1,5 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 34 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
      Iter 23 (2026-05-04): expanded Records section with inheritance, positional vs nominal syntax, shallow
        immutability clarification, `with` on derived records, EF Core incompatibility; added .NET Testing
@@ -56,7 +56,17 @@
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/field-keyword,
        learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-14.0/first-class-span-types,
        learn.microsoft.com/dotnet/csharp/language-reference/operators/member-access-operators
-     Iter 34 (2026-05-12): added Polly v8 / Microsoft.Extensions.Http.Resilience — AddStandardResilienceHandler,
+     Iter 35 (2026-05-12): added comprehensive testing section — Moq patterns (MockBehavior.Strict/Loose,
+       argument matchers, SetupSequence, Verify call counts, async Task/ValueTask setups), NSubstitute
+       as alternative (Arg.*, Received(), DidNotReceive()), FluentAssertions deep-dive (BeEquivalentTo,
+       WithStrictOrdering, exception assertions, FA v7 licensing change), xUnit v3 new features
+       (IAsyncLifetime, TheoryData<T>, IAssemblyFixture, fixture scoping table), NUnit data-driven
+       tests ([TestCase], [TestCaseSource], [Values] combinatorial, async ThrowsAsync), MSTest v3
+       async TestInitialize/Cleanup + Parallelize, CustomWebApplicationFactory with mock injection,
+       Bogus test data fakers with seeded determinism, AutoFixture [AutoData], Respawn DB reset,
+       Verify snapshot testing; added Testing Anti-Patterns table (14 entries) and 5 community
+       gotchas (Moq non-virtual silent failure, VerifyAll omission, IClassFixture order dependency,
+       BeEquivalentTo unordered collections, Task.Delay flaky timing)
        AddStandardHedgingHandler, AddResilienceHandler custom pipeline (retry/circuit-breaker/timeout), DisableForUnsafeHttpMethods,
        dynamic options reload, TimeoutRejectedException vs TimeoutException gotcha, Application Insights ordering gotcha;
        sources: learn.microsoft.com/dotnet/core/resilience/http-resilience
@@ -5491,3 +5501,741 @@ services.AddHttpClient().AddStandardResilienceHandler();
 | Registering `AddStandardResilienceHandler` before `AddApplicationInsightsTelemetry` (AI ≤ 2.22.0) | All Application Insights telemetry is lost silently | Register AI services first, or upgrade to Application Insights ≥ 2.23.0 |
 | No `ShouldHandle` filter on circuit breaker — trips on 4xx client errors | 404/401 responses counted as failures; breaker opens for valid domain errors | Filter `ShouldHandle` to 5xx, 408, 429 only; domain errors shouldn't trip the breaker |
 | No jitter on retry back-off — all clients retry simultaneously | Thundering herd: overloaded service slammed by synchronized retries after failure | Always set `UseJitter = true` on exponential back-off strategies |
+
+---
+
+## Testing Patterns — Moq, FluentAssertions, xUnit v3, NUnit, MSTest
+
+### Moq — Mocking Dependencies
+
+Moq is the most widely used .NET mocking library. It creates fake implementations of interfaces and virtual members using expression-based setup and verification. Always prefer constructor injection so mocks can be passed in; avoid mocking concrete non-virtual types (which Moq cannot intercept).
+
+```csharp
+// Install: dotnet add package Moq
+using Moq;
+using Xunit;
+
+public class OrderServiceTests
+{
+    private readonly Mock<IOrderRepository> _repoMock = new(MockBehavior.Strict);
+    private readonly Mock<IEventBus> _busMock = new(MockBehavior.Loose);
+
+    [Fact]
+    public async Task CreateOrderAsync_ValidRequest_PublishesEvent()
+    {
+        // Arrange: set up expected calls
+        var request = new CreateOrderRequest(CustomerId: 1, Items: [new("SKU-1", 2)]);
+        var created  = new Order(Id: 42, CustomerId: 1, Status: "Pending");
+
+        _repoMock
+            .Setup(r => r.SaveAsync(It.IsAny<Order>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(created);
+
+        _busMock
+            .Setup(b => b.PublishAsync(It.IsAny<OrderCreatedEvent>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var sut = new OrderService(_repoMock.Object, _busMock.Object);
+
+        // Act
+        var result = await sut.CreateOrderAsync(request, CancellationToken.None);
+
+        // Assert
+        Assert.Equal(42, result.Id);
+
+        // Verify the event was published exactly once with the correct order ID
+        _busMock.Verify(
+            b => b.PublishAsync(
+                It.Is<OrderCreatedEvent>(e => e.OrderId == 42),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        _repoMock.VerifyAll();  // verifies ALL Strict setups were called
+    }
+}
+```
+
+**`MockBehavior.Strict` vs `MockBehavior.Loose`:**
+- `Strict` — any call not explicitly set up throws `MockException`. Use for critical dependencies where unexpected calls are bugs.
+- `Loose` (default) — non-set-up methods return `default`/empty values. Use for ancillary dependencies (loggers, event buses).
+
+```csharp
+// MockBehavior.Strict example — accidental call detection
+var repoMock = new Mock<IOrderRepository>(MockBehavior.Strict);
+repoMock.Setup(r => r.GetAsync(1, default)).ReturnsAsync(new Order(1));
+// Any other call on repoMock throws MockException immediately
+```
+
+**Argument matchers — `It.*`:**
+
+```csharp
+// It.IsAny<T>() — any value including null
+_mock.Setup(s => s.Find(It.IsAny<string>())).Returns(null);
+
+// It.Is<T>(predicate) — custom condition
+_mock.Setup(s => s.Save(It.Is<Order>(o => o.Total > 0))).ReturnsAsync(true);
+
+// It.IsIn / It.IsNotIn — membership check
+_mock.Setup(s => s.GetRegion(It.IsIn("US", "CA", "GB"))).Returns("North America");
+
+// It.IsRegex — string regex match
+_mock.Setup(s => s.Lookup(It.IsRegex(@"^\d{5}$"))).Returns(new ZipInfo());
+
+// Capture argument for custom assertions
+Order? capturedOrder = null;
+_repoMock
+    .Setup(r => r.SaveAsync(It.IsAny<Order>(), default))
+    .Callback<Order, CancellationToken>((o, _) => capturedOrder = o)
+    .ReturnsAsync(new Order(1));
+// After act: Assert.Equal("Pending", capturedOrder!.Status);
+```
+
+**Setting up sequences and exceptions:**
+
+```csharp
+// Return different values on successive calls
+var seq = _mock.SetupSequence(s => s.GetNextIdAsync())
+    .ReturnsAsync(1)
+    .ReturnsAsync(2)
+    .ThrowsAsync(new InvalidOperationException("No more IDs"));
+
+// Throw on first call, succeed on retry
+_mock.SetupSequence(s => s.ConnectAsync(It.IsAny<CancellationToken>()))
+    .ThrowsAsync(new IOException("connection refused"))
+    .Returns(Task.CompletedTask);  // second call succeeds
+```
+
+**Verifying call counts:**
+
+```csharp
+_mock.Verify(s => s.LogWarning(It.IsAny<string>()), Times.Never);
+_mock.Verify(s => s.Save(It.IsAny<Order>()), Times.Exactly(2));
+_mock.Verify(s => s.SendEmail(It.IsAny<string>()), Times.AtLeastOnce);
+_mock.Verify(s => s.Flush(), Times.Between(1, 3, Range.Inclusive));
+```
+
+**Moq v4.20+ — async Task/ValueTask setups:**
+
+```csharp
+// ValueTask return — use ReturnsAsync directly
+_mock.Setup(s => s.GetCountAsync()).ReturnsAsync(42);
+
+// Void async — Returns(Task.CompletedTask)
+_mock.Setup(s => s.FlushAsync(It.IsAny<CancellationToken>()))
+     .Returns(Task.CompletedTask);
+
+// ThrowsAsync for faulted tasks
+_mock.Setup(s => s.CommitAsync(default))
+     .ThrowsAsync(new DbException("Deadlock detected"));
+```
+
+### NSubstitute — Fluent Mocking Alternative
+
+NSubstitute is a popular alternative to Moq with a cleaner fluent API. Rather than `mock.Setup(x => x.Method()).Returns(y)`, NSubstitute uses `sub.Method().Returns(y)` — the mock itself is the configuration target.
+
+```csharp
+// Install: dotnet add package NSubstitute
+using NSubstitute;
+using Xunit;
+
+public class InvoiceServiceTests
+{
+    private readonly IInvoiceRepository _repo = Substitute.For<IInvoiceRepository>();
+    private readonly IEmailSender _email    = Substitute.For<IEmailSender>();
+
+    [Fact]
+    public async Task SendInvoice_ExistingCustomer_SendsEmail()
+    {
+        // Arrange: return values by calling the substitute directly
+        _repo.GetAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+             .Returns(new Invoice(Id: 7, CustomerId: 3, Total: 99.99m));
+
+        var sut = new InvoiceService(_repo, _email);
+
+        // Act
+        await sut.SendAsync(7, CancellationToken.None);
+
+        // Assert: verify call was received
+        await _email.Received(1).SendAsync(
+            Arg.Is<string>(s => s.Contains("Invoice #7")),
+            Arg.Any<CancellationToken>());
+
+        // Assert: call was NOT made
+        await _repo.DidNotReceive().DeleteAsync(Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+}
+```
+
+**NSubstitute argument matchers:**
+
+```csharp
+// Arg.Any<T>() — any value
+// Arg.Is<T>(predicate) — custom condition
+// Arg.Do<T>(action) — capture argument as side effect
+// Arg.Invoke(args) — invoke a callback argument
+
+string? capturedSubject = null;
+_email.SendAsync(Arg.Do<string>(s => capturedSubject = s), default)
+      .Returns(Task.CompletedTask);
+
+// After Act: Assert.Equal("Your invoice #7", capturedSubject);
+```
+
+**When to choose NSubstitute over Moq:** NSubstitute has no `Setup()` ceremony and reads closer to production code. It is preferred by teams that find Moq's lambda setup verbose. It does not support `MockBehavior.Strict`, so unexpected calls return defaults rather than throwing — use `Received()` assertions for verification rigor.
+
+### FluentAssertions — Expressive Test Assertions
+
+FluentAssertions replaces framework-native `Assert.*` calls with a fluent, English-readable API that produces more informative failure messages. Add `using FluentAssertions;` and chain `.Should()` on any value.
+
+```csharp
+// Install: dotnet add package FluentAssertions
+using FluentAssertions;
+
+// Scalar values
+result.Should().Be(42);
+price.Should().BeGreaterThan(0m).And.BeLessThan(1000m);
+name.Should().StartWith("Mr.").And.EndWith("Smith");
+flag.Should().BeTrue();
+value.Should().BeNull();
+value.Should().NotBeNull();
+
+// Strings
+text.Should().Contain("error").And.NotBeNullOrWhiteSpace();
+text.Should().MatchRegex(@"^\d{4}-\d{2}-\d{2}$");
+
+// Collections
+list.Should().HaveCount(3);
+list.Should().Contain(x => x.Id == 42);
+list.Should().BeInAscendingOrder(x => x.Name);
+list.Should().AllSatisfy(x => x.IsActive.Should().BeTrue());
+list.Should().NotContainNulls();
+
+// Object equivalency — deep structural comparison
+result.Should().BeEquivalentTo(expected, options =>
+    options.Excluding(o => o.CreatedAt)  // exclude volatile properties
+           .ComparingByMembers<OrderItem>());  // force member comparison for structs
+
+// Exception assertions
+act.Should().Throw<ArgumentException>()
+   .WithMessage("*cannot be empty*")
+   .WithParameterName("customerId");
+
+await asyncAct.Should().ThrowAsync<HttpRequestException>()
+              .WithMessage("*404*");
+
+// No exception
+act.Should().NotThrow();
+```
+
+**`BeEquivalentTo` — the most powerful assertion:**
+
+```csharp
+// Compares all public members by value (not reference) recursively
+var expected = new OrderDto(Id: 1, Status: "Shipped", Total: 99.99m);
+actual.Should().BeEquivalentTo(expected,
+    opts => opts
+        .ExcludingMissingMembers()           // ignore extra members on actual
+        .Using<decimal>(ctx =>
+            ctx.Subject.Should().BeApproximately(ctx.Expectation, 0.01m))
+        .WhenTypeIs<decimal>());             // custom comparison for decimals
+
+// Collections of objects — element order ignored by default
+actualList.Should().BeEquivalentTo(expectedList);
+
+// Enforce order
+actualList.Should().BeEquivalentTo(expectedList,
+    opts => opts.WithStrictOrdering());
+```
+
+**FluentAssertions 7.x changes (2025):** Version 7 introduced a commercial license for business use (non-FOSS projects). The package is still free for open-source. Community alternatives: `Shouldly` and `TUnit`'s built-in assertions. If you cannot use FA v7+ commercially, pin to v6.x or switch to Shouldly.
+
+### xUnit v3 — Key Differences from v2
+
+xUnit v3 (GA 2024) adds async-first test infrastructure, removes VSTest host support (runs on Microsoft Testing Platform only), and adds `[Theory]` improvements.
+
+```csharp
+// Install: dotnet add package xunit xunit.v3.runner.visualstudio (v3 packages)
+// xUnit v3 test method — same [Fact]/[Theory] attributes, new async capabilities
+using Xunit;
+
+public class CartTests
+{
+    // v3: constructor and IAsyncLifetime both supported for async setup/teardown
+    [Fact]
+    public async Task AddItem_UpdatesTotal()
+    {
+        var cart = await CartBuilder.CreateAsync();
+        await cart.AddItemAsync(new CartItem("SKU-1", 2, 9.99m));
+        cart.Total.Should().Be(19.98m);
+    }
+
+    // v3: TheoryData<T> type for strongly-typed parameterized tests
+    public static TheoryData<decimal, decimal, decimal> PricingData => new()
+    {
+        { 10m, 0.1m, 9m },   // price, discount, expected
+        { 20m, 0.5m, 10m },
+        { 0m,  1.0m, 0m }
+    };
+
+    [Theory]
+    [MemberData(nameof(PricingData))]
+    public void ApplyDiscount_ReturnsExpected(decimal price, decimal discount, decimal expected)
+    {
+        var result = PricingEngine.Apply(price, discount);
+        result.Should().Be(expected);
+    }
+}
+
+// v3: IAsyncLifetime for async setup and teardown
+public class DatabaseFixture : IAsyncLifetime
+{
+    public required TestDbContext Db { get; private set; }
+
+    public async Task InitializeAsync()
+    {
+        Db = await TestDbContext.CreateInMemoryAsync();
+        await Db.SeedTestDataAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await Db.DisposeAsync();
+    }
+}
+
+// Use as a class fixture for shared state across tests in one class
+public class OrderQueryTests(DatabaseFixture db) : IClassFixture<DatabaseFixture>
+{
+    [Fact]
+    public async Task GetOrders_ReturnsAll()
+    {
+        var orders = await db.Db.Orders.ToListAsync();
+        orders.Should().NotBeEmpty();
+    }
+}
+```
+
+**xUnit v3 fixture scoping:**
+
+| Scope | Interface | Use case |
+|---|---|---|
+| Per-test | Constructor injection | Stateless dependencies |
+| Per-class | `IClassFixture<TFixture>` | Shared expensive setup (e.g., DB, test server) |
+| Per-collection | `ICollectionFixture<TFixture>` + `[Collection]` | Cross-class shared fixture (e.g., single integration test server) |
+| Per-assembly | `IAssemblyFixture<TFixture>` (v3 only) | Single instance for all tests in assembly |
+
+### NUnit — Data-Driven Tests and Parameterized Suites
+
+NUnit excels at data-driven tests via `[TestCase]`, `[TestCaseSource]`, and `[Values]`.
+
+```csharp
+// Install: dotnet add package NUnit NUnit3TestAdapter
+using NUnit.Framework;
+
+[TestFixture]
+public class PriceCalculatorTests
+{
+    private PriceCalculator _calc = null!;
+
+    [SetUp]
+    public void SetUp() => _calc = new PriceCalculator();
+
+    [TearDown]
+    public void TearDown() { /* cleanup */ }
+
+    // Inline data — parameters in attribute
+    [TestCase(10.0, 0.2, 8.0)]
+    [TestCase(100.0, 0.5, 50.0)]
+    [TestCase(0.0, 0.1, 0.0)]
+    public void ApplyDiscount_ReturnsCorrectPrice(
+        double price, double discount, double expected)
+    {
+        _calc.ApplyDiscount(price, discount).Should().BeApproximately(expected, 0.001);
+    }
+
+    // External data source — test cases from a method or field
+    public static IEnumerable<TestCaseData> EdgeCases()
+    {
+        yield return new TestCaseData(double.MaxValue, 0.0, double.MaxValue)
+            .SetName("MaxValue with no discount");
+        yield return new TestCaseData(-1.0, 0.5, 0.0)
+            .SetName("Negative price defaults to zero");
+    }
+
+    [TestCaseSource(nameof(EdgeCases))]
+    public void ApplyDiscount_EdgeCases(double price, double discount, double expected)
+        => _calc.ApplyDiscount(price, discount).Should().Be(expected);
+
+    // [Values] — combinatorial testing (all combinations)
+    [Test]
+    public void IsValidPrice_Combinatorial(
+        [Values(0.0, 1.0, -1.0)] double price,
+        [Values(true, false)] bool allowNegative)
+    {
+        bool result = _calc.IsValidPrice(price, allowNegative);
+        if (allowNegative || price >= 0) result.Should().BeTrue();
+        else result.Should().BeFalse();
+    }
+}
+```
+
+**NUnit async test support:**
+
+```csharp
+[Test]
+public async Task FetchOrder_ReturnsOrder()
+{
+    var order = await _service.GetByIdAsync(1, CancellationToken.None);
+    order.Should().NotBeNull();
+    order!.Id.Should().Be(1);
+}
+
+// Assert.ThrowsAsync — NUnit built-in for async exception testing
+[Test]
+public void GetOrder_NotFound_ThrowsAsync()
+{
+    Assert.ThrowsAsync<NotFoundException>(
+        () => _service.GetByIdAsync(999, CancellationToken.None));
+}
+```
+
+### MSTest v3 — Modern Setup and Data Rows
+
+MSTest V3 (2024+) adds `[TestInitialize]`/`[TestCleanup]` async support, `[DataRow]` improvements, and parallelism via `[Parallelize]`.
+
+```csharp
+// Install: dotnet add package MSTest.TestFramework MSTest.TestAdapter
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+[TestClass]
+[Parallelize(Workers = 4, Scope = ExecutionScope.MethodLevel)]
+public class ProductServiceTests
+{
+    private Mock<IProductRepository> _repoMock = null!;
+    private ProductService _sut = null!;
+
+    [TestInitialize]
+    public async Task InitAsync()
+    {
+        _repoMock = new Mock<IProductRepository>();
+        _sut = new ProductService(_repoMock.Object);
+        await _sut.WarmUpAsync();
+    }
+
+    [TestCleanup]
+    public async Task CleanupAsync() => await _sut.DisposeAsync();
+
+    // DataRow with named parameters
+    [DataTestMethod]
+    [DataRow("Electronics", 5, DisplayName = "Electronics category with 5 items")]
+    [DataRow("Books", 0,     DisplayName = "Books category with no items")]
+    public async Task GetProducts_ReturnsFilteredList(string category, int expectedCount)
+    {
+        _repoMock.Setup(r => r.GetByCategoryAsync(category, default))
+                 .ReturnsAsync(Enumerable.Range(0, expectedCount)
+                     .Select(i => new Product(i, category))
+                     .ToList());
+
+        var result = await _sut.GetProductsAsync(category, CancellationToken.None);
+        Assert.AreEqual(expectedCount, result.Count);
+    }
+}
+```
+
+### Integration Testing — `CustomWebApplicationFactory` with Test Services
+
+Replace real services with test doubles in `WebApplicationFactory` for full-stack integration tests without a real database or external APIs.
+
+```csharp
+// Custom factory — substitutes real services with test doubles
+public class TestWebApplicationFactory<TProgram> : WebApplicationFactory<TProgram>
+    where TProgram : class
+{
+    // Expose mocks so test classes can configure them per-test
+    public Mock<IPaymentGateway> PaymentGatewayMock { get; } = new(MockBehavior.Strict);
+    public Mock<IEmailSender>    EmailSenderMock     { get; } = new(MockBehavior.Loose);
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureTestServices(services =>
+        {
+            // Remove the real payment gateway
+            var descriptor = services.SingleOrDefault(
+                d => d.ServiceType == typeof(IPaymentGateway));
+            if (descriptor is not null) services.Remove(descriptor);
+
+            // Register the mock
+            services.AddSingleton(PaymentGatewayMock.Object);
+            services.AddSingleton(EmailSenderMock.Object);
+
+            // Use in-memory database instead of real SQL
+            services.AddDbContext<AppDbContext>(opts =>
+                opts.UseInMemoryDatabase("TestDb_" + Guid.NewGuid()));
+        });
+    }
+}
+
+// Test class using the custom factory
+public class CheckoutApiTests : IClassFixture<TestWebApplicationFactory<Program>>
+{
+    private readonly HttpClient _client;
+    private readonly TestWebApplicationFactory<Program> _factory;
+
+    public CheckoutApiTests(TestWebApplicationFactory<Program> factory)
+    {
+        _factory = factory;
+        _client  = factory.CreateClient();
+    }
+
+    [Fact]
+    public async Task PostCheckout_ChargesPayment_SendsConfirmation()
+    {
+        // Configure mocks for this specific test
+        _factory.PaymentGatewayMock
+            .Setup(g => g.ChargeAsync(It.IsAny<PaymentRequest>(), default))
+            .ReturnsAsync(new PaymentResult(Success: true, TransactionId: "TXN-001"));
+
+        _factory.EmailSenderMock
+            .Setup(e => e.SendAsync(It.IsAny<string>(), It.IsAny<string>(), default))
+            .Returns(Task.CompletedTask);
+
+        // Act
+        var response = await _client.PostAsJsonAsync("/api/checkout",
+            new CheckoutRequest(CartId: Guid.NewGuid(), PaymentMethod: "card"));
+
+        // Assert HTTP level
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Assert service interactions
+        _factory.EmailSenderMock.Verify(
+            e => e.SendAsync(It.Is<string>(s => s.Contains("confirmation")),
+                             It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+}
+```
+
+### Test Data Builders — Bogus and AutoFixture
+
+**Bogus** generates realistic fake data. **AutoFixture** auto-fills properties for SUT setup, reducing boilerplate. Use them to avoid brittle test data literals.
+
+```csharp
+// Install: dotnet add package Bogus
+using Bogus;
+
+public static class Fakers
+{
+    private static readonly Faker<Order> _orderFaker = new Faker<Order>()
+        .RuleFor(o => o.Id,           f => f.Random.Int(1, 10_000))
+        .RuleFor(o => o.CustomerId,   f => f.Random.Int(1, 500))
+        .RuleFor(o => o.Status,       f => f.PickRandom("Pending", "Shipped", "Delivered"))
+        .RuleFor(o => o.Total,        f => Math.Round(f.Random.Decimal(1, 500), 2))
+        .RuleFor(o => o.CreatedAt,    f => f.Date.RecentOffset(days: 30));
+
+    // Deterministic seed — reproducible in CI
+    public static Order Order(int? seed = null)
+    {
+        if (seed.HasValue) _orderFaker.UseSeed(seed.Value);
+        return _orderFaker.Generate();
+    }
+
+    public static IReadOnlyList<Order> Orders(int count, int? seed = null)
+    {
+        if (seed.HasValue) _orderFaker.UseSeed(seed.Value);
+        return _orderFaker.Generate(count);
+    }
+}
+
+// Usage in tests — no magic literals scattered across test files
+var order    = Fakers.Order(seed: 42);    // deterministic for regression tests
+var orders   = Fakers.Orders(10);        // varied data for collection tests
+```
+
+```csharp
+// Install: dotnet add package AutoFixture AutoFixture.Xunit2
+using AutoFixture;
+using AutoFixture.Xunit2;
+
+public class InventoryServiceTests
+{
+    // [AutoData] — fixture auto-fills all parameters
+    [Theory, AutoData]
+    public void Reserve_EnoughStock_ReturnsTrue(
+        InventoryService sut,      // auto-created with auto-created constructor args
+        string sku,                // random string
+        int quantity)              // random int
+    {
+        // Customize: override generated value
+        var fixture = new Fixture();
+        fixture.Customize<InventoryService>(c =>
+            c.FromFactory(() => new InventoryService(
+                fixture.Freeze<Mock<IInventoryRepository>>().Object)));
+
+        var result = sut.Reserve(sku, Math.Abs(quantity) + 1);
+        result.Should().BeOfType<ReservationResult>();
+    }
+}
+```
+
+### Test Isolation — Respawn for Database Reset
+
+**Respawn** resets a real database to a clean state between tests faster than drop-and-recreate, by generating `DELETE` statements in dependency order.
+
+```csharp
+// Install: dotnet add package Respawn
+using Respawn;
+using System.Data.SqlClient;
+
+public class OrderRepositoryIntegrationTests : IAsyncLifetime
+{
+    private readonly string _connectionString = TestConfig.ConnectionString;
+    private Respawner _respawner = null!;
+
+    public async Task InitializeAsync()
+    {
+        // Configure Respawn once per fixture
+        _respawner = await Respawner.CreateAsync(_connectionString, new RespawnerOptions
+        {
+            TablesToIgnore = [new Table("migrations"), new Table("seed_data")],
+            DbAdapter = DbAdapter.SqlServer
+        });
+    }
+
+    public async Task DisposeAsync()
+    {
+        // Reset DB after every test — runs DELETE statements, not DROP/CREATE
+        await _respawner.ResetAsync(_connectionString);
+    }
+
+    [Fact]
+    public async Task SaveAsync_NewOrder_PersistedToDatabase()
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        var repo  = new OrderRepository(conn);
+        var order = Fakers.Order(seed: 1);
+
+        await repo.SaveAsync(order, CancellationToken.None);
+
+        var loaded = await repo.GetByIdAsync(order.Id, CancellationToken.None);
+        loaded.Should().BeEquivalentTo(order, opts => opts.Excluding(o => o.CreatedAt));
+    }
+}
+```
+
+### Snapshot Testing — Verify
+
+**Verify** (Shouldly ecosystem) performs snapshot testing: on first run it writes the output to a `.verified.txt` / `.json` file; on subsequent runs it diffs the output against the stored snapshot. Use for complex HTML, JSON, or object graph output that is hard to express with individual assertions.
+
+```csharp
+// Install: dotnet add package Verify.Xunit (or Verify.NUnit / Verify.MSTest)
+using VerifyXunit;
+using Xunit;
+
+[UsesVerify]
+public class InvoiceRendererTests
+{
+    [Fact]
+    public async Task RenderInvoice_ProducesExpectedHtml()
+    {
+        var invoice  = Fakers.Invoice(seed: 1);
+        var renderer = new InvoiceRenderer();
+
+        string html = renderer.Render(invoice);
+
+        // First run: creates InvoiceRendererTests.RenderInvoice_ProducesExpectedHtml.verified.txt
+        // Subsequent runs: compares against stored snapshot — fails if anything changed
+        await Verify(html);
+    }
+
+    [Fact]
+    public async Task SerializeOrder_MatchesSchema()
+    {
+        var order = Fakers.Order(seed: 42);
+
+        // Snapshot a JSON object — auto-serialized, null fields excluded by default
+        await Verify(order)
+            .ScrubMember<Order>(o => o.CreatedAt);  // scrub volatile timestamp
+    }
+}
+```
+
+---
+
+## Testing Anti-Patterns Quick Reference
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| `MockBehavior.Strict` on every mock | Brittle tests break on any internal call order change | Use `Strict` only for critical dependencies; `Loose` for loggers and ancillary services |
+| `Mock.Verify()` never called | Setups are configured but interactions never verified — tests pass with wrong behavior | Always call `mock.Verify()` or `mock.VerifyAll()` at the end of arrange-act-assert |
+| Mocking concrete non-virtual classes with Moq | Moq cannot intercept non-virtual methods — mock has no effect | Extract an interface or make the method virtual; prefer interfaces for DI |
+| `Assert.Equal(expected, actual)` with complex objects | Equality is reference-based by default — test passes with wrong data | Use `BeEquivalentTo` (FluentAssertions) or implement `Equals`/`IEquatable<T>` |
+| Shared mutable test state (static fields in test class) | Parallel test runs corrupt each other's state | Declare mocks per-test in constructor; use `IClassFixture` only for read-only shared state |
+| Integration tests using real DB with no reset | Leftover data from one test breaks the next — order-dependent failures | Use Respawn, EF in-memory, or SQLite in-memory; reset state between tests |
+| Hard-coded test data literals scattered across 50 test files | Brittle — changing an entity shape requires updating all literals | Centralize with a Faker or Builder; use seeded Bogus for determinism |
+| `await Task.Delay(...)` to wait for async side effects | Flaky — delay too short fails on slow CI; too long is wasteful | Use `Polly.WaitAndRetryAsync` or `FluentAssertions.Extensions.BeAsync` polling instead |
+| xUnit constructor with slow I/O (DB connect, HTTP) | Runs for every test — 100 tests = 100 connections | Use `IClassFixture<T>` for shared expensive setup; constructor for cheap initialization |
+| `Assert.True(list.Count == 5)` | Failure message says "True != False" — no context | Use `Assert.Equal(5, list.Count)` or `list.Should().HaveCount(5)` for informative output |
+| Calling `mock.Setup()` after `Act` | Setup has no effect — the call already happened | Always arrange (setup) before act |
+| FluentAssertions v7+ in commercial project without license | License violation; FA v7 requires commercial license for closed-source | Pin to FA v6.x (MIT), switch to Shouldly (MIT), or purchase FA license |
+| NUnit `[Test]` without `[TestFixture]` when running with older adapter | Tests silently not discovered by some older runners | Always decorate test classes with `[TestFixture]` for NUnit compatibility |
+| xUnit `[Theory]` with no `[InlineData]` or `[MemberData]` | Test is never executed — xUnit skips parameterized tests with no data | Always pair `[Theory]` with at least one data attribute |
+
+---
+
+## Real-World Gotchas — Testing [community]
+
+### **Moq `Setup` on a Non-Virtual Method — Silently Has No Effect** [community]
+
+Moq intercepts calls by generating a proxy class that overrides virtual members. If you set up a method that is not virtual (and not part of an interface), the setup silently does nothing — the real method executes. WHY it causes problems: the test appears to configure mock behavior but the real implementation runs, causing side effects or returning production values. This is the single most common source of "mocking isn't working" confusion. Fix: always mock interfaces or abstract classes. If you must mock a concrete class, the target method must be `virtual` or `abstract`.
+
+```csharp
+// BAD: Foo.GetValue() is not virtual — Setup has no effect
+var mock = new Mock<Foo>();
+mock.Setup(f => f.GetValue()).Returns(42);  // silently ignored!
+// Real Foo.GetValue() executes when mock.Object.GetValue() is called
+
+// GOOD: mock an interface or make the method virtual
+public interface IFoo { int GetValue(); }
+var mock = new Mock<IFoo>();
+mock.Setup(f => f.GetValue()).Returns(42);  // works correctly
+```
+
+### **`Moq.VerifyAll()` Forgets to Assert Interactions** [community]
+
+Calling `mock.Setup(...)` without a matching `mock.Verify(...)` or `mock.VerifyAll()` at the end means the test can pass even if the interaction never occurred. WHY it causes problems: you intended to verify that an email was sent, but forgot to call `Verify`. The test passes when the production code removes the email call — which is a real regression. Fix: prefer `MockBehavior.Strict` for interactions that must occur, or always add explicit `Verify` calls at the end of every test that uses a mock.
+
+### **xUnit `IClassFixture` State Shared Across Tests — Order Dependency** [community]
+
+`IClassFixture<T>` creates one instance shared across all tests in the class. If one test modifies the fixture's state, subsequent tests see the mutated state. WHY it causes problems: tests that pass in isolation fail when run in a suite because they depend on the order xUnit happens to execute them — which is not guaranteed. Fix: design fixtures to be read-only after `InitializeAsync`; reset mutable state in a `ResetAsync()` call at the start of each test (not in the fixture constructor).
+
+### **FluentAssertions `BeEquivalentTo` Ignores Collections by Default — Wrong Semantics for Ordered Results** [community]
+
+`BeEquivalentTo` compares collections without regard to element order by default (uses set semantics). WHY it causes problems: a test asserting that an API returns items sorted by price passes even when the order is wrong, because FA rearranges elements for comparison. Fix: use `.WithStrictOrdering()` when the expected order matters, or use `Equal` for exact ordered comparison.
+
+```csharp
+// BAD: passes even if items are returned in random order
+result.Items.Should().BeEquivalentTo(expected.Items);
+
+// GOOD: enforce ordering
+result.Items.Should().BeEquivalentTo(expected.Items,
+    opts => opts.WithStrictOrdering());
+
+// ALSO GOOD: xUnit Assert.Equal preserves order
+Assert.Equal(expected.Items, result.Items);
+```
+
+### **`await Task.Delay()` in Tests for Async Side Effects — Flaky CI** [community]
+
+Using `await Task.Delay(500)` to wait for a background operation to complete is a timing anti-pattern. On fast machines the delay is unnecessary; on slow CI the delay may still be too short. WHY it causes problems: flaky tests that fail intermittently in CI but pass locally — among the most time-consuming debugging problems. Fix: expose a `Task` or `Completion` token from the background operation so the test can await directly, or use `WaitUntil` polling with a reasonable timeout.
+
+```csharp
+// BAD: flaky — assumes 500ms is always enough
+await service.StartProcessingAsync();
+await Task.Delay(500);
+processed.Should().BeTrue();
+
+// GOOD: expose completion as awaitable
+await service.StartProcessingAsync();
+await service.WaitForCompletionAsync(timeout: TimeSpan.FromSeconds(5));
+processed.Should().BeTrue();
+```

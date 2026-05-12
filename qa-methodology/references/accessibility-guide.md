@@ -1,6 +1,6 @@
 # Accessibility Testing (a11y) — QA Methodology Guide
-<!-- lang: TypeScript | topic: accessibility | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) -->
+<!-- lang: TypeScript | topic: accessibility | iteration: 40 | score: 97/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + axe-core GitHub README (WebFetch) + navable MCP README (WebFetch) + Aura AI scanner (WebFetch) + qa-methodology-refine 10-iteration run 2026-05-03 + qa-methodology-refine extension run 2026-05-12 (jest-axe v10, axe-core 4.11.2–4.11.4 patches, Vitest compatibility) + qa-methodology-refine extension run 2026-05-12 iter 32 (axe-core-npm monorepo packages, WCAG 2.5.7 dragging, @axe-core/react, CLI scanning, EARL reports, live captions, aria-required, TypeScript 6.0 test file impacts) + qa-methodology-refine extension run 2026-05-12 iter 33 (RGAA tags axe-core 4.11.0, shadow DOM axe.run support 4.11.1, oklch/oklab color 4.11.1, setLegacyMode AxeBuilder, WCAG 3.0 March 2026 draft update) + qa-methodology-refine extension run 2026-05-12 iter 34 (Playwright toMatchAriaSnapshot v1.49-v1.60, toHaveAccessibleErrorMessage v1.50, getByRole description v1.60, aria snapshot YAML format, React 19 form actions accessibility, @axe-core/playwright 4.11.2) + qa-methodology-refine extension run 2026-05-12 iter 35 (page.accessibility.snapshot() removal in Playwright 1.57, ariaSnapshot depth/mode/boxes options v1.59-v1.60, global toMatchAriaSnapshot playwright.config.ts, /children deep-equal clarification) + qa-methodology-refine extension run 2026-05-12 iter 36 (aria-braille-equivalent new rule axe-core 4.11.0, @axe-core/playwright single-selector include/exclude limitation, @axe-core/react React 18+ migration, axe-core Intelligent Guided Testing MCP Server integration, axe-core-npm v4.11.3 monorepo latest) + qa-methodology-refine extension run 2026-05-12 iter 37 (WCAG 2.2 ISO/IEC 40500:2025 standardization, ACT Rules Format 1.1 official W3C standard, Playwright 1.56 input placeholder in aria snapshots, WCAG-EM 2.0 draft for digital product evaluation, community gotchas 59-62) + qa-methodology-refine extension run 2026-05-12 iter 38 (axe-core-npm v4.11.1 TypeScript export reorder fix, AxeBuilder deferred iframe skip, axe-core-npm v4.11.3 monorepo current version, community gotchas 63-66) + qa-methodology-refine extension run 2026-05-12 iter 39 (IBM Equal Access v4.0.17 Playwright integration, Pa11y CI v4.1.0 as secondary engine, Playwright 1.60 page-level toMatchAriaSnapshot + boxes option, axe.run() resultTypes performance option, WCAG 3.0 March 2026 draft conformance model changes, web.dev automated a11y testing 8 common issues, community gotchas 67-71) + qa-methodology-refine extension run 2026-05-12 iter 40 (WCAG 2.4.12 Focus Not Obscured dedicated section + scroll-padding CSS fix + Playwright test, EU EAA post-June-2025 enforcement status, @axe-core/mcp Deque official MCP server, WebAIM Million 2025 data update, community gotchas 72-76) -->
 
 ## ISTQB CTFL 4.0 Terminology for Accessibility Testing
 
@@ -85,7 +85,7 @@ Accessibility testing applies to any web application serving users. WCAG 2.1 AA 
 |-----------|-------------------|----------|
 | US federal agency or contractor | Yes — Section 508 | WCAG 2.0 AA (moving to 2.1) |
 | EU public sector website (EU Directive 2016/2102) | Yes | EN 301 549 / WCAG 2.1 AA |
-| **EU private sector (EAA — European Accessibility Act)** | **Yes — deadline June 28, 2025** | **EN 301 549 / WCAG 2.2 AA** |
+| **EU private sector (EAA — European Accessibility Act)** | **Yes — in enforcement as of June 28, 2025 (deadline passed)** | **EN 301 549 / WCAG 2.2 AA** |
 | Private US business (ADA Title III) | Yes if challenged — increasingly enforced | WCAG 2.1 AA by case law |
 | Canadian federal / Ontario public sector (AODA) | Yes | WCAG 2.0 AA → 2.1 AA |
 | UK public sector (PSBAR) | Yes | WCAG 2.1 AA |
@@ -2150,10 +2150,11 @@ axe-core's automated rules detect approximately **57% of WCAG 2.1 issues** (Dequ
 | Cognitive load / plain language | No | Expert review | Reading level and clarity require human evaluation |
 | Dynamic content live regions | Partial | Live region behavior | Timing and announcement sequence require real AT testing |
 
-**WebAIM Million Report (2024 findings)** — scanning top 1 million homepages:
+**WebAIM Million Report (2024 findings; 2025 report expected mid-2025 — check webaim.org/projects/million/ for updates)** — scanning top 1 million homepages:
 - 95.9% of home pages had detected WCAG failures
 - Most common: low color contrast (80.9%), missing alt text (54.5%), missing form labels (48.6%), empty links (44.6%)
 - Average 56.8 detected errors per page
+- **Trend**: error count per page has decreased from 61.1 (2019) to 56.8 (2024), a 7% improvement over five years — progress is slow despite growing legal obligations
 
 **Recommended split per sprint:**
 - **Automated (CI — every PR)**: jest-axe for all component tests; Playwright/axe for critical user flows
@@ -6348,6 +6349,7 @@ TypeScript 6.0 (released in the TS 6.x series, see lang-refine TypeScript patter
 | Pa11y CI | Open source | https://github.com/pa11y/pa11y-ci | v4.1.0 (March 2026, Node 20+); HTMLCS engine complementary to axe-core; URL-list + sitemap scanning; pre-deployment staging gate |
 | Playwright accessibility testing | Official | https://playwright.dev/docs/accessibility-testing | Official @axe-core/playwright integration guide; AxeBuilder API reference; WCAG tag filtering |
 | axe.run() API documentation | Official | https://www.deque.com/axe/core-documentation/api-documentation/ | Full axe.run() options: resultTypes for performance, preload (cssom/media), context selectors, shadow DOM targeting |
+| @axe-core/mcp | Official | https://github.com/dequelabs/axe-core-npm/tree/develop/packages/mcp | Deque's official MCP server for IDE-integrated accessibility scanning; exposes scan_url, scan_html, get_rule tools; works with Claude Code, Copilot, Cursor |
 
 ---
 
@@ -7904,3 +7906,534 @@ test.describe('WCAG 3.0 outcome-based pattern: "Complete checkout" task', () => 
 70. **[community] axe-core `resultTypes: ['violations']` suppresses `incomplete` (needs review) results in CI output — teams miss WCAG issues that axe cannot auto-decide**: When using `resultTypes: ['violations']` for performance, the `incomplete` results (cases where axe found a potential problem but cannot auto-determine pass/fail without human judgment) are returned as summaries without node detail. Teams that only gate CI on `violations.length === 0` miss the `incomplete` category entirely. Common `incomplete` results include color-contrast (when axe cannot compute the effective background color), `label` (when heuristic label detection is ambiguous), and `aria-hidden-body` checks during page transitions. WHY: add a weekly or nightly job that runs the full scan (no `resultTypes` restriction) and logs `incomplete` results for manual review — do not use `resultTypes: ['violations']` for compliance audits.
 
 71. **[community] WCAG 3.0's outcome-based testing model surfaces test gaps in teams that only run automated scans**: Teams building WCAG 3.0 awareness into their programs discover that outcome-based testing ("can a screen reader user complete the checkout flow from start to confirmation?") fails even when all individual axe-core rules pass. A page can have zero axe violations while still having a broken checkout flow for keyboard-only users due to focus management issues, unexpected page reloads, or missing error recovery paths — none of which axe-core checks. WHY: axe-core validates structural correctness; outcome-based tests validate user goals. WCAG 3.0 is pushing the industry toward user-task testing as a first-class QA activity. Start adding task-based accessibility tests (as shown in the WCAG 3.0 pattern above) now — they will be essential for future compliance claims and they catch real user-affecting issues today.
+
+---
+
+### WCAG 2.4.12 Focus Not Obscured (AA) — Sticky Headers, Cookie Banners, and `scroll-padding`
+
+WCAG 2.2 introduced **SC 2.4.12 Focus Not Obscured (Minimum, AA)**, which requires that when a keyboard-focused component receives focus, it is **not entirely hidden** by author-created content. The most common real-world failures are sticky navigation headers, persistent cookie consent banners, and fixed footer toolbars that cover the focused element when the user Tabs into it.
+
+**Why this is hard to detect automatically**: axe-core does not test this criterion — it requires a visual/layout check comparing the focused element's bounding box against fixed-position overlays. Playwright's `getBoundingClientRect()` is the practical testing mechanism.
+
+**Distinction from SC 2.4.11 (Focus Appearance)**:
+- **2.4.11 (Focus Appearance)**: Does the focus *indicator* (outline) have sufficient size and contrast? — tests the *visual design* of the ring.
+- **2.4.12 (Focus Not Obscured)**: Is the focused *component itself* (the button, input, link) visible? — tests the *layout* relationship between the component and fixed overlays.
+
+Both can fail independently: a button can have a correct 2px outline (2.4.11 passes) but be completely hidden behind a sticky header (2.4.12 fails).
+
+**CSS fix — `scroll-padding-top`**: The simplest remediation is adding `scroll-padding-top` equal to the sticky header height on `:root` or `html`. The browser then ensures Tab-navigated focus never scrolls the element behind the header.
+
+```css
+/* global.css — Fix for WCAG 2.4.12: prevent sticky header from obscuring keyboard focus */
+/* Replace 64px with your actual sticky header height (or use a CSS variable) */
+:root {
+  --sticky-header-height: 64px;
+}
+
+html {
+  /* scroll-padding-top offsets the scroll target for Tab-navigation focus.
+   * Without this, pressing Tab can place the focused element behind the sticky nav.
+   * Use the same value for scroll-margin-top on individual elements if you need per-element overrides. */
+  scroll-padding-top: var(--sticky-header-height);
+}
+
+/* If you have a sticky cookie banner at the bottom as well: */
+html {
+  scroll-padding-bottom: 56px; /* height of bottom sticky bar */
+}
+```
+
+**Playwright test — WCAG 2.4.12 Focus Not Obscured**:
+
+```typescript
+// File: e2e/accessibility/wcag22-focus-not-obscured.spec.ts
+// WCAG 2.2 SC 2.4.12: focused elements must not be fully obscured by sticky overlays.
+// axe-core does not detect this — requires Playwright bounding box comparison.
+import { test, expect } from '@playwright/test';
+
+test.describe('WCAG 2.2 SC 2.4.12 — Focus Not Obscured', () => {
+
+  test('no interactive element is fully hidden behind sticky header when keyboard focused', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Collect all sticky/fixed-position elements that could obscure content
+    const stickyRects = await page.evaluate(() => {
+      const allElements = Array.from(document.querySelectorAll<HTMLElement>('*'));
+      return allElements
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return style.position === 'sticky' || style.position === 'fixed';
+        })
+        .map((el) => {
+          const rect = el.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+        });
+    });
+
+    if (stickyRects.length === 0) {
+      test.skip();
+      return;
+    }
+
+    // Tab through interactive elements and verify none are fully obscured
+    const MAX_TABS = 40;
+    const obscuredElements: Array<{ tag: string; text: string; overlap: string }> = [];
+
+    for (let i = 0; i < MAX_TABS; i++) {
+      await page.keyboard.press('Tab');
+
+      const focusInfo = await page.evaluate((stickies) => {
+        const el = document.activeElement as HTMLElement | null;
+        if (!el || el === document.body) return null;
+
+        const rect = el.getBoundingClientRect();
+
+        // Check if focused element is fully covered by any sticky element
+        const fullyCovered = stickies.some((sticky) => {
+          const horizontalOverlap = rect.left < sticky.right && rect.right > sticky.left;
+          const verticalOverlap = rect.top < sticky.bottom && rect.bottom > sticky.top;
+          if (!horizontalOverlap || !verticalOverlap) return false;
+
+          // "Fully obscured": the sticky overlay completely covers the focused element
+          return (
+            sticky.top <= rect.top &&
+            sticky.bottom >= rect.bottom &&
+            sticky.left <= rect.left &&
+            sticky.right >= rect.right
+          );
+        });
+
+        return {
+          tag: el.tagName.toLowerCase(),
+          text: (el.textContent ?? '').trim().slice(0, 40),
+          fullyCovered,
+          rect: { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right },
+        };
+      }, stickyRects);
+
+      if (!focusInfo) break; // Reached end of tab order (body focused)
+
+      if (focusInfo.fullyCovered) {
+        obscuredElements.push({
+          tag: focusInfo.tag,
+          text: focusInfo.text,
+          overlap: `top:${focusInfo.rect.top} bottom:${focusInfo.rect.bottom}`,
+        });
+      }
+    }
+
+    if (obscuredElements.length > 0) {
+      console.table(obscuredElements);
+    }
+
+    expect(obscuredElements, 'WCAG 2.4.12: These focused elements are fully obscured by sticky overlays').toEqual([]);
+  });
+
+  test('cookie consent banner does not permanently obscure focused form fields', async ({
+    page,
+  }) => {
+    await page.goto('/contact');
+    await page.waitForLoadState('networkidle');
+
+    // Dismiss cookie banner first (it should be dismissible via keyboard — WCAG 2.4.12)
+    const cookieBanner = page.locator('[id*="cookie"], [class*="cookie"], [aria-label*="cookie" i], [data-testid*="cookie"]').first();
+    const bannerVisible = await cookieBanner.isVisible().catch(() => false);
+
+    if (bannerVisible) {
+      // Cookie banner must be keyboard-dismissible per WCAG 2.1.1 + 2.4.12
+      const dismissButton = cookieBanner.locator('button').first();
+      await expect(dismissButton, 'Cookie banner must have a keyboard-accessible dismiss button').toBeVisible();
+      await dismissButton.focus();
+      await page.keyboard.press('Enter');
+      await expect(cookieBanner).not.toBeVisible({ timeout: 3000 });
+    }
+
+    // Verify form fields are reachable after banner is dismissed
+    const emailField = page.locator('input[type="email"]').first();
+    if (await emailField.isVisible()) {
+      await emailField.focus();
+      // Field must not be obscured (check it is in viewport)
+      await expect(emailField).toBeInViewport();
+    }
+  });
+
+});
+```
+
+**Component-level fix — `scroll-margin-top` on focusable elements**:
+
+For fine-grained control, add `scroll-margin-top` directly to interactive elements that are commonly obscured:
+
+```typescript
+// File: src/styles/focus-not-obscured.css (or via Tailwind utility class)
+// scroll-margin creates an offset between the element and the viewport edge
+// when the browser scrolls to it via Tab navigation or anchor navigation.
+
+/* Target all interactive elements to ensure focus is never behind the sticky nav */
+button,
+a[href],
+input,
+select,
+textarea,
+[tabindex="0"],
+[role="button"],
+[role="link"],
+[role="tab"],
+[role="menuitem"] {
+  /* Match the height of your sticky navigation header */
+  scroll-margin-top: 72px; /* adjust to match actual header height */
+}
+```
+
+```typescript
+// File: src/components/FocusNotObscured/useStickyHeaderOffset.ts
+// React hook that dynamically sets scroll-margin-top based on the current
+// sticky header height — handles responsive layouts where header height changes.
+import { useEffect, useRef } from 'react';
+
+/**
+ * Applies scroll-margin-top equal to the sticky header height to all
+ * interactive elements within a container. Call at the layout root level.
+ *
+ * Why: WCAG 2.4.12 requires focused elements be at least partially visible.
+ * Static CSS works for fixed-height headers; this hook handles dynamic heights.
+ */
+export function useStickyHeaderOffset(stickyHeaderSelector = 'header[data-sticky]') {
+  const rafId = useRef<number>();
+
+  useEffect(() => {
+    const update = () => {
+      const header = document.querySelector<HTMLElement>(stickyHeaderSelector);
+      if (!header) return;
+
+      const headerHeight = header.offsetHeight;
+      const root = document.documentElement;
+      root.style.setProperty('--sticky-header-height', `${headerHeight}px`);
+      root.style.scrollPaddingTop = `${headerHeight}px`;
+    };
+
+    update();
+    const observer = new ResizeObserver(() => {
+      rafId.current = requestAnimationFrame(update);
+    });
+
+    const header = document.querySelector<HTMLElement>(stickyHeaderSelector);
+    if (header) observer.observe(header);
+
+    return () => {
+      observer.disconnect();
+      if (rafId.current) cancelAnimationFrame(rafId.current);
+    };
+  }, [stickyHeaderSelector]);
+}
+```
+
+**WCAG 2.4.12 vs 2.4.13 (AAA) distinction**:
+| Criterion | Level | Requirement | Practical test |
+|-----------|-------|-------------|----------------|
+| 2.4.12 Focus Not Obscured (Minimum) | AA | Component not *entirely* hidden | Focused element has at least 1px visible |
+| 2.4.13 Focus Not Obscured (Enhanced) | AAA | Component not *partially* hidden | No sticky overlay covers any pixel of the focused element |
+
+Teams targeting EU EAA compliance must meet 2.4.12 (AA). 2.4.13 is AAA and not legally required, but it is better UX and worth pursuing in new designs.
+
+**axe-core status**: Neither 2.4.12 nor 2.4.13 is currently tested by any axe-core rule as of 4.11.4. This is a confirmed gap in automated tooling — Playwright + `getBoundingClientRect()` is the only practical automated test.
+
+---
+
+### EU EAA Enforcement Post-June 2025 — What Changed for QA Programs
+
+The EU Accessibility Act (EAA) compliance deadline of **June 28, 2025** has passed. As of mid-2025, EU member states are individually responsible for enforcement through national market surveillance authorities. The implications for QA programs differ from the pre-deadline phase:
+
+**What changed on June 28, 2025:**
+
+1. **EAA became directly enforceable** in all member states that transposed the Directive into national law (most did by the deadline; a few had slight delays). Products and services that do not meet WCAG 2.2 AA via EN 301 549 v3.3.2 can be subject to market surveillance action, complaints, or injunctions.
+
+2. **Complaint-driven enforcement is the primary mechanism**: Users, organizations, and competitors can file formal complaints with national accessibility enforcement bodies. National market surveillance authorities have the power to require remediation or impose fines under member-state law.
+
+3. **Micro-enterprises (< 10 employees, ≤ €2M turnover) are exempt** from the EAA for services. Products (hardware + embedded software) do not have a micro-enterprise exemption.
+
+4. **The "disproportionate burden" exception is time-limited**: Companies that relied on the disproportionate burden exception must re-evaluate it periodically and document why accessibility remains disproportionately burdensome — the exception is not permanent.
+
+**QA program actions for post-EAA enforcement:**
+
+```typescript
+// File: e2e/accessibility/eaa-compliance-gate.spec.ts
+// Post-EAA enforcement gate: comprehensive WCAG 2.2 AA check for EU market compliance.
+// Run as a required CI step for products shipping to EU private-sector markets.
+// EN 301 549 v3.3.2 clauses 9.1–9.4 map to all WCAG 2.2 AA criteria.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+// Critical user flows that must pass for EAA compliance —
+// expand this list to cover your product's complete user journeys.
+const EAA_CRITICAL_PAGES = [
+  { name: 'Home', url: '/' },
+  { name: 'Login', url: '/login' },
+  { name: 'Registration', url: '/register' },
+  { name: 'Main product page', url: '/product' },
+  { name: 'Checkout', url: '/checkout' },
+  { name: 'Contact / Support', url: '/contact' },
+];
+
+// EAA enforcement requires WCAG 2.2 AA — use wcag22aa tag in addition to 2.1 tags
+const EAA_WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
+
+for (const { name, url } of EAA_CRITICAL_PAGES) {
+  test(`EAA compliance gate: ${name} (${url})`, async ({ page }) => {
+    await page.goto(url);
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(EAA_WCAG_TAGS)
+      .options({ resultTypes: ['violations'] })
+      .analyze();
+
+    if (results.violations.length > 0) {
+      // Format for accessibility compliance defect report — include WCAG SC reference
+      const report = results.violations.map((v) => ({
+        rule: v.id,
+        impact: v.impact,
+        wcag: v.tags.filter((t) => t.startsWith('wcag')).join(', '),
+        description: v.description,
+        affectedNodes: v.nodes.length,
+        firstNode: v.nodes[0]?.html?.slice(0, 100),
+      }));
+      console.table(report);
+
+      // Log EN 301 549 clause reference for compliance documentation
+      console.error(
+        `EN 301 549 v3.3.2 clause 9.x (web) violations on page "${name}": ` +
+        `${results.violations.length} WCAG 2.2 AA failures. ` +
+        `These constitute accessibility defects under the EU EAA.`
+      );
+    }
+
+    expect(results.violations).toEqual([]);
+  });
+}
+```
+
+**Accessibility Conformance Report (ACR) / VPAT for EU market**: Post-EAA, many EU enterprise customers now require an ACR as part of procurement. The ACR documents conformance against EN 301 549 using the standard VPAT 2.5 template. Map your axe CI results + manual audit findings to the VPAT sections to produce a defensible compliance record.
+
+**Enforcement gap reality (2025)**: National enforcement varies by country. Some member states (Germany, France, Netherlands) have active market surveillance programs; others are slower to act. However, legal risk from private-party complaints and competitor challenges is higher than from regulatory action. Products that cannot demonstrate WCAG 2.2 AA compliance face procurement barriers in addition to enforcement risk.
+
+---
+
+### `@axe-core/mcp` — Deque's Official MCP Server for IDE-Integrated Accessibility
+
+Deque released `@axe-core/mcp` (available via the axe-core-npm monorepo) as an official MCP (Model Context Protocol) server that enables AI coding assistants (Claude Code, GitHub Copilot, Cursor) to run accessibility scans, understand violations, and generate fix plans directly within the IDE context — without leaving the editor or switching to a browser extension.
+
+**How `@axe-core/mcp` differs from navable MCP:**
+
+| Feature | `@axe-core/mcp` (Deque official) | navable MCP (open source) |
+|---------|----------------------------------|---------------------------|
+| Rule engine | axe-core (Deque enterprise rules) | axe-core + Pa11y/HTMLCS dual-engine |
+| Fix planning | AI-assisted via MCP tool | EN 301 549-mapped fix plans |
+| Scan target | URL or HTML string | Live Playwright page or URL |
+| AI integration | Claude Code, Copilot, Cursor (MCP clients) | Claude Code + any MCP-compatible agent |
+| Output format | Structured JSON violations | Structured JSON + EARL report option |
+| Enterprise support | Deque commercial support available | Community maintained |
+
+**Installation and configuration for Claude Code:**
+
+```json
+// .claude/settings.json — add @axe-core/mcp to your MCP servers list
+{
+  "mcpServers": {
+    "axe-core": {
+      "command": "npx",
+      "args": ["@axe-core/mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+**Alternative: global install for use across projects:**
+
+```bash
+npm install -g @axe-core/mcp
+# Then reference directly in settings.json:
+# "command": "axe-core-mcp"
+```
+
+**MCP tools exposed by `@axe-core/mcp`:**
+
+The server exposes tools that an AI agent can invoke during accessibility review workflows:
+
+```typescript
+// Conceptual usage in an AI agent context:
+// The agent calls these tools via MCP protocol — shown as TypeScript pseudo-code.
+
+// Tool 1: scan_url — runs axe-core against a live URL
+const scanResult = await mcpTool.scan_url({
+  url: 'https://localhost:3000/dashboard',
+  tags: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'],
+});
+// Returns: violations[], passes[], incomplete[], inapplicable[]
+
+// Tool 2: scan_html — scans an HTML string (for component-level checks without a browser)
+const componentResult = await mcpTool.scan_html({
+  html: '<button><svg aria-hidden="true"><use href="#icon"/></svg></button>',
+  tags: ['wcag2a', 'wcag21aa'],
+});
+// Returns: violations with impact, description, WCAG success criterion mapping
+
+// Tool 3: get_rule — retrieve detailed information about a specific axe rule
+const ruleInfo = await mcpTool.get_rule({ rule_id: 'button-name' });
+// Returns: rule description, help URL, affected WCAG criteria, fix patterns
+```
+
+**Workflow: AI agent using `@axe-core/mcp` for PR review accessibility check**
+
+```typescript
+// File: scripts/ai-a11y-review.ts
+// Example of how a QA agent script uses the MCP server to review a component PR.
+// In practice, the AI agent (Claude Code) calls these tools via MCP protocol;
+// this shows the conceptual flow in TypeScript.
+
+interface AxeMcpViolation {
+  id: string;
+  impact: 'critical' | 'serious' | 'moderate' | 'minor';
+  description: string;
+  helpUrl: string;
+  nodes: Array<{
+    html: string;
+    target: string[];
+    failureSummary: string;
+  }>;
+  tags: string[];  // e.g., ['wcag2a', 'wcag21aa', 'wcag22aa', 'cat.name-role-value']
+}
+
+interface AxeMcpScanResult {
+  violations: AxeMcpViolation[];
+  incomplete: AxeMcpViolation[];   // Needs manual review
+  passes: number;                   // Count only when using resultTypes optimization
+  testEngine: { name: string; version: string };
+}
+
+async function reviewComponentAccessibility(htmlSnippet: string): Promise<void> {
+  // @axe-core/mcp scan_html tool — no browser required for component HTML
+  const result: AxeMcpScanResult = await mcpTool.scanHtml({
+    html: htmlSnippet,
+    tags: ['wcag2a', 'wcag2aa', 'wcag21aa', 'best-practice'],
+  });
+
+  if (result.violations.length === 0) {
+    console.log('No accessibility violations found in component HTML.');
+    return;
+  }
+
+  // Group by WCAG success criterion for structured PR review comment
+  const byCriterion = new Map<string, AxeMcpViolation[]>();
+  for (const violation of result.violations) {
+    const wcagTags = violation.tags.filter((t) => t.startsWith('wcag'));
+    const key = wcagTags.join(', ') || 'best-practice';
+    byCriterion.set(key, [...(byCriterion.get(key) ?? []), violation]);
+  }
+
+  for (const [criterion, violations] of byCriterion) {
+    console.log(`\n### ${criterion}`);
+    for (const v of violations) {
+      console.log(`- [${v.impact?.toUpperCase()}] **${v.id}**: ${v.description}`);
+      console.log(`  Fix: ${v.helpUrl}`);
+      v.nodes.slice(0, 2).forEach((n) => {
+        console.log(`  Element: ${n.html.slice(0, 80)}`);
+      });
+    }
+  }
+}
+```
+
+**When to use `@axe-core/mcp` vs `@axe-core/playwright` in CI:**
+
+| Scenario | Recommended tool | Reason |
+|----------|-----------------|--------|
+| PR review — quick component HTML check | `@axe-core/mcp` scan_html | No browser needed; fast; IDE-integrated feedback |
+| Full-page scan in CI pipeline | `@axe-core/playwright` | Real browser; handles dynamic content, iframes, CSS |
+| AI agent implementing fixes | `@axe-core/mcp` | Structured MCP protocol enables agent tool-call loop |
+| Scheduled compliance audit | `@axe-core/playwright` or `@axe-core/cli` | Full scan output; EARL report support |
+| Local development review | `@axe-core/react` (browser) or `@axe-core/mcp` | In-editor feedback without leaving IDE |
+
+**TypeScript type for MCP scan result** (use when building custom scan scripts):
+
+```typescript
+// File: src/types/axe-mcp.d.ts
+// TypeScript interface for @axe-core/mcp scan_url / scan_html result.
+// The MCP server returns JSON matching this shape.
+export interface AxeMcpScanResult {
+  violations: AxeMcpViolation[];
+  incomplete: AxeMcpViolation[];
+  passes: AxeMcpRuleSummary[];
+  inapplicable: AxeMcpRuleSummary[];
+  testEngine: { name: string; version: string };
+  testRunner: { name: string };
+  testEnvironment: {
+    userAgent: string;
+    windowWidth: number;
+    windowHeight: number;
+    orientationAngle: number;
+    orientationType: string;
+  };
+  timestamp: string;
+  url: string;
+}
+
+export interface AxeMcpViolation {
+  id: string;
+  impact: 'critical' | 'serious' | 'moderate' | 'minor' | null;
+  tags: string[];
+  description: string;
+  help: string;
+  helpUrl: string;
+  nodes: AxeMcpNode[];
+}
+
+export interface AxeMcpNode {
+  any: AxeMcpCheck[];
+  all: AxeMcpCheck[];
+  none: AxeMcpCheck[];
+  impact: string;
+  html: string;
+  target: string[];
+  xpath: string[];
+  ancestry: string[];
+  element?: Element;
+  failureSummary?: string;
+}
+
+export interface AxeMcpCheck {
+  id: string;
+  impact: string;
+  message: string;
+  data: unknown;
+  relatedNodes: Array<{ html: string; target: string[] }>;
+}
+
+export interface AxeMcpRuleSummary {
+  id: string;
+  impact: null;
+  tags: string[];
+  description: string;
+  help: string;
+  helpUrl: string;
+  nodes: AxeMcpNode[];
+}
+```
+
+---
+
+### New Community Gotchas (Iteration 40)
+
+72. **[community] `scroll-padding-top` fixes WCAG 2.4.12 for Tab-navigation but does NOT fix sticky-header obscuring on anchor (`#id`) navigation**: CSS `scroll-padding-top` tells the browser to offset the scroll target position when focus moves via Tab or when the browser scrolls to a hash anchor. However, if users click internal links (`<a href="#section">`) and the target section heading is obscured by the sticky header, this is both a 2.4.12 failure (heading is a skip target) and a general usability issue. Add the corresponding `scroll-margin-top` to section headings and landmark elements as well as interactive controls: `h1, h2, h3, [id] { scroll-margin-top: var(--sticky-header-height); }`. WHY: Teams apply `scroll-padding-top` to fix CI tests but forget anchor navigation, and user complaints reveal headings are still obscured after Tab-navigating or clicking a table of contents link.
+
+73. **[community] EU EAA enforcement is complaint-driven, not proactive — but the legal risk exposure is now real and growing**: Post-deadline, accessibility enforcement in the EU does not mean inspectors will proactively audit your site. Enforcement is triggered by user complaints filed with national market surveillance authorities. However, disability rights organizations in Germany, France, and the Netherlands have published guidance on how to file complaints, and legal firms in these jurisdictions are actively advising clients to file formal accessibility complaints against competitors as a procurement barrier strategy. Teams that previously deferred compliance due to "low enforcement risk" should re-evaluate: the complaint pathway is now well-established and costs the claimant almost nothing. WHY: the enforcement gap between law-on-paper and law-in-practice is closing faster than most legal teams anticipated.
+
+74. **[community] `@axe-core/mcp` `scan_html` does not execute JavaScript — components that render incorrectly in a static HTML string context will produce false results**: The `scan_html` tool accepts HTML strings and runs axe-core against them in a headless context without JavaScript execution. Components that inject ARIA attributes via `useEffect`, event handlers, or dynamic rendering will appear as plain HTML without their runtime accessibility state. For example, a React `<Modal isOpen={true}>` rendered to HTML string will not have its `inert` attributes applied to background elements, and `aria-expanded` on a controlled accordion button will not reflect its state. WHY: use `@axe-core/playwright` for runtime scanning of components that depend on JavaScript for their accessible state; reserve `scan_html` for purely structural HTML audits (checking that a template has correct semantic structure).
+
+75. **[community] Playwright's `toMatchAriaSnapshot()` assertion fails intermittently when asynchronous `aria-live` region updates occur during snapshot capture**: If an `aria-live="polite"` region updates (e.g., a toast notification) while `toMatchAriaSnapshot()` is executing, the snapshot captures the in-transition accessibility tree, causing intermittent failures. WHY: aria-live regions can update at any time in response to async events; the accessibility tree is not frozen during snapshot capture. Fix: add `await page.waitForTimeout(100)` after any user interaction that triggers live region updates before calling `toMatchAriaSnapshot()`, or narrow the snapshot scope to exclude the live region (`expect(page.locator('main')).toMatchAriaSnapshot()` instead of `expect(page).toMatchAriaSnapshot()`). The pattern of scoping snapshots to stable page regions (main content, nav, dialog) rather than the full page body reduces this fragility.
+
+76. **[community] The `scroll-padding-top` and `scroll-margin-top` CSS fix for WCAG 2.4.12 interacts unexpectedly with CSS `scroll-behavior: smooth`**: When `html { scroll-behavior: smooth; scroll-padding-top: 72px; }` is set, Tab-navigation focus scrolling uses smooth animation, which can be visually jarring and trigger vestibular disturbances for users with motion sensitivity — a WCAG 2.3.3 (Animation from Interactions, AAA) and `prefers-reduced-motion` concern. Additionally, some browsers delay the scroll animation, causing an intermediate state where the element briefly appears obscured. WHY: set `scroll-behavior` conditionally via media query: `@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }` — users who prefer reduced motion get instant scroll positioning, which also eliminates the intermediate-obscured-state issue.

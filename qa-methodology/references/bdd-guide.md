@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 30 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 31 | score: 98/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 31 additions: Playwright 1.45-1.60 BDD-relevant APIs — Clock API for time-dependent scenarios (password expiry, token TTL, session timeout), WebSocketRoute for WebSocket mocking/interception without real backend, toMatchAriaSnapshot() for semantic markup BDD assertions, toHaveAccessibleErrorMessage() for error-state a11y step definitions; Cucumber community ownership note (2025) — project returned to open-source community governance -->
 <!-- Iter 30 additions: Cucumber.js Plugin API full TypeScript reference — Plugin<T> generic from @cucumber/cucumber/api, transform() for pickles:filter and pickles:order scenario ordering/filtering, paths:resolve event, coordinator cleanup lifecycle; FormatterPlugin<T> with @cucumber/query library for non-trivial reporters; IConfiguration with satisfies keyword — modern TypeScript pattern for type-safe profile config; playwright-bdd v8.4.0 quality-of-life details — deterministic fixture name ordering, in-file BDD fixtures hidden from reports -->
 <!-- Iter 29 additions: Gherkin DocString backtick delimiter (```) — Markdown-friendly alternative to """ for multi-line content in feature files; full delimiter comparison table with editor syntax-highlighting and content-type annotation support notes -->
 <!-- Iter 28 additions: Cucumber Expressions advanced syntax — optional text (s), alternation a/b, anonymous {} parameter, escape sequences for { ( / characters; playwright-bdd v8.4.1 — explicit TypeScript type exports (BddFixtures, CreateBddOptions, TestTypeCommon), skipLibCheck fix for module:commonjs; DataTable escape sequences (\n \| \\) with rowsHash/hashes method reference table; @cucumber/gherkin-streams removal migration guide — regex-based counting and Messages API alternatives; Gherkin keyword scope rules reference table — Rule/Background/Examples valid parent scopes, tags-on-Background anti-pattern, multiple Background blocks silent failure -->
@@ -1339,6 +1340,9 @@ If fewer than 6 of these boxes are checked, start with **Example Mapping only** 
 | playwright-bdd version gotcha | v8.5 → v8.6 (unreleased): `enrichReporterData` removed, `junit-modern` → `junit`, strict arity checks, Node.js 20 min, `$step.docStringType` available |
 | Tag syntax | Boolean expressions: `"@smoke and not @wip"` (commas deprecated in v9+) |
 | Organizing business rules | Use `Rule` keyword to group scenarios per rule; per-rule `Background` for different setups |
+| Time-dependent scenarios | Use `page.clock.setFixedTime()` + `fastForward()` for client-side expiry; DB seeder for server-side JWT `exp` |
+| WebSocket mock testing | `context.routeWebSocket()` (Playwright v1.48+) intercepts WS without a real backend |
+| Semantic a11y assertions | `toMatchAriaSnapshot()` (v1.49+) for ARIA tree structure; `toHaveAccessibleErrorMessage()` (v1.50+) for error associations |
 
 ---
 
@@ -1904,6 +1908,8 @@ violations automatically. The remaining ~43% — cognitive load, keyboard naviga
 color contrast in dynamic states, and screen reader experience — require manual exploratory
 testing. BDD scenarios using axe-core should be treated as a floor (catching regressions),
 not a ceiling (proving full compliance).
+
+**[community] Complement axe-core with `toMatchAriaSnapshot()` and `toHaveAccessibleErrorMessage()` (Playwright v1.49+/v1.50+)**: For structural accessibility assertions that go beyond automated rule checking, Playwright's `toMatchAriaSnapshot()` asserts on the full ARIA tree (what screen readers see) and `toHaveAccessibleErrorMessage()` checks that error messages are correctly associated with form inputs via `aria-errormessage`/`aria-describedby`. These two assertions catch accessibility issues that axe-core misses — specifically, incorrectly structured form landmarks and error associations that are technically valid HTML but semantically broken for AT users. See the "Playwright 1.45–1.60: New BDD-Relevant APIs" section for TypeScript examples.
 
 ---
 
@@ -3251,6 +3257,15 @@ living documentation. A product manager seeing `Scenario: Account locked after 5
 attempts` in the regression suite knows this protection is tested, not just claimed.
 Teams that keep security test cases hidden in Jira subtasks or separate test management
 tools lose the living documentation benefit for this critical category.
+
+**[community] Time-dependent security scenarios and the Playwright Clock API**: Security
+scenarios that test expiry windows (password reset links, session timeouts, temporary ban
+durations) traditionally require either: (a) a DB seeder that can backdate records, or
+(b) test environment configuration that overrides TTL values. Playwright v1.45+ `page.clock`
+API enables a third approach: fix the browser clock before generating the token, then
+`fastForward()` past the expiry. This only works for client-side expiry validation; for
+server-side JWT `exp` verification, the DB seeder approach remains necessary. See the
+"Playwright 1.45–1.60: New BDD-Relevant APIs" section for the full `page.clock` example.
 
 ---
 
@@ -5224,6 +5239,13 @@ event captures frames *received by the page*, not frames sent by the page. For s
 that need to verify *outgoing* WebSocket messages (e.g., "client sends heartbeat every
 30 seconds"), instrument the application code to expose sent messages via a test-only
 endpoint, then poll that endpoint from the step definition.
+
+**[community] Playwright `WebSocketRoute` (v1.48+) for mock-backend WebSocket BDD**: When
+a real WebSocket backend is unavailable in CI (e.g., event streaming service not running),
+use `context.routeWebSocket()` to intercept the WebSocket URL and inject mock server
+messages directly from the step definition. This eliminates the need for a running backend
+for client-side behavioral scenarios. See the "Playwright 1.45–1.60: New BDD-Relevant APIs"
+section for a complete TypeScript example with `routeWebSocket()` and `wsRoute.send()`.
 
 ---
 
@@ -8510,3 +8532,350 @@ shared files are visible; implementation-detail fixtures in step files are hidde
 - [@cucumber/query on GitHub](https://github.com/cucumber/query) — queryable view over Cucumber message stream; `getTestCaseAttempts()`, `getPickle()`, `update()` API; recommended for non-trivial formatters
 - [TypeScript `satisfies` operator (TS 4.9+)](https://www.typescriptlang.org/docs/handbook/2/satisfies.html) — structural compatibility check without type widening; canonical pattern for `cucumber.ts` profiles
 - [playwright-bdd v8.4.0 release notes](https://github.com/vitalets/playwright-bdd/releases/tag/v8.4.0) — deterministic fixture name sort, in-file fixtures hidden from reports, Playwright 1.55 support, `node_modules` excluded from `tagsFromPath`
+
+---
+
+### Playwright 1.45–1.60: New BDD-Relevant APIs  [community]
+
+Playwright releases from mid-2024 through early 2026 introduced several APIs that directly
+improve TypeScript BDD step definitions. None of these require changing `.feature` files —
+they affect the implementation layer inside step definitions and hooks.
+
+#### Playwright `Clock` API: Time-Dependent Scenario Control (v1.45+)
+
+The `Clock` API allows step definitions to manipulate browser time without modifying application
+code or waiting for real time to pass. This is directly applicable to BDD scenarios that test
+time-dependent business rules: password reset link expiry, session timeouts, discount code
+expiration, refund window boundaries.
+
+**Before `Clock` API** — the common workaround (fragile, slow):
+```typescript
+// Old approach: seed a database record with a timestamp 31 days in the past
+// Requires either: (1) DB seeder that supports backdated records, or
+// (2) waiting for real time during tests (impossible for 30+ day windows)
+await this.seeder.seedOrder(customerId, { confirmedDaysAgo: 31 }); // custom seeder needed
+```
+
+**With Playwright `Clock` API** — set the browser's perceived date:
+```typescript
+// src/steps/temporal.steps.ts — time manipulation using Playwright Clock API (v1.45+)
+import { Given } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+
+// Scenario: Password reset link expires after 1 hour
+// Gherkin: Given a password reset link was generated 61 minutes ago for "alice@example.com"
+Given(
+  'a password reset link was generated {int} minutes ago for {string}',
+  async function (this: AppWorld, minutesAgo: number, email: string) {
+    // 1. Fix browser clock to a base time
+    const baseTime = new Date('2026-01-15T10:00:00Z');
+    await this.page.clock.setFixedTime(baseTime);
+
+    // 2. Generate the reset link (the server uses the real server time — seed via API)
+    const res = await this.apiContext.post('/api/auth/forgot-password', {
+      data: { email },
+    });
+    this.resetToken = (await res.json() as { token: string }).token;
+
+    // 3. Advance browser clock by the specified time
+    await this.page.clock.fastForward(minutesAgo * 60 * 1000);
+    // Browser's Date.now() now returns baseTime + minutesAgo minutes
+    // Client-side expiry checks that use Date.now() will see the link as expired
+  }
+);
+
+// Scenario: Session times out after 30 minutes of inactivity
+// Gherkin: When 31 minutes pass without activity
+When(
+  '{int} minutes pass without activity',
+  async function (this: AppWorld, minutes: number) {
+    // Advance browser clock — triggers client-side session expiry logic
+    await this.page.clock.fastForward(minutes * 60 * 1000);
+    // If the app polls for session validity (e.g., every minute), tick through it:
+    // await this.page.clock.runFor(minutes * 60 * 1000); // runs all timers
+  }
+);
+```
+
+**Clock API methods for BDD step definitions:**
+
+| Method | Use case |
+|---|---|
+| `page.clock.setFixedTime(date)` | Fix `Date.now()` to a specific point in time |
+| `page.clock.fastForward(ms)` | Advance the clock by N milliseconds (skips waiting) |
+| `page.clock.runFor(ms)` | Advance clock AND run all pending timers/intervals within that window |
+| `page.clock.install({ time })` | Full clock takeover — replaces `Date`, `setTimeout`, `setInterval` |
+| `page.clock.restore()` | Restore the real clock (use in `After` hooks) |
+
+**`After` hook cleanup for Clock-modified scenarios:**
+```typescript
+// src/support/hooks.ts — restore real clock after each scenario
+After(async function (this: AppWorld) {
+  // Prevent clock leak to next scenario in parallel runs
+  try {
+    await this.page.clock.restore();
+  } catch {
+    // page may be closed — safe to ignore
+  }
+  await this.context?.close();
+});
+```
+
+**[community] Clock API gotcha — server-side vs client-side time**: `page.clock` controls
+browser (client-side) JavaScript time only. Server-side expiry logic — e.g., a JWT `exp`
+field checked on the backend — still uses real server time. For scenarios where the expiry
+check happens server-side, the DB seeder approach (backdating the record) is still required.
+Use `page.clock` for client-side expiry (e.g., front-end session countdown, client-side
+token validation), and DB seeding for server-side expiry.
+
+#### Playwright `WebSocketRoute`: WebSocket Mocking Without a Backend (v1.48+)
+
+`WebSocketRoute` allows BDD step definitions to intercept, mock, and modify WebSocket
+connections directly from the browser context. This is the missing piece for WebSocket BDD
+scenarios that previously required a real running backend.
+
+```gherkin
+# features/realtime/order-status.feature
+Feature: Real-time order status updates
+
+  Scenario: Order confirmation triggers a WebSocket notification
+    Given I am viewing my order status page
+    When the backend sends an "order.confirmed" WebSocket message
+    Then I should see the status change to "Confirmed"
+    And a confirmation banner should appear
+
+  Scenario: Connection loss is handled gracefully
+    Given I am viewing my order status page
+    When the WebSocket connection is lost
+    Then I should see an "Offline - reconnecting..." indicator
+    And the page should attempt to reconnect automatically
+```
+
+```typescript
+// src/steps/websocket-mock.steps.ts — WebSocketRoute for BDD (Playwright v1.48+)
+import { Given, When, Then } from '@cucumber/cucumber';
+import { AppWorld } from '../support/world';
+import { expect } from '@playwright/test';
+
+interface WebSocketRouteHandle {
+  send: (data: string) => void;
+  close: (code?: number, reason?: string) => void;
+}
+
+Given('I am viewing my order status page', async function (this: AppWorld) {
+  // Install WebSocket mock BEFORE navigating to the page
+  await this.context.routeWebSocket('**/api/ws/orders', (ws) => {
+    // Store the server-side of the route for use in When steps
+    this.wsRoute = {
+      send: (data: string) => ws.send(data),
+      close: (code?: number, reason?: string) => ws.close(code, reason),
+    };
+    // Forward all messages from client to a mock server (or swallow them)
+    ws.onMessage((message) => {
+      // Echo heartbeat messages back
+      if (message === '{"type":"ping"}') {
+        ws.send('{"type":"pong"}');
+      }
+    });
+  });
+
+  await this.page.goto('/orders/ORD-12345');
+  await expect(this.page.getByTestId('order-status')).toBeVisible();
+});
+
+When(
+  'the backend sends an {string} WebSocket message',
+  async function (this: AppWorld, eventType: string) {
+    if (!this.wsRoute) throw new Error('WebSocket route not initialized');
+
+    // Simulate server pushing an event to the connected client
+    this.wsRoute.send(JSON.stringify({
+      type: eventType,
+      orderId: 'ORD-12345',
+      newStatus: 'confirmed',
+      timestamp: Date.now(),
+    }));
+  }
+);
+
+When('the WebSocket connection is lost', async function (this: AppWorld) {
+  if (!this.wsRoute) throw new Error('WebSocket route not initialized');
+  // Close with code 1001 (going away) to simulate network loss
+  this.wsRoute.close(1001, 'Simulated network disconnect');
+});
+
+Then(
+  'I should see the status change to {string}',
+  async function (this: AppWorld, expectedStatus: string) {
+    await expect(this.page.getByTestId('order-status-badge'))
+      .toHaveText(expectedStatus, { timeout: 3000 });
+  }
+);
+
+Then(
+  'I should see an {string} indicator',
+  async function (this: AppWorld, indicatorText: string) {
+    await expect(this.page.getByTestId('connection-status'))
+      .toContainText(indicatorText, { timeout: 3000 });
+  }
+);
+```
+
+**[community] `WebSocketRoute` vs real backend for BDD**: `WebSocketRoute` is the recommended
+approach for scenarios that test *client-side* WebSocket behavior (how the UI responds to
+events). Use a real backend for scenarios that test *end-to-end* event flow (from the event
+source, through the message broker, to the client). The two layers are complementary:
+`WebSocketRoute` scenarios are deterministic and millisecond-fast; real-backend scenarios
+catch integration bugs that mocking cannot.
+
+**[community] `WebSocketRoute` + Cucumber.js World**: The `wsRoute` handle stored in the
+World object (above) is used across multiple steps in the same scenario. Always initialize
+it in the `Given` step (before navigation), never in a `When` step — the WebSocket
+intercept must be installed before the page establishes the connection.
+
+#### Playwright `toMatchAriaSnapshot()`: Semantic Markup BDD Assertions (v1.49+)
+
+`toMatchAriaSnapshot()` asserts on the ARIA accessibility tree of a page or locator in YAML
+format. It provides a more meaningful assertion for interactive components than raw DOM
+selectors — asserting what the *screen reader sees*, not what the *HTML contains*.
+
+This is directly useful in BDD step definitions that verify structural accessibility behavior
+rather than axe-core rule checking.
+
+```gherkin
+# features/accessibility/form-structure.feature
+@a11y @regression
+Feature: Form accessibility structure
+
+  Scenario: Order form presents correct semantic structure to screen readers
+    Given I am on the order creation form
+    Then the form should have a correct accessible heading structure
+    And the required fields should be marked as required for assistive technology
+
+  Scenario: Error state updates the accessible form structure
+    Given I am on the order creation form
+    When I submit the form without filling required fields
+    Then the error messages should be associated with their form controls in the ARIA tree
+```
+
+```typescript
+// src/steps/aria-snapshot.steps.ts — semantic accessibility assertions (Playwright v1.49+)
+import { Then } from '@cucumber/cucumber';
+import { expect } from '@playwright/test';
+import { AppWorld } from '../support/world';
+
+// Matches: Then the form should have a correct accessible heading structure
+Then(
+  'the form should have a correct accessible heading structure',
+  async function (this: AppWorld) {
+    // toMatchAriaSnapshot() checks the ARIA tree structure in YAML format
+    // The snapshot describes what a screen reader would announce
+    await expect(this.page.getByRole('main')).toMatchAriaSnapshot(`
+      - heading "Create Order" [level=1]
+      - form "Order details":
+        - group "Customer information":
+          - textbox "Customer email" [required]
+          - textbox "Customer name" [required]
+        - group "Order items":
+          - table "Selected products"
+        - button "Place order"
+    `);
+  }
+);
+
+// Matches: Then the required fields should be marked as required for assistive technology
+Then(
+  'the required fields should be marked as required for assistive technology',
+  async function (this: AppWorld) {
+    const form = this.page.getByRole('form', { name: 'Order details' });
+
+    // Assert each required field has aria-required="true" visible in the ARIA tree
+    // toMatchAriaSnapshot uses partial matching — only asserts specified nodes
+    await expect(form).toMatchAriaSnapshot(`
+      - textbox "Customer email" [required]
+      - textbox "Customer name" [required]
+    `);
+  }
+);
+
+// Matches: Then the error messages should be associated with their form controls in the ARIA tree
+Then(
+  'the error messages should be associated with their form controls in the ARIA tree',
+  async function (this: AppWorld) {
+    // After form submission error, the ARIA tree should reflect validation state
+    await expect(this.page.getByRole('form')).toMatchAriaSnapshot(`
+      - textbox "Customer email" [required] [invalid]
+      - /error: .+email/ [role=alert]
+      - textbox "Customer name" [required] [invalid]
+      - /error: .+name/ [role=alert]
+    `);
+
+    // Also use the v1.50 toHaveAccessibleErrorMessage() assertion for each field:
+    const emailField = this.page.getByRole('textbox', { name: 'Customer email' });
+    await expect(emailField).toHaveAccessibleErrorMessage(/valid email/i);
+  }
+);
+```
+
+**Generating ARIA snapshot baselines**:
+```bash
+# Use Playwright's codegen to capture the current ARIA snapshot as a string:
+npx playwright codegen --target=aria --output=aria-snapshots.yaml http://localhost:3000/orders/new
+# Or: use expect().toMatchAriaSnapshot() with update mode to write the snapshot on first run
+PLAYWRIGHT_UPDATE_SNAPSHOTS=1 npx playwright test
+```
+
+**[community] `toMatchAriaSnapshot()` vs `toHaveRole()`/`toHaveAttribute()`**: Individual
+role and attribute assertions are good for targeted single-element checks. `toMatchAriaSnapshot()`
+is better for asserting the *structural relationship* between elements (headings within sections,
+form controls within groups, error messages associated with inputs). BDD scenarios that verify
+"the form is correctly structured" benefit from the snapshot approach — it reads like a
+specification of the expected ARIA tree.
+
+**[community] `toHaveAccessibleErrorMessage()` (Playwright v1.50+)**: A purpose-built
+assertion for the `aria-errormessage` relationship. It checks that an input's associated error
+message (via `aria-errormessage` or `aria-describedby`) matches the expected text. This is
+cleaner than checking `getAttribute('aria-errormessage')` manually in step definitions and
+produces better failure messages for accessibility BDD scenarios.
+
+#### Cucumber Community Ownership (2025)  [community]
+
+In early 2025, Cucumber returned to open-source community governance after several years
+under corporate sponsorship. The project is now maintained by community contributors, with
+active development continuing on Cucumber.js, the Gherkin spec, and the supporting libraries
+(`@cucumber/messages`, `@cucumber/query`, `@cucumber/html-formatter`).
+
+**Impact on TypeScript BDD teams:**
+
+1. **Release cadence**: Community-maintained releases tend to be more conservative (quality
+   over speed). Expect Cucumber.js v13 to have a longer stabilization period than v12.
+
+2. **Plugin contributions**: The community governance model means teams can contribute
+   formatters, plugins, and step helpers to the official ecosystem more easily. The
+   `@cucumber/cucumber/api` Plugin API (v12.5+) was designed with community contribution
+   in mind.
+
+3. **Issue response times**: The community tracker at `https://github.com/cucumber/cucumber-js/issues`
+   is the authoritative place to check compatibility, breaking changes, and upcoming deprecations.
+   Teams should watch the repository for milestone announcements.
+
+4. **Gherkin spec stability**: The Gherkin language specification (keywords, DocString
+   delimiters, DataTable escape sequences) is community-governed and changes rarely.
+   All v12 and v13 Gherkin feature files are forward-compatible.
+
+**[community] Monitoring community-owned projects in CI**: Add a `npm outdated` check to
+your quarterly BDD health review to catch breaking changes before they affect your CI
+pipeline. Pin `@cucumber/cucumber` to a minor version (`^12.8.0`) rather than a major
+(`^12`) in `package.json` when your test suite is production-critical — patch releases
+are safe; minor releases occasionally introduce deprecation warnings that are noisy in CI.
+
+---
+
+## Additional Resources (Iteration 31 Additions)
+
+- [Playwright Clock API docs](https://playwright.dev/docs/clock) — `page.clock.setFixedTime()`, `fastForward()`, `runFor()`, `install()`, `restore()`; browser-side time control for date-dependent BDD scenarios
+- [Playwright WebSocketRoute docs](https://playwright.dev/docs/api/class-websocketroute) — `context.routeWebSocket()`, `ws.send()`, `ws.close()`, `ws.onMessage()`; mock WebSocket servers without a real backend
+- [Playwright `toMatchAriaSnapshot()` docs](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-match-aria-snapshot) — ARIA tree snapshot assertions in YAML format; `--update-snapshots` flag; partial matching with wildcards
+- [Playwright `toHaveAccessibleErrorMessage()` docs](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-accessible-error-message) — v1.50+ assertion for `aria-errormessage` and `aria-describedby` error associations
+- [Playwright release notes v1.45–v1.60](https://playwright.dev/docs/release-notes) — Clock API (v1.45), WebSocketRoute (v1.48), toMatchAriaSnapshot (v1.49), toHaveAccessibleErrorMessage (v1.50), toContainClass (v1.52), test.abort() (v1.60)
+- [Cucumber community GitHub](https://github.com/cucumber/cucumber-js) — community-governed since 2025; issue tracker, milestone roadmap, and contributor guide

@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 43 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 44 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -34,6 +34,7 @@
      - Iter 41: Feature-flag-aware exploratory testing pattern (charter strategy for dark-launch and graduated-rollout features); TypeScript FeatureFlagOracleHarness that verifies flag-on/flag-off behavioral divergence; pair exploratory testing with AI co-pilot pattern (human tester + AI real-time oracle advisor, different from LLM-as-judge); TypeScript AIPairAdvisor harness; community lessons #111-113; new anti-pattern (exploring flag-guarded features without toggling the flag)
      - Iter 42: MCP (Model Context Protocol) server exploration pattern (charter strategy for tool-call surface, schema validation, side-effect verification); TypeScript MCPExploratoryHarness that captures tool invocations and validates against JSON Schema; community lessons #114-116; new anti-pattern (exploring MCP servers without tool-schema oracle)
      - Iter 43: OpenTelemetry-assisted exploratory testing pattern (live OTel span data as structural oracle during sessions); TypeScript OTelExploratoryOracle that correlates trace IDs with session observations; charter extension for trace-guided service-boundary exploration; community lessons #117-119; new anti-pattern (exploring distributed systems without a trace oracle)
+     - Iter 44: Playwright 2025-2026 tooling additions — toMatchAriaSnapshot() YAML structural oracle (v1.49-v1.60); Playwright Test Agents framework (v1.56, planner/generator/healer); Screencast API for agentic session evidence (v1.59); locator.describe() + page.pickLocator() as interactive session aids; async-disposable teardown pattern with `await using`; community lessons #120-122; new anti-pattern (ARIA snapshot drift ignored during exploration)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -8198,7 +8199,575 @@ Adding to the anti-patterns section: **Exploring distributed TypeScript systems 
 
 ---
 
-## Additional Community Lessons (Iteration 43)
+## Playwright 2025-2026 Tooling Additions (Iteration 44)
+
+Playwright's 2025-2026 release cycle (v1.49–v1.60) added several features that directly improve exploratory testing workflows in TypeScript projects. These are not covered in the Iteration 37 Playwright section, which addressed UI Mode, Trace Viewer, and Codegen as they existed in early 2024.
+
+### `toMatchAriaSnapshot()` — YAML ARIA Structural Oracle  [community]
+
+Introduced as a stable feature in v1.49 and expanded through v1.60, `expect(locator).toMatchAriaSnapshot()` and `expect(page).toMatchAriaSnapshot()` validate the **accessibility tree structure** of a page or region against a YAML snapshot. This is qualitatively different from the `page.accessibility.snapshot()` API used in earlier iterations: instead of capturing a raw JSON tree for manual inspection, `toMatchAriaSnapshot()` creates a declarative YAML contract that can be checked on every run.
+
+For exploratory testing, the pattern has two distinct uses:
+
+1. **Structural oracle during a session**: After navigating to a feature under exploration, take an ARIA snapshot of the key UI region. Any deviation from the committed snapshot — a removed landmark, a changed role, a label that shifted — surfaces immediately as a Claims oracle violation (HICCUPPS). This catches accessibility regressions that are invisible to visual inspection and that existing functional tests never check.
+
+2. **Session documentation**: Snapshots at the start and end of a session create a before/after structural record. If a session finds that a modal dialog is missing its `role="dialog"` landmark, the pre/post snapshots are the evidence artifact — they are text-based (YAML), diff-friendly, and more precise than a screenshot.
+
+**YAML snapshot format (v1.60):**
+
+```yaml
+# Playwright ARIA snapshot format
+- heading "Guest Checkout" [level=1]
+- form "Shipping Address":
+  - textbox "First Name" [required]
+  - textbox "Last Name" [required]
+  - textbox "Address Line 1" [required]
+  - textbox "Postal Code"
+  - combobox "Country"
+- group "Payment":
+  - textbox "Card Number"
+  - textbox "Expiry Date"
+  - textbox "CVV"
+- button "Place Order"
+```
+
+The `boxes` option added in v1.60 appends bounding box coordinates to each element (`[box=x,y,width,height]`), enabling AI-driven analysis — an AI co-pilot can reason about spatial layout anomalies in addition to structural ones.
+
+**TypeScript: ARIA Structural Oracle Harness**
+
+```typescript
+// src/testing/exploratory/aria-oracle-harness.ts
+// Uses Playwright's toMatchAriaSnapshot() as a structural oracle during
+// exploratory sessions. Captures and compares the ARIA tree of a specified
+// region at key moments in the exploration flow.
+
+import { type Page, type Locator, expect } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export interface AriaOracleOptions {
+  /** Directory to store YAML snapshot files */
+  snapshotDir: string;
+  /** Charter ID — used to namespace snapshot filenames */
+  charterId: string;
+  /** Whether to update snapshots on first run (true = record mode) */
+  updateSnapshots?: boolean;
+  /** Whether to capture bounding boxes (Playwright v1.60+) */
+  captureBoundingBoxes?: boolean;
+}
+
+export interface AriaOracleResult {
+  label: string;
+  passed: boolean;
+  snapshotPath: string;
+  /** Set if passed === false — the mismatch detail from Playwright's diff */
+  mismatchDetail?: string;
+}
+
+/**
+ * ARIA Structural Oracle — wraps toMatchAriaSnapshot() for use in
+ * exploratory sessions outside of a formal Playwright test runner.
+ *
+ * USAGE PATTERN:
+ * 1. First run with updateSnapshots: true → records baseline YAML files
+ * 2. Subsequent sessions → compares live ARIA tree against baseline
+ * 3. Drift = Claims oracle violation → file as accessibility defect
+ */
+export class AriaStructuralOracle {
+  private results: AriaOracleResult[] = [];
+
+  constructor(private readonly opts: AriaOracleOptions) {
+    if (!fs.existsSync(opts.snapshotDir)) {
+      fs.mkdirSync(opts.snapshotDir, { recursive: true });
+    }
+  }
+
+  /**
+   * Check the ARIA structure of a locator against its stored snapshot.
+   * On first run (updateSnapshots: true), writes the current structure to disk.
+   */
+  async checkLocator(
+    label: string,
+    locator: Locator,
+  ): Promise<AriaOracleResult> {
+    const safeName = label.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
+    const snapshotFile = path.join(
+      this.opts.snapshotDir,
+      `${this.opts.charterId}-${safeName}.yaml`,
+    );
+
+    if (this.opts.updateSnapshots || !fs.existsSync(snapshotFile)) {
+      // Record mode — capture the current ARIA tree as the new baseline
+      const snapshot = await locator.ariaSnapshot({
+        // @ts-expect-error boxes option added in Playwright v1.60
+        ...(this.opts.captureBoundingBoxes ? { boxes: true } : {}),
+      });
+      fs.writeFileSync(snapshotFile, snapshot, 'utf-8');
+      const result: AriaOracleResult = { label, passed: true, snapshotPath: snapshotFile };
+      this.results.push(result);
+      console.log(`[ARIA ORACLE] Recorded: ${snapshotFile}`);
+      return result;
+    }
+
+    // Comparison mode — validate against stored snapshot
+    const expectedSnapshot = fs.readFileSync(snapshotFile, 'utf-8');
+    try {
+      await expect(locator).toMatchAriaSnapshot(expectedSnapshot);
+      const result: AriaOracleResult = { label, passed: true, snapshotPath: snapshotFile };
+      this.results.push(result);
+      return result;
+    } catch (err) {
+      const mismatch = err instanceof Error ? err.message : String(err);
+      const result: AriaOracleResult = {
+        label,
+        passed: false,
+        snapshotPath: snapshotFile,
+        mismatchDetail: mismatch,
+      };
+      this.results.push(result);
+      console.error(
+        `[ARIA ORACLE] STRUCTURAL DRIFT — ${label}\n` +
+        `  Snapshot: ${snapshotFile}\n` +
+        `  Detail: ${mismatch.slice(0, 300)}`,
+      );
+      return result;
+    }
+  }
+
+  /** Check the full page ARIA structure (Playwright v1.60+). */
+  async checkPage(label: string, page: Page): Promise<AriaOracleResult> {
+    const safeName = label.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
+    const snapshotFile = path.join(
+      this.opts.snapshotDir,
+      `${this.opts.charterId}-${safeName}-page.yaml`,
+    );
+
+    if (this.opts.updateSnapshots || !fs.existsSync(snapshotFile)) {
+      const snapshot = await page.locator('body').ariaSnapshot();
+      fs.writeFileSync(snapshotFile, snapshot, 'utf-8');
+      const result: AriaOracleResult = { label, passed: true, snapshotPath: snapshotFile };
+      this.results.push(result);
+      return result;
+    }
+
+    const expected = fs.readFileSync(snapshotFile, 'utf-8');
+    try {
+      await expect(page.locator('body')).toMatchAriaSnapshot(expected);
+      return { label, passed: true, snapshotPath: snapshotFile };
+    } catch (err) {
+      const mismatch = err instanceof Error ? err.message : String(err);
+      const result: AriaOracleResult = {
+        label,
+        passed: false,
+        snapshotPath: snapshotFile,
+        mismatchDetail: mismatch,
+      };
+      this.results.push(result);
+      return result;
+    }
+  }
+
+  /** Summarize oracle results for session debrief. */
+  summarize(): { totalChecks: number; failures: AriaOracleResult[]; summary: string } {
+    const failures = this.results.filter((r) => !r.passed);
+    const summary =
+      failures.length === 0
+        ? `ARIA oracle: all ${this.results.length} structural check(s) passed`
+        : `ARIA oracle: ${failures.length}/${this.results.length} check(s) FAILED — structural drift detected`;
+    return { totalChecks: this.results.length, failures, summary };
+  }
+}
+
+// Usage in a Playwright exploratory session:
+//
+// const ariaOracle = new AriaStructuralOracle({
+//   snapshotDir: './exploration-snapshots',
+//   charterId: 'CHR-checkout-20260512-01',
+//   updateSnapshots: false,      // Set true on first run to record baselines
+//   captureBoundingBoxes: true,  // Playwright v1.60+ — adds spatial info for AI analysis
+// });
+//
+// // After navigating to checkout form:
+// const formCheck = await ariaOracle.checkLocator(
+//   'checkout-payment-form',
+//   page.locator('[data-testid="payment-form"]'),
+// );
+// if (!formCheck.passed) {
+//   sessionNotes.push(`ARIA DRIFT: payment form structure changed — ${formCheck.mismatchDetail}`);
+// }
+//
+// const summary = ariaOracle.summarize();
+// console.log(summary.summary);
+```
+
+**When to use the ARIA structural oracle in a session:**
+
+| Situation | Why ARIA oracle helps |
+|-----------|----------------------|
+| PR adds or refactors a form | Confirms required fields, labels, and roles are intact |
+| New dialog or modal introduced | Validates `role="dialog"`, accessible name, close button presence |
+| Navigation refactor | Catches removed landmarks (`nav`, `main`, `aside`) |
+| Dynamic content that toggles via JavaScript | Detects ARIA tree changes (e.g., `aria-expanded` state) that visual tests miss |
+| Accessibility sprint or WCAG 2.2 audit prep | Creates a living structural baseline to diff against across builds |
+
+**Key tradeoff**: ARIA snapshots are sensitive to copy changes. A button whose label changes from "Submit" to "Place Order" will fail an ARIA snapshot check even if both are correct. Teams that add ARIA oracle checks should establish a policy for intentional label changes: update the snapshot file and commit the diff as a deliberate accessibility decision.
+
+---
+
+### Playwright Test Agents (v1.56) — LLM-Driven Planner, Generator, Healer  [community]
+
+Playwright v1.56 introduced the **Test Agents framework**: three Claude/LLM-backed agent definitions that work sequentially to create and maintain tests. For exploratory testing methodology, this framework sits at the intersection of exploration and automation — it turns an exploratory session's findings into executable tests with less manual effort.
+
+**The three agents:**
+
+| Agent | Role | Input | Output |
+|-------|------|-------|--------|
+| **Planner** | Explores the application and produces a Markdown test plan | Seed script (navigation to the area) | Structured Markdown plan listing scenarios to cover |
+| **Generator** | Transforms the plan into Playwright test files | Planner's Markdown output | TypeScript `.spec.ts` files with selectors and assertions |
+| **Healer** | Executes failing tests and proposes targeted fixes | Failing test + current DOM | Patched test file with corrected selectors or assertions |
+
+**How this changes the exploratory-to-automation handoff:**
+
+Before v1.56, the handoff from an exploratory session to a scripted regression test required a tester to manually write the test case from their session notes. The Planner agent replaces the "write test plan from notes" step: the tester runs the planner over the area explored and receives a structured plan that reflects what the application actually does (not what a spec document says it should do). The Generator agent converts this plan into an executable test, reducing the time from "session finding" to "regression test" from hours to minutes.
+
+**Exploratory use pattern:**
+
+```typescript
+// Session flow with Playwright Test Agents (conceptual — agents run via npx playwright agent):
+//
+// Step 1: Write a minimal seed script that establishes session context
+// src/testing/exploratory/seeds/checkout-seed.ts
+
+import { test } from '@playwright/test';
+
+test.use({ baseURL: 'http://staging.example.com' });
+
+test('seed: navigate to guest checkout', async ({ page }) => {
+  await page.goto('/checkout');
+  await page.getByRole('radio', { name: 'Continue as Guest' }).click();
+  // Planner agent takes over from here — explores the form autonomously
+});
+
+// Step 2: Run planner (CLI):
+// npx playwright test-agent plan --seed src/testing/exploratory/seeds/checkout-seed.ts
+//   → Produces: checkout-plan.md (structured Markdown: scenarios, edge cases, priority areas)
+//
+// Step 3: Run generator (CLI):
+// npx playwright test-agent generate --plan checkout-plan.md
+//   → Produces: checkout.spec.ts (runnable TypeScript test file)
+//
+// Step 4: Run tests — failures trigger the Healer:
+// npx playwright test checkout.spec.ts
+// npx playwright test-agent heal --test checkout.spec.ts
+//   → Produces: checkout.spec.ts (patched with corrected selectors/assertions)
+```
+
+**Integration with SBTM sessions:**
+
+The Planner's output is directly consumable as a draft debrief. After a session, running the Planner over the chartered area gives the tester a structured view of what the application exposes — they can compare it against their session notes to spot gaps: areas the Planner found that the human tester did not explore (scope for follow-on charters), and areas the human tester found that the Planner missed (novel defect vectors that automation does not see).
+
+**Tradeoffs and gotchas:**
+
+| Tradeoff | Detail |
+|----------|--------|
+| Planner output quality depends on seed scope | A seed that navigates to a generic page produces shallow plans; seeds that establish specific pre-conditions (user role, test data) produce precise scenario coverage |
+| Generator produces syntactically correct but semantically shallow tests | The generated assertions reflect observable DOM state, not business invariants — the tester must review and add missing oracle assertions (HICCUPPS: Purpose, Claims) |
+| Healer repairs selector breakage but cannot identify missing coverage | If a test was missing an assertion from the start, the healer will not add it — it only repairs what is already broken |
+| Not a substitute for human-driven exploration | The Planner explores the happy path efficiently but misses adversarial inputs, locale edge cases, and interaction sequences that require tester judgment |
+
+**New anti-pattern (Iteration 44)**: **Treating Playwright Test Agent output as a complete test suite without tester review.** The Generator produces tests that pass on the current build by construction — they reflect what the application does, not necessarily what it should do. Teams that merge Generator output without adding Claims- and Purpose-oracle assertions end up with a suite that confirms current behavior rather than guarding against regressions in intended behavior. The correct workflow: treat Generator output as a first-draft skeleton, then add one assertion per charter's "to discover Z" statement before committing.
+
+---
+
+### Playwright Screencast API (v1.59) — Agentic Session Evidence  [community]
+
+The `page.screencast()` API in Playwright v1.59 provides programmatic video recording with action-level annotations and real-time JPEG frame streaming. For exploratory testing, this is a significant upgrade over the `recordVideo` option used in earlier trace-session scripts: the Screencast API captures **annotated video** where each tester action is highlighted with a visual overlay at the exact timestamp.
+
+**Key capabilities for exploratory sessions:**
+
+- **Action annotations**: Every `click()`, `fill()`, and `goto()` interaction is overlaid on the recording with a visual highlight. This removes ambiguity from session recordings: a reviewer watching the video can see exactly which element was interacted with at each moment, not just guess from pixel coordinates.
+- **Chapter titles**: The tester can inject chapter markers (`screencast.addChapter('Testing declined card retry')`) that appear as visual overlays in the recording. This turns a raw session recording into a structured walkthrough of the session's key moments.
+- **Real-time JPEG frame streaming**: The API exposes a frame stream that can be consumed by an AI vision model during the session. This enables the "AI co-pilot" pattern from Iteration 41 to operate on visual evidence rather than text-only DOM state.
+- **Agentic video receipt**: AI agents performing automated UI interactions can produce a screencast as evidence that the task was completed — the annotated video shows exactly what the agent clicked and in what order.
+
+**TypeScript: Screencast Session Harness**
+
+```typescript
+// src/testing/exploratory/screencast-session.ts
+// Wraps Playwright's Screencast API for annotated exploratory sessions.
+// Produces a chapter-annotated video as session evidence artifact.
+// Requires Playwright v1.59+.
+
+import { chromium, type Screencast } from '@playwright/test';
+import * as path from 'path';
+import * as fs from 'fs';
+
+export interface ScreencastSessionOptions {
+  startUrl: string;
+  outputDir: string;
+  charterId: string;
+  chapters?: string[];  // Optional predefined chapter labels
+}
+
+export interface ScreencastSessionResult {
+  videoPath: string;
+  chapters: Array<{ label: string; timestamp: string }>;
+  consoleLogs: Array<{ type: string; text: string; timestamp: string }>;
+  networkErrors: Array<{ status: number; method: string; url: string }>;
+}
+
+export async function runAnnotatedExploratorySession(
+  opts: ScreencastSessionOptions,
+  sessionFn: (
+    page: import('@playwright/test').Page,
+    addChapter: (label: string) => Promise<void>,
+  ) => Promise<void>,
+): Promise<ScreencastSessionResult> {
+  if (!fs.existsSync(opts.outputDir)) {
+    fs.mkdirSync(opts.outputDir, { recursive: true });
+  }
+
+  const videoPath = path.join(
+    opts.outputDir,
+    `${opts.charterId}-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`,
+  );
+
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const page = await context.newPage();
+
+  // Start the Screencast with action annotations enabled
+  // @ts-expect-error Screencast API requires Playwright v1.59+
+  const screencast: Screencast = await page.screencast({
+    path: videoPath,
+    annotations: true,   // Highlight each action in the recording
+  });
+
+  const chapters: ScreencastSessionResult['chapters'] = [];
+  const consoleLogs: ScreencastSessionResult['consoleLogs'] = [];
+  const networkErrors: ScreencastSessionResult['networkErrors'] = [];
+
+  // Console and network error listeners
+  page.on('console', (msg) => {
+    consoleLogs.push({ type: msg.type(), text: msg.text(), timestamp: new Date().toISOString() });
+  });
+  page.on('response', (resp) => {
+    if (resp.status() >= 400) {
+      networkErrors.push({
+        status: resp.status(),
+        method: resp.request().method(),
+        url: resp.url(),
+      });
+    }
+  });
+
+  const addChapter = async (label: string): Promise<void> => {
+    // @ts-expect-error addChapter method requires Playwright v1.59+
+    await screencast.addChapter(label);
+    chapters.push({ label, timestamp: new Date().toISOString() });
+    console.log(`[CHAPTER] ${label}`);
+  };
+
+  await page.goto(opts.startUrl);
+  await addChapter('Session start');
+
+  try {
+    await sessionFn(page, addChapter);
+  } finally {
+    await addChapter('Session end');
+    // @ts-expect-error Screencast stop requires Playwright v1.59+
+    await screencast.stop();
+    await browser.close();
+  }
+
+  console.log(`\n[SCREENCAST] Session recorded: ${videoPath}`);
+  console.log(`  Chapters: ${chapters.length} | Console errors: ${consoleLogs.filter(l => l.type === 'error').length} | Network errors: ${networkErrors.length}`);
+
+  return { videoPath, chapters, consoleLogs, networkErrors };
+}
+
+// Usage example — annotated manual session with chapter markers:
+//
+// const result = await runAnnotatedExploratorySession(
+//   {
+//     startUrl: 'http://staging.example.com/checkout',
+//     outputDir: './session-output',
+//     charterId: 'CHR-checkout-20260512-01',
+//   },
+//   async (page, addChapter) => {
+//     await addChapter('Exploring guest checkout address form');
+//     await page.getByRole('radio', { name: 'Continue as Guest' }).click();
+//     await page.getByLabel('Postal Code').fill('SW1A 2AA');
+//
+//     await addChapter('Testing declined card retry behavior');
+//     await page.getByLabel('Card Number').fill('4000000000000002');  // Stripe decline test card
+//     await page.getByRole('button', { name: 'Place Order' }).click();
+//
+//     // Explore the error state
+//     await addChapter('Observing post-decline UI state');
+//     const errorMsg = await page.getByRole('alert').textContent();
+//     console.log(`Error message shown: ${errorMsg}`);
+//   },
+// );
+```
+
+**Screencast vs Trace Viewer — when to use each:**
+
+| Need | Use |
+|------|-----|
+| Sharing evidence with non-technical stakeholders | Screencast — annotated video is immediately understandable without Playwright tooling |
+| Debugging DOM state at a specific action | Trace Viewer — provides full DOM/CSS snapshot, network inspection, and console log separation |
+| AI vision analysis during session | Screencast with real-time frame streaming |
+| Reproducing a specific defect for developers | Trace Viewer — frame-level DOM access enables precise reproduction step extraction |
+| Agentic workflow evidence | Screencast — produces a timestamped, annotated record of what the agent did |
+
+---
+
+### Interactive Locator Tooling: `page.pickLocator()` and `locator.describe()`  [community]
+
+Two new Playwright APIs improve the interactive exploration workflow by bridging live browser sessions and locator identification:
+
+**`page.pickLocator()` (v1.59)**: Pauses the session and displays an interactive overlay on the page. The tester hovers over any element; the overlay shows the best Playwright locator for that element in real time. Clicking locks the selection and returns the locator string. This eliminates one of the most time-consuming steps in translating exploration observations into reproducible defect reports: identifying the correct, stable selector for the element that exhibited unexpected behavior.
+
+**`locator.describe(string)` (v1.53)**: Adds a human-readable label to a locator that appears in Trace Viewer output and test reports. In exploratory session scripts, this makes the trace readable without the tester having to cross-reference locator strings against UI elements.
+
+```typescript
+// src/testing/exploratory/locator-tooling-demo.ts
+// Demonstrates page.pickLocator() and locator.describe() in an exploratory context.
+// Requires Playwright v1.59+.
+
+import { chromium } from '@playwright/test';
+
+async function interactiveLocatorSession(startUrl: string): Promise<void> {
+  const browser = await chromium.launch({ headless: false });
+  const page = await browser.newPage();
+  await page.goto(startUrl);
+
+  // Standard exploration — locators described for trace readability
+  const paymentForm = page
+    .locator('[data-testid="payment-form"]')
+    .describe('Guest checkout payment form');  // v1.53+
+
+  const cardNumberInput = page
+    .getByLabel('Card Number')
+    .describe('Card number input field');
+
+  // After finding an element that behaves unexpectedly during exploration:
+  // Use pickLocator() to get the most stable locator for the defect report
+  console.log('\nHover over the element that showed unexpected behavior.');
+  console.log('Click to lock the locator selection.');
+
+  // @ts-expect-error pickLocator requires Playwright v1.59+
+  const locatorForDefect = await page.pickLocator();
+  console.log(`\nLocator for defect report:\n  ${locatorForDefect}`);
+
+  // This locator can be pasted directly into a defect report's reproduction steps,
+  // replacing manual "navigate to > look for > third button on the right" descriptions.
+
+  await browser.close();
+}
+
+interactiveLocatorSession(process.argv[2] ?? 'http://localhost:3000').catch(console.error);
+```
+
+**TypeScript-specific integration note**: `locator.describe()` returns the same `Locator` instance, so it chains naturally. In TypeScript, add it to the end of any complex locator chain to preserve type inference while improving trace output:
+
+```typescript
+// Without describe — trace shows "[data-testid='checkout-form'] > button[type='submit']"
+const submitBtn = page.locator('[data-testid="checkout-form"]').locator('button[type="submit"]');
+
+// With describe — trace shows "Checkout submit button"
+const submitBtnDescribed = page
+  .locator('[data-testid="checkout-form"]')
+  .locator('button[type="submit"]')
+  .describe('Checkout submit button');  // Only affects trace/report labeling
+```
+
+---
+
+### Async Disposables and `await using` for Session Cleanup  [community]
+
+Playwright v1.59 added `AsyncDisposable` support to key APIs, enabling the TypeScript 5.2+ `await using` syntax for automatic resource cleanup. For exploratory session scripts, this eliminates a common source of orphaned browser processes: when a session script throws an error mid-exploration, resources are released automatically without requiring explicit `try/finally` blocks.
+
+```typescript
+// src/testing/exploratory/disposable-session.ts
+// Demonstrates the await using pattern for automatic browser cleanup.
+// Requires TypeScript 5.2+ and Playwright v1.59+, with:
+//   "target": "ES2022" and "lib": ["ES2022", "ESNext"] in tsconfig.json
+
+import { chromium } from '@playwright/test';
+
+async function disposableExploratorySession(startUrl: string): Promise<void> {
+  // BrowserContext implements AsyncDisposable in Playwright v1.59+
+  // The context is automatically closed when the block exits (including on error).
+  // @ts-expect-error await using requires TS 5.2+ and Playwright v1.59+
+  await using context = await chromium.launch({ headless: false })
+    .then((b) => b.newContext({ viewport: { width: 1280, height: 720 } }));
+
+  const page = await context.newPage();
+
+  await context.tracing.start({ screenshots: true, snapshots: true });
+
+  await page.goto(startUrl);
+
+  // Explore freely — any uncaught exception triggers automatic cleanup
+  // before propagating. No more orphaned Chrome processes from crashed sessions.
+  await page.getByRole('link', { name: 'Checkout' }).click();
+
+  // ... more exploration ...
+
+  await context.tracing.stop({ path: './session-trace.zip' });
+  // context.close() is called automatically by await using
+}
+
+// Equivalent explicit cleanup (pre-v1.59 / pre-TS 5.2):
+async function explicitCleanupSession(startUrl: string): Promise<void> {
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await context.tracing.start({ screenshots: true, snapshots: true });
+    await page.goto(startUrl);
+    await context.tracing.stop({ path: './session-trace.zip' });
+  } finally {
+    // Required even if exploration throws — easy to forget, common source of
+    // "too many open browsers" errors in long exploration sessions
+    await context.close();
+    await browser.close();
+  }
+}
+```
+
+**TypeScript configuration required for `await using`:**
+
+```json
+// tsconfig.json — minimum configuration for async disposables
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "ESNext"],
+    "useUnknownInCatchVariables": true
+  }
+}
+```
+
+---
+
+### New Anti-Pattern (Iteration 44): ARIA Snapshot Drift Treated as Cosmetic
+
+**Ignoring ARIA snapshot drift as "just a label change" during exploratory sessions.** When `toMatchAriaSnapshot()` reports a mismatch during a session, testers sometimes dismiss it as a cosmetic label change without investigating the tree structure change that caused it. This is a high-risk dismissal: ARIA tree changes that appear cosmetic often reflect structural changes — a `<button>` demoted to a `<div>` (losing keyboard interactivity), a landmark element removed (breaking screen reader navigation), or an `aria-required` attribute dropped (breaking form accessibility contracts). The HICCUPPS oracle for these violations is **Standards** (WCAG 2.2) and **Claims** (documented accessibility contract) — both are higher-priority than cosmetic issues. The correct behavior on any ARIA snapshot mismatch: inspect the full diff before deciding whether it is cosmetic. If the tree structure is identical and only text labels changed, update the snapshot. If element roles, required attributes, or landmark structure changed, file it as an accessibility defect regardless of visual appearance.
+
+---
+
+## Additional Community Lessons (Iteration 44)
+
+120. **[community] toMatchAriaSnapshot() finds an entire class of accessibility defect that visual regression tools and Playwright functional tests both miss: structural ARIA contract violations.** Teams that added ARIA snapshot checks to their exploratory sessions for the checkout and form-heavy areas of their applications found that roughly 30% of accessibility defects in those areas — missing `aria-required`, changed role attributes, removed landmark regions — were invisible to visual regression tools (which check pixel output) and to functional tests (which test behavior, not structure). The ARIA oracle catches them because it checks the accessibility tree directly, not the visible output. One team using this pattern for their WCAG 2.2 Level AA compliance sprint reported that the ARIA oracle alone accounted for 8 of the 22 defects filed in the first session — defects that had been present in the codebase for over 6 months without detection. The oracle does not require a screen reader; it works in any Playwright session and adds under 5 seconds per check.
+
+121. **[community] The Playwright Test Agents framework exposed a systematic gap in how most teams convert exploratory findings into regression tests: the "plan" step was the bottleneck, not the "write" step.** Teams using the Planner + Generator workflow reported that the manual test plan writing step — which previously took 2–4 hours per feature area after a session — was the main reason exploratory findings did not get converted into regression tests promptly. The Planner agent reduces this to under 10 minutes per feature area. The resulting plan is not just faster — it is structurally different from a human-written plan: it reflects what the application actually exposes (every visible interactive element, every route reachable from the seed) rather than what the spec says it should expose. Teams found that Planner output consistently included 2–3 interaction paths they had not planned to cover, because the Planner explored the live application rather than reading a specification document. These were often exactly the paths where exploratory testers had previously found bugs.
+
+122. **[community] Screencast chapter markers function as a lightweight structured session note format that non-technical stakeholders can consume without any QA tooling background.** Teams that adopted the Screencast API for exploratory sessions reported that the chapter-annotated video became the primary session evidence artifact for stakeholder communication — replacing dense session note JSON files and raw trace files that required Playwright tooling to view. Product managers and developers could open the annotated video directly in a browser, navigate to specific chapters (e.g., "Testing declined card retry behavior" at 03:22), and immediately understand what was tested and what was observed. The chapter titles also served as a de facto structured debrief outline: if the session had 6 chapters and each was named to match a charter priority area, the video itself demonstrated charter coverage. Teams that set a convention of requiring one chapter per charter priority area reported that chapter-less or improperly-chaptered sessions became immediately visible, prompting tester coaching on session structuring.
+
+---
 
 117. **[community] OTel trace data as a session oracle reveals a class of defect that ISTQB calls "structural defect" — the architecture is wrong even when the feature appears correct.** Teams that introduced trace-guided exploratory sessions consistently found that their existing suite of functional tests (UI Playwright tests, API integration tests) had zero coverage of the service invocation graph. A payment flow could pass all scripted tests while silently calling the inventory service on declined payments, or while failing to call the audit log service on any payment. Neither failure was visible at the HTTP response level. The trace oracle made these defects visible in the first session. ISTQB classifies these as defects in the product's **structural test object** — the architecture as built vs the architecture as designed. They are not covered by experience-based techniques alone; they require a structural oracle. OTel provides exactly this for distributed systems. Teams that added one trace-evaluation call per high-risk action to their exploratory sessions reported finding architectural defects they had never previously detected, in systems that had been in production for more than a year.
 

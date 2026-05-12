@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 19 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 20 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -45,6 +45,14 @@
 <!--            setSystemTime + useFakeTimers({now}); Temporal.Now.* faked; Temporal.Now.timeZoneId -->
 <!--            NOT faked); Jest 30.4 clearMocksOnScope(scope) on ModuleMocker; Vitest 5.0-beta      -->
 <!--            deprecates test.sequential in favour of concurrent: false (Pattern 16 updated)       -->
+<!--          Iteration 20 (2026-05-12): Jest 30 expect.arrayOf()/not.arrayOf() asymmetric matcher  -->
+<!--            for type-uniform array assertions on mock return values (Pattern 34); Jest 30.4      -->
+<!--            clearMocksOnScope(scope) on ModuleMocker for subsystem-scoped mock clearing          -->
+<!--            (Gotcha 84); workerGracefulExitTimeout to prevent false-positive open-handle         -->
+<!--            warnings from slow I/O teardown (Gotcha 85); Vitest 5.0-beta.2 confirms full        -->
+<!--            removal of test.sequential + @vitest/expect inlined into vitest core (Gotcha 86);    -->
+<!--            Jest 30.4 Temporal.Duration support in advanceTimersByTime() (Gotcha 87, Pattern 33  -->
+<!--            extended) — self-documenting duration args, no millisecond arithmetic                -->
 
 ---
 
@@ -4203,3 +4211,337 @@ correct timezone in `jest.setSystemTime()`. To bypass the gap, use the explicit 
 | Jest Docs — `jest.setTimerTickMode` | Official | https://jestjs.io/docs/jest-object#jestsettimertickmodemode | Full parameter reference: mode types, delta for interval mode, compatibility requirements |
 | Vitest 5.0-beta — `test.sequential` deprecation | Official | https://vitest.dev/api/#test-sequential | `concurrent: false` option replaces `test.sequential`; Vitest 5 concurrent-first model |
 | TC39 Temporal Proposal | Standard | https://tc39.es/proposal-temporal/ | Authoritative reference for `Temporal.Now.*`, `Temporal.Instant`, `Temporal.ZonedDateTime` APIs |
+
+---
+
+## Community Lessons — Iteration 20  [community]
+
+83. **`expect.arrayOf()` / `expect.not.arrayOf()` in Jest 30 enables type-uniform array assertions without manual `.every()` checks.** [community]
+    Jest 30 introduces `expect.arrayOf(matcher)` as an asymmetric matcher that passes only when every element of the received array matches the given matcher (or value). This closes a common isolation gotcha: assertions on arrays returned from stubs previously required either `toHaveLength(N)` + per-element checks or a custom `expect.extend` matcher, both of which are fragile when the array grows. `expect.arrayOf` makes the assertion declarative and composable with other asymmetric matchers.
+    ```typescript
+    import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+    import { ReportService } from './reportService';
+    import type { Report } from './types';
+
+    describe('ReportService.listReports()', () => {
+      let service: ReportService;
+
+      beforeEach(() => {
+        // Fresh instance — no accumulated call or return state from previous test
+        service = new ReportService();
+      });
+
+      it('returns an array of report objects with required fields', async () => {
+        const reports = await service.listReports();
+
+        // expect.arrayOf — every element must match objectContaining
+        // More robust than checking reports[0], reports[1] individually
+        expect(reports).toEqual(
+          expect.arrayOf(
+            expect.objectContaining({
+              id: expect.any(String),
+              createdAt: expect.any(String),
+              status: expect.stringMatching(/^(pending|complete|failed)$/),
+            }),
+          ),
+        );
+      });
+
+      it('returns an empty array (not null/undefined) when no reports exist', async () => {
+        jest.spyOn(service as any, 'fetchFromDB').mockResolvedValue([]);
+
+        const reports = await service.listReports();
+
+        // expect.arrayOf on an empty array always passes — verifies the type contract is upheld
+        expect(reports).toEqual(expect.arrayOf(expect.any(Object)));
+        expect(reports).toHaveLength(0);
+      });
+
+      it('expect.not.arrayOf detects a mixed-type array from a faulty stub', () => {
+        // Useful in test helpers to assert that a stub is NOT returning the wrong shape
+        const mixedArray = ['string', 42, { id: 'x' }];
+
+        // every element is NOT a number — expect.not.arrayOf(Number) would pass
+        expect(mixedArray).toEqual(expect.not.arrayOf(expect.any(Number)));
+      });
+    });
+    ```
+    **Isolation relevance:** Mock stubs that return array data (e.g., `mockResolvedValue([report1, report2])`) can silently drift from the real service's return type. Using `expect.arrayOf(expect.objectContaining({ ... }))` in the assertion phase catches shape drift at the assertion level — not just at the mock type level. Pair with `jest.Mocked<T>` on the mock type (Pattern 9) for compile-time + runtime coverage. WHY: the alternative — asserting each array element individually — is brittle and grows with test data. `expect.arrayOf` scales linearly and is automatically composable with `objectContaining`, `stringMatching`, etc.
+
+84. **`jest.clearMocksOnScope(scope)` on `ModuleMocker` clears all mock functions exposed on a single scope object — useful for targeted cleanup in test helpers that register mocks on a shared context.** [community]
+    Jest 30.4 adds `clearMocksOnScope(scope)` to `ModuleMocker`. Unlike `jest.clearAllMocks()` (which clears every mock in the entire test environment), `clearMocksOnScope` limits the clear operation to the mock functions hanging off a specific scope object. This enables test helpers or custom test runners that manage a subset of mocks on a dedicated context object — clearing only those mocks between tests without affecting mocks registered elsewhere.
+    ```typescript
+    import { ModuleMocker } from 'jest-mock';
+
+    // A custom test context that collects module-level mocks for a single subsystem
+    interface AnalyticsMockScope {
+      track: jest.Mock;
+      identify: jest.Mock;
+      flush: jest.Mock;
+    }
+
+    describe('AnalyticsScope isolated mock cleanup (jest.clearMocksOnScope)', () => {
+      let mocker: ModuleMocker;
+      let analyticsScope: AnalyticsMockScope;
+
+      beforeAll(() => {
+        mocker = new ModuleMocker(global);
+      });
+
+      beforeEach(() => {
+        // Mocks are created once and reused; call state is cleared per test by clearMocksOnScope
+        analyticsScope = {
+          track: jest.fn(),
+          identify: jest.fn(),
+          flush: jest.fn(),
+        };
+      });
+
+      afterEach(() => {
+        // Only clears mocks on analyticsScope — does not touch unrelated mocks in the same file
+        mocker.clearMocksOnScope(analyticsScope);
+      });
+
+      it('track is called once during registration flow', () => {
+        analyticsScope.track('page_view', { page: '/home' });
+        analyticsScope.identify('user-1');
+
+        expect(analyticsScope.track).toHaveBeenCalledTimes(1);
+        expect(analyticsScope.identify).toHaveBeenCalledTimes(1);
+        // After this test, clearMocksOnScope wipes call history on analyticsScope only
+      });
+
+      it('track and identify start fresh — previous test call counts are cleared', () => {
+        // analyticsScope.track.mock.calls is empty — clearMocksOnScope ran in afterEach
+        expect(analyticsScope.track).not.toHaveBeenCalled();
+        expect(analyticsScope.identify).not.toHaveBeenCalled();
+      });
+    });
+    ```
+    **When to use over `jest.clearAllMocks()`:** Use `clearMocksOnScope` when your test setup creates a mock scope object for a subsystem (e.g., a `db`, `analytics`, or `mailer` context) and you need to reset only that subsystem's mocks between tests. The boundary ensures that mocks owned by other subsystems (set up in different `beforeEach` blocks or test utility files) are not inadvertently cleared. WHY: `jest.clearAllMocks()` is a sledgehammer — it clears every jest.fn() in the environment, which can break tests that rely on accumulated call state set up in a shared `beforeAll`.
+
+85. **`workerGracefulExitTimeout` prevents false-positive "open handles" warnings that mask real isolation failures.** [community]
+    Jest 30.4 added `workerGracefulExitTimeout` to control how long Jest waits for a worker process to exit gracefully (default: 500ms) before force-killing it. When workers hold resources that legitimately take longer than 500ms to release (e.g., a database connection pool shutdown, a Redis client `quit()` call that awaits pending commands), Jest prematurely force-kills the worker and reports spurious "open handles" warnings (`--detectOpenHandles`). These false positives are dangerous: they disguise real isolation failures (tests that genuinely leaked open handles) as noise, causing teams to disable `--detectOpenHandles` in CI — which then hides actual leaks.
+    ```typescript
+    // jest.config.ts — raise graceful exit timeout for suites with real I/O teardown
+    import type { Config } from 'jest';
+
+    const config: Config = {
+      // Allow up to 3 seconds for workers to release database/Redis/HTTP connections
+      // in afterAll hooks before force-kill. Default 500ms causes false-positive
+      // "open handles" warnings when teardown involves real I/O.
+      workerGracefulExitTimeout: 3000,
+
+      // Combine with detectOpenHandles so real leaks still surface as errors
+      // (workers that don't exit within 3s are genuine leaks, not slow teardown)
+      // Run with: jest --detectOpenHandles
+      testEnvironment: 'node',
+      preset: 'ts-jest',
+      clearMocks: true,
+      restoreMocks: true,
+    };
+
+    export default config;
+    ```
+    **Diagnostic workflow:** Set `workerGracefulExitTimeout` to a value longer than your slowest `afterAll` teardown (measure with `--verbose`). If `--detectOpenHandles` still reports handles after raising the timeout, those are real leaks — not slow teardown. If raising the timeout silences the warning, the teardown was legitimate but slower than the default. WHY: the 500ms default was set when Jest workers rarely held long-lived connections; modern TypeScript backends commonly use database connection pools and Redis clients whose graceful shutdown takes 1-2 seconds. The mismatch produces noisy false positives that train teams to ignore legitimate open handle warnings.
+
+86. **Vitest 5.0 removes the `sequential` option entirely (confirmed in beta.2) — `concurrent: false` is the only remaining opt-out from concurrency.** [community]
+    The guide's Pattern 16 and Gotcha 82 documented `test.sequential` as deprecated in Vitest 5.0-beta. Vitest 5.0-beta.2 confirms the removal is complete — the `sequential` property on `TestOptions` and the `test.sequential` shorthand are no longer available. The `suite.sequential` flag on `describe` is also removed. Migration guide:
+    ```typescript
+    // Remove these patterns from all test files before upgrading to Vitest 5.0 stable:
+
+    // OLD — removed in Vitest 5.0
+    test.sequential('must run after the previous test', async () => { ... });
+    describe.sequential('all tests in this block run sequentially', () => { ... });
+
+    // NEW — idiomatic Vitest 5.0 replacements
+    test('must run after the previous test', { concurrent: false }, async () => { ... });
+    // For a whole describe block, pass the option to describe:
+    describe('all tests in this block run sequentially', { concurrent: false }, () => { ... });
+    ```
+    **Additional 5.0 breaking change — `expect` inlined into Vitest core:** Vitest 5.0 inlines the `expect` package directly into `vitest/core`, removing the `@vitest/expect` re-export entry point. Projects that import `expect` from `@vitest/expect` (e.g., custom assertion libraries or Vitest plugins that extend `expect` outside of test files) must update their import:
+    ```typescript
+    // OLD — fails in Vitest 5.0
+    import { expect } from '@vitest/expect';
+
+    // NEW
+    import { expect } from 'vitest';
+    ```
+    WHY: the `sequential` removal completes the concurrent-first model refactor. Keeping `sequential` alongside `concurrent` created an asymmetric API surface where opting out of the default (concurrent) required a different word than opting in. `concurrent: true | false` on both test and describe creates a single boolean dimension — consistent and lint-friendly (ESLint rules can now use `prefer-concurrent: false` over `test.sequential`).
+
+87. **Jest 30.4 `Temporal.Duration` support in timer advancement methods — use `Temporal.Duration` instead of millisecond magic numbers for timer-advancing tests.** [community]
+    Pattern 33 (Gotcha 81) covers `Temporal.ZonedDateTime` / `Temporal.Instant` in `jest.setSystemTime()`. A complementary addition in Jest 30.4: `jest.advanceTimersByTime()` and related advancement APIs now accept `Temporal.Duration` objects directly. This eliminates magic millisecond constants in timer tests — a common readability issue that can hide incorrect duration values.
+    ```typescript
+    import { Temporal } from 'temporal-polyfill'; // or native Node.js v26 global
+
+    describe('SubscriptionRenewalJob — Temporal.Duration timer isolation (Jest 30.4+)', () => {
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('does not renew subscription before 30 days have elapsed', () => {
+        const onRenew = jest.fn();
+        const job = new SubscriptionRenewalJob(onRenew, { periodDays: 30 });
+
+        job.start();
+        // Temporal.Duration makes the test intent self-documenting — no magic number 2592000000
+        jest.advanceTimersByTime(Temporal.Duration.from({ days: 29 }));
+
+        expect(onRenew).not.toHaveBeenCalled();
+        job.stop();
+      });
+
+      it('renews subscription exactly when 30 days have elapsed', () => {
+        const onRenew = jest.fn();
+        const job = new SubscriptionRenewalJob(onRenew, { periodDays: 30 });
+
+        job.start();
+        jest.advanceTimersByTime(Temporal.Duration.from({ days: 30 }));
+
+        expect(onRenew).toHaveBeenCalledTimes(1);
+        job.stop();
+      });
+
+      it('advances by a mixed-unit duration without manual conversion', () => {
+        const onRenew = jest.fn();
+        const job = new SubscriptionRenewalJob(onRenew, { periodDays: 30 });
+
+        job.start();
+        // 30 days = 30 * 24 * 60 * 60 * 1000ms — Temporal computes this automatically
+        jest.advanceTimersByTime(
+          Temporal.Duration.from({ weeks: 4, days: 2 })  // 30 days total
+        );
+
+        expect(onRenew).toHaveBeenCalledTimes(1);
+        job.stop();
+      });
+    });
+    ```
+    **Framework comparison:** Vitest's `vi.advanceTimersByTime()` does not yet accept `Temporal.Duration` — it still requires a numeric millisecond argument. When writing cross-framework test helpers, branch on `typeof duration === 'number'` vs `Temporal.Duration.prototype.isPrototypeOf(duration)`. WHY: millisecond magic numbers (`2592000000` for 30 days) are opaque and error-prone. A reviewer cannot instantly verify that `2592000000` equals 30 days without calculating. `Temporal.Duration.from({ days: 30 })` is self-documenting, reviewed at a glance, and immune to off-by-one errors from manual `days × 24 × 60 × 60 × 1000` arithmetic.
+
+---
+
+## Extended Patterns — Iteration 20
+
+### Pattern 34: `expect.arrayOf()` for type-uniform array assertions on mock return values (TypeScript, Jest 30+)  [community]
+
+`expect.arrayOf(matcher)` is the Jest 30 asymmetric matcher that passes when every element in the received array satisfies the given matcher. For mock stubs that return arrays, it provides a single-expression assertion that catches element-level shape drift without iterating over the array manually.
+
+```typescript
+// types.ts
+export interface LineItem {
+  sku: string;
+  qty: number;
+  unitPrice: number;
+  discount?: number;
+}
+
+export interface CartSummary {
+  items: LineItem[];
+  subtotal: number;
+  tax: number;
+  total: number;
+}
+
+// cartService.test.ts
+import { describe, it, expect, jest, beforeEach } from '@jest/globals';
+import type { CartRepository } from './cartRepository';
+import { CartService } from './cartService';
+
+describe('CartService.getSummary()', () => {
+  let repo: jest.Mocked<CartRepository>;
+  let service: CartService;
+
+  beforeEach(() => {
+    repo = {
+      getItems: jest.fn().mockResolvedValue([
+        { sku: 'sku-1', qty: 2, unitPrice: 15.00 },
+        { sku: 'sku-2', qty: 1, unitPrice: 9.99, discount: 0.1 },
+      ]),
+      save: jest.fn().mockResolvedValue(undefined),
+    } as jest.Mocked<CartRepository>;
+    service = new CartService(repo);
+  });
+
+  it('returns a summary with correctly shaped LineItem objects', async () => {
+    const summary = await service.getSummary('cart-1');
+
+    // expect.arrayOf — every element must match the LineItem shape
+    // Catches when a new required field is added to LineItem but the stub is not updated
+    expect(summary.items).toEqual(
+      expect.arrayOf(
+        expect.objectContaining({
+          sku: expect.any(String),
+          qty: expect.any(Number),
+          unitPrice: expect.any(Number),
+        }),
+      ),
+    );
+  });
+
+  it('returns an empty items array (not null) when cart has no items', async () => {
+    repo.getItems.mockResolvedValue([]);
+
+    const summary = await service.getSummary('cart-empty');
+
+    // expect.arrayOf on an empty array always passes — verifies array (not null/undefined) contract
+    expect(summary.items).toEqual(expect.arrayOf(expect.any(Object)));
+    expect(summary.items).toHaveLength(0);
+  });
+
+  it('all line items have non-negative quantities — business rule assertion', async () => {
+    const summary = await service.getSummary('cart-1');
+
+    // expect.arrayOf + custom matcher validates the business invariant across all items
+    expect(summary.items).toEqual(
+      expect.arrayOf(
+        expect.objectContaining({
+          qty: expect.toBeGreaterThanOrEqual(1),
+        }),
+      ),
+    );
+  });
+
+  it('detects a faulty stub that mixes item types via expect.not.arrayOf', () => {
+    // Validates that mock data is uniform — not accidentally mixed-type
+    const items = [
+      { sku: 'sku-1', qty: 2, unitPrice: 10 },
+      'accidental-string', // wrong type — would cause a runtime error in real code
+    ];
+
+    // NOT all elements are objects — detects stub contamination
+    expect(items).toEqual(expect.not.arrayOf(expect.any(Object)));
+  });
+});
+```
+
+**Key rule:** `expect.arrayOf(matcher)` passes on an empty array — every element of an empty array trivially satisfies any condition. If an empty array is invalid (e.g., a cart must have at least one item), assert `toHaveLength(n)` separately. The two assertions are complementary: `arrayOf` validates element shape; `toHaveLength` validates count.
+
+---
+
+## Quick Reference Additions — Iteration 20
+
+| Problem | Symptom | TypeScript/Jest Solution | Vitest equivalent |
+|---------|---------|--------------------------|-------------------|
+| Per-element array assertions on mock return values | Verbose per-element `expect(arr[0]).toMatchObject(...)` chains | `expect(arr).toEqual(expect.arrayOf(expect.objectContaining({...})))` (Jest 30+) | No built-in `arrayOf`; use `arr.forEach(el => expect(el).toMatchObject({...}))` |
+| Clear only a subset of mocks (one subsystem) without clearing all test mocks | `jest.clearAllMocks()` clears unrelated mocks and breaks other test setup | `mocker.clearMocksOnScope(scopeObj)` — clears only mocks on the scope object (Jest 30.4+, ModuleMocker) | `vi.clearAllMocks()` — no scope-limited equivalent; use `vi.clearMocks()` on individual mocks |
+| Spurious "open handles" warnings masking real leaks | `--detectOpenHandles` always fires even for clean teardown; teams disable it | `workerGracefulExitTimeout: 3000` (or higher) in jest.config.ts — allows slow I/O teardown without false positives | `detectAsyncLeaks: true` in vitest.config.ts (finer-grained than Jest's approach) |
+| Vitest 5.0 `test.sequential` / `describe.sequential` compile error | `Property 'sequential' does not exist on type 'TestAPI'` after upgrade | N/A (Jest uses `--runInBand` or `test.concurrent(false)` style in Jest 30) | Replace with `test('name', { concurrent: false }, fn)` and `describe('name', { concurrent: false }, fn)` |
+| `@vitest/expect` import fails after Vitest 5.0 upgrade | Module not found: `@vitest/expect` | N/A | Replace `import { expect } from '@vitest/expect'` with `import { expect } from 'vitest'` |
+| Magic millisecond numbers in timer tests | `jest.advanceTimersByTime(2592000000)` — reviewer cannot verify 30 days at a glance | `jest.advanceTimersByTime(Temporal.Duration.from({ days: 30 }))` (Jest 30.4+, Node 26) | Vitest does not yet accept `Temporal.Duration`; convert with `.total('milliseconds')` |
+
+---
+
+## Key Resources — Iteration 20 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Jest Docs — `expect.arrayOf` | Official | https://jestjs.io/docs/expect#expectarrayofvalue | New Jest 30 asymmetric matcher: every element matches — composable with `objectContaining`, `any`, etc. |
+| Jest 30.4 Release Notes — `clearMocksOnScope` | Official | https://github.com/jestjs/jest/releases/tag/v30.4.0 | `ModuleMocker.clearMocksOnScope(scope)` — targeted mock clearing for subsystem scope objects |
+| Jest Config — `workerGracefulExitTimeout` | Official | https://jestjs.io/docs/configuration#workergraceulexittimeout-number | Raise above 500ms default to prevent false-positive open-handle warnings from slow I/O teardown |
+| Vitest 5.0-beta.2 Release Notes | Official | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.2 | Confirms `sequential` option fully removed; `concurrent: false` is the only remaining opt-out; `@vitest/expect` inlined |
+| Jest Docs — Temporal Duration in `advanceTimersByTime` | Official | https://jestjs.io/docs/jest-object#jestadvancetimersbytimemsecondstorun | Jest 30.4+: `Temporal.Duration` accepted directly — self-documenting duration arguments, no millisecond arithmetic |

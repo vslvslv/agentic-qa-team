@@ -1,5 +1,5 @@
 # Coverage — QA Methodology Guide
-<!-- lang: TypeScript | topic: coverage | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: coverage | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- sources: training knowledge synthesis |
      official: martinfowler.com/bliki/TestCoverage.html (synthesized) |
@@ -18,6 +18,7 @@
      github.com/Codium-ai/cover-agent (fetched 2026-05-12: Qodo Cover archived June 2025 — no longer maintained) |
      typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html (fetched 2026-05-12: TS 6.0 default changes — module/target/types/rootDir/strict; removed options: outFile, classic moduleResolution; ignoreDeprecations bridge flag) |
      vitest.dev/config/coverage (re-fetched 2026-05-12: coverage.thresholds[glob-pattern] per-pattern syntax, global threshold still applies to pattern-matched files — differs from Jest) |
+     vitest.dev/guide/migration (fetched 2026-05-12: Vitest 4 migration — coverage.all removed, coverage.extensions removed, coverage.ignoreEmptyLines removed, experimentalAstAwareRemapping removed; ignoreClassMethods now works with V8 provider) |
      community: production experience patterns synthesized from training knowledge -->
 
 ## Core Principles
@@ -2968,17 +2969,22 @@ derived accessor patterns and explicit `get`/`set` declarations can generate unc
 branch markers. The `coverage.ignoreClassMethods` option suppresses named methods
 globally without requiring per-file `/* istanbul ignore */` comments.
 
+**Vitest 4.0 update**: `ignoreClassMethods` now works with **both** the `istanbul` and `v8`
+providers (previously Istanbul-only in Vitest 3.x). Projects using the V8 provider with
+Vitest 4+ can now suppress constructor and `toString` noise without switching to Istanbul.
+
 ```typescript
-// vitest.config.ts — ignore class methods that are untestable structural boilerplate
+// vitest.config.ts — ignore class methods that are untestable structural boilerplate (Vitest 4+)
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
     coverage: {
-      provider: 'istanbul',
-      include: ['src/**/*.ts'],
+      // In Vitest 4+, ignoreClassMethods works with both 'v8' and 'istanbul' providers.
+      // In Vitest 3.x, this option was Istanbul-only; V8 users had to use comment directives.
+      provider: 'v8',
+      include: ['src/**/*.ts'],     // Vitest 4+: use include instead of removed all: true
       exclude: ['src/**/*.d.ts', 'src/**/*.generated.ts', 'src/**/__mocks__/**'],
-      all: true,
       reporter: ['text', 'html', 'lcov'],
       thresholds: {
         lines: 80,
@@ -3277,6 +3283,87 @@ applied to the same files. This is correct Vitest behaviour, not a bug.
 3. Verify the global threshold is still appropriate after extracting per-module values — Vitest
    measures both simultaneously, unlike Jest's independent evaluation
 
+### G51 — Vitest 4.0 removed `coverage.all`: `all: true` is silently ignored and uncovered files disappear from reports  [community]
+
+Vitest 4.0 removed `coverage.all` entirely as a configuration option. In Vitest 3.x, setting
+`all: true` forced the coverage report to include all source files matching `coverage.include`,
+even those never imported by any test — making zero-coverage modules visible. In Vitest 4.0,
+this option was removed because the V8 provider was processing unexpected files (minified
+bundles, compiled outputs) when the include list was broad, causing slow or stuck report generation.
+
+**WHY it matters**: projects upgrading from Vitest 3.x to 4.x with `all: true` in their config
+receive **no deprecation warning** — the option is silently ignored. After the upgrade, coverage
+reports include only files that were imported during test execution. New source files added
+without a corresponding test file are completely invisible to the coverage report, defeating the
+primary purpose of `all: true` (detecting zero-coverage modules). The symptom: aggregate coverage
+numbers stay the same or improve after adding new source files without tests, because those files
+simply aren't counted.
+
+**The Vitest 4 replacement**: explicitly define `coverage.include` with the source glob. When
+`coverage.include` is set, Vitest 4 still reports files that match the include pattern even if
+they were not loaded during the test run — effectively restoring the `all: true` behaviour, but
+without processing unexpected files.
+
+```typescript
+// vitest.config.ts — Vitest 4 replacement for `all: true`
+// In Vitest 3.x: coverage: { all: true, include: ['src/**/*.ts'] }
+// In Vitest 4.x: setting coverage.include IS the replacement for all: true
+
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      // In Vitest 4+, defining coverage.include causes uncovered files matching
+      // the include pattern to appear in the report (zero-coverage files visible).
+      // This replaces the removed `all: true` option from Vitest 3.x.
+      // Do NOT add `all: true` — the option no longer exists and is silently ignored.
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/*.test.ts',
+        'src/**/*.spec.ts',
+        'src/**/__mocks__/**',
+        'src/**/index.ts',
+        'src/**/*.stories.ts',
+        'src/**/*.generated.ts',
+      ],
+      reporter: ['text', 'html', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+        perFile: true,
+      },
+    },
+  },
+});
+```
+
+**Other options removed in Vitest 4.0** (also silently ignored if present in config):
+- `coverage.extensions` — previously an array of file extensions to include in coverage
+  (e.g., `['.ts', '.tsx']`). In Vitest 4, file extension filtering is handled entirely by
+  the `coverage.include` glob patterns. Remove `coverage.extensions` from config and use
+  explicit glob extensions in `include` instead.
+- `coverage.ignoreEmptyLines` — removed because lines without runtime code (type
+  annotations, interface declarations, blank lines) are now automatically excluded from
+  V8 and Istanbul coverage counts. The option had no effect in practice since Vitest 3.2+
+  AST remapping already excluded non-executable lines.
+- `coverage.experimentalAstAwareRemapping` — removed because AST-based remapping is now
+  the default and only supported method in Vitest 4. If this was `false` in Vitest 3.x
+  config (to opt out of experimental AST remapping), the opt-out is no longer respected.
+
+**Upgrade checklist for Vitest 3 → 4 coverage config**:
+1. Remove `all: true` — option no longer exists; ensure `coverage.include` is explicitly set
+2. Remove `coverage.extensions` — use explicit file extension globs in `coverage.include` instead
+3. Remove `coverage.ignoreEmptyLines` — auto-excluded in Vitest 4
+4. Remove `coverage.experimentalAstAwareRemapping` — always on in Vitest 4
+5. Verify the coverage file count in `coverage/coverage-summary.json` after upgrading —
+   if it drops, the `coverage.include` glob is not covering your source files
+
 ---
 
 ## Tradeoffs & Alternatives
@@ -3372,6 +3459,12 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
   independently. See Pattern 31 and G50. Additionally, Vitest does not support negative (`-N`) absolute-count
   thresholds in pattern keys — only percentages. Projects that rely on Jest's negative threshold syntax for legacy
   module debt management must use the programmatic approach (Pattern 17) after migrating to Vitest.
+- **Vitest 4.0 `coverage.all` removal**: `all: true` no longer exists in Vitest 4 and is silently ignored.
+  The replacement is to explicitly set `coverage.include` — when `include` is defined, Vitest 4 includes
+  matching files even if they were not imported during the test run (equivalent behaviour to `all: true`).
+  Additionally, `coverage.extensions`, `coverage.ignoreEmptyLines`, and `coverage.experimentalAstAwareRemapping`
+  were all removed in Vitest 4; silently present in config, they have no effect. See G51 for the full upgrade
+  checklist. Treat the Vitest 3 → 4 upgrade as a coverage-config audit event.
 
 ---
 
@@ -3386,6 +3479,7 @@ logic" problem (AP3), and prevents teams from wasting effort on generated files.
 | Stryker Vitest runner | Official | https://stryker-mutator.io/docs/stryker-js/vitest-runner/ | Vitest-specific Stryker runner for TypeScript/ESM projects |
 | Jest coverage configuration | Official | https://jestjs.io/docs/configuration#coveragethreshold-object | coverageThreshold schema with per-file and per-directory support |
 | Vitest coverage docs | Official | https://vitest.dev/guide/coverage.html | Threshold config, V8 AST remapping (v3.2+), per-file thresholds, TypeScript support |
+| Vitest 4 migration guide | Official | https://vitest.dev/guide/migration#migrating-from-vitest-3 | Vitest 4 breaking changes: coverage.all removed, coverage.extensions/ignoreEmptyLines/experimentalAstAwareRemapping removed; ignoreClassMethods now V8-compatible |
 | ts-jest coverage docs | Official | https://kulshekhar.github.io/ts-jest/docs/ | ts-jest with Istanbul coverage for Jest TypeScript projects |
 | c8 — V8 Native Coverage CLI | Official | https://github.com/bcoe/c8 | Lightweight V8 coverage CLI for Node.js test runner; no instrumentation overhead |
 | mutmut (Python) | Official | https://mutmut.readthedocs.io/ | Python mutation testing tool reference |

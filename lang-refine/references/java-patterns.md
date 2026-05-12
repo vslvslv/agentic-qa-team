@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5 docs, Mockito docs, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot Test docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs) | mixed | iteration: 30 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.13 release notes, Mockito 5.x release notes, AssertJ docs, Testcontainers docs, WireMock docs, Awaitility docs, Spring Boot 3.4 release notes, Spring Framework 6.2 MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass) | mixed | iteration: 31 | score: 97/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3307,6 +3307,8 @@ class UserRepositoryIntegrationTest {
 | `Mockito.when(...)` on every test even when stub is irrelevant | Unnecessary stubs mask unused-stub bugs and add noise | Enable `STRICT_STUBS`; only stub what the test exercises |
 | Testing private methods directly via reflection | Brittle; private APIs change without notice | Test behaviour through public API; if private method is complex, extract it to a package-private collaborator |
 | `Thread.sleep()` in tests to wait for async events | Flaky; too short = false failures, too long = slow CI | Use `Awaitility.await().untilAsserted(...)` for polling; or restructure to synchronous testing with `@Async` disabled |
+| Forgetting `@AutoConfigureTestDatabase(replace = NONE)` when using `@ServiceConnection` with `@DataJpaTest` | Spring Boot replaces the container datasource with H2 despite `@ServiceConnection` being present | Always add `replace = Replace.NONE` on `@DataJpaTest` when using Testcontainers `@ServiceConnection` |
+| Using `@MockBean` in Spring Boot 3.4+ | `@MockBean` still works but `@MockitoBean` is now the canonical API and will receive future improvements | Migrate to `@MockitoBean` / `@MockitoSpyBean` from `org.springframework.test.context.bean.override.mockito` |
 
 ---
 
@@ -3891,6 +3893,504 @@ class UserRepositoryTest {
 
 ---
 
+## JUnit 5.11–5.13 — Recent Testing Additions
+
+### @FieldSource — Field-Backed Parameterized Tests (JUnit 5.11)
+
+`@FieldSource` feeds parameterized test arguments from a field (static or instance) instead of a method or inline literal. It follows the same rules as `@MethodSource` but is simpler when the argument set is a plain collection that doesn't need transformation logic.
+
+```java
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.FieldSource;
+import java.util.List;
+import static org.assertj.core.api.Assertions.assertThat;
+
+class EmailValidatorTest {
+
+    // Static field — single type: each element is a single argument
+    static final List<String> VALID_EMAILS = List.of(
+        "alice@example.com",
+        "bob+tag@company.org",
+        "carol.smith@subdomain.example.com"
+    );
+
+    static final List<String> INVALID_EMAILS = List.of(
+        "missing-at-sign",
+        "@no-local-part.com",
+        "no-domain@"
+    );
+
+    @ParameterizedTest(name = "''{0}'' should be valid")
+    @FieldSource("VALID_EMAILS")
+    void acceptsValidEmails(String email) {
+        assertThat(EmailValidator.isValid(email)).isTrue();
+    }
+
+    @ParameterizedTest(name = "''{0}'' should be rejected")
+    @FieldSource("INVALID_EMAILS")
+    void rejectsInvalidEmails(String email) {
+        assertThat(EmailValidator.isValid(email)).isFalse();
+    }
+
+    // External field reference: fully-qualified field name from another class
+    @ParameterizedTest
+    @FieldSource("com.example.TestData#EDGE_CASE_INPUTS")
+    void handlesEdgeCases(String input) {
+        assertThat(() -> EmailValidator.isValid(input)).doesNotThrowAnyException();
+    }
+}
+```
+
+**When to use `@FieldSource` vs `@MethodSource`:** Use `@FieldSource` when the argument data is a static list or set with no transformation needed. Use `@MethodSource` when arguments require computation, transformation, or streaming.
+
+### @AutoClose — Automatic Resource Cleanup in Tests (JUnit 5.11)
+
+`@AutoClose` on a test field causes JUnit to call `close()` (or any other configured method) on the resource after the test completes — without requiring a `try-with-resources` block or manual `@AfterEach`. Works on any `AutoCloseable`.
+
+```java
+import org.junit.jupiter.api.AutoClose;
+import org.junit.jupiter.api.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+
+class DatabaseConnectionTest {
+
+    // @AutoClose calls close() after each test (or after the class if static)
+    @AutoClose
+    private final DatabaseConnection conn = DatabaseConnection.openTestConnection();
+
+    // Static @AutoClose field: closed after all tests in the class complete
+    @AutoClose
+    private static final WireMockServer wireMock = new WireMockServer(8089);
+
+    @Test
+    void queryUsers_returnsNonEmptyResult() {
+        var results = conn.query("SELECT * FROM users LIMIT 10");
+        assertThat(results).isNotEmpty();
+    }
+
+    @Test
+    void connectionIsOpen_beforeClose() {
+        assertThat(conn.isOpen()).isTrue();
+        // No manual close() call needed — @AutoClose handles it after this test
+    }
+}
+
+// Custom close method: @AutoClose("shutdown") calls shutdown() instead of close()
+class ServerTest {
+    @AutoClose("shutdown")
+    private final EmbeddedServer server = EmbeddedServer.start(8080);
+
+    @Test
+    void healthCheck_returns200() {
+        // server.shutdown() is called after this test completes
+    }
+}
+```
+
+**Gotcha:** `@AutoClose` fields must be non-null before any test runs. If a field is lazily initialized and stays null, JUnit skips the close call (no NPE). For `static` fields, `close()` is invoked once after all tests in the class complete — equivalent to `@AfterAll`.
+
+### Repeatable Source Annotations and `argumentSet()` (JUnit 5.11)
+
+In JUnit 5.11, `@…Source` annotations became **repeatable**, allowing multiple sources to feed a single `@ParameterizedTest`. The new `argumentSet(name, args...)` factory method gives each row a human-readable name without embedding it in the CSV value.
+
+```java
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import java.util.stream.Stream;
+import static org.junit.jupiter.params.provider.Arguments.argumentSet;
+
+class ShippingCalculatorTest {
+
+    // Multiple @MethodSource annotations on the same test (JUnit 5.11+)
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("standardShipments")
+    @MethodSource("expressShipments")       // second source feeds into the same test
+    void calculatesCorrectRate(String label, double weightKg, double expected) {
+        assertThat(ShippingCalculator.rate(weightKg)).isEqualTo(expected, within(0.01));
+    }
+
+    static Stream<Arguments> standardShipments() {
+        return Stream.of(
+            argumentSet("light parcel (0.5 kg)", 0.5, 3.50),   // named row
+            argumentSet("medium parcel (2 kg)",  2.0, 5.00),
+            argumentSet("heavy parcel (10 kg)", 10.0, 12.00)
+        );
+    }
+
+    static Stream<Arguments> expressShipments() {
+        return Stream.of(
+            argumentSet("express light (0.5 kg)", 0.5, 7.00),   // express premium
+            argumentSet("express heavy (10 kg)", 10.0, 20.00)
+        );
+    }
+}
+```
+
+### @EnumSource Range Selection (JUnit 5.12)
+
+JUnit 5.12 added `from` and `to` attributes to `@EnumSource`, enabling selection of a contiguous range of enum constants without listing each one individually or using a regex `names` pattern.
+
+```java
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+
+enum Priority { LOW, MEDIUM, HIGH, CRITICAL, EMERGENCY }
+
+class AlertRoutingTest {
+
+    // Select a contiguous range by enum declaration order
+    @ParameterizedTest(name = "{0} triggers standard alert")
+    @EnumSource(value = Priority.class, from = "LOW", to = "HIGH")  // LOW, MEDIUM, HIGH
+    void standardPriorities_routeToStandardQueue(Priority priority) {
+        assertThat(AlertRouter.queueFor(priority)).isEqualTo("standard");
+    }
+
+    @ParameterizedTest(name = "{0} triggers escalation")
+    @EnumSource(value = Priority.class, from = "CRITICAL")          // CRITICAL, EMERGENCY
+    void highPriorities_routeToEscalationQueue(Priority priority) {
+        assertThat(AlertRouter.queueFor(priority)).isEqualTo("escalation");
+    }
+}
+```
+
+### @ParameterizedClass — Class-Level Parameterization (JUnit 5.13)
+
+`@ParameterizedClass` (JUnit 5.13, May 2025) extends the parameterization concept from individual methods to entire test classes. Each argument set creates a new invocation of the entire class — all `@Test`, `@BeforeEach`, and `@AfterEach` methods run for each argument. This is the right tool when many tests share a common parameterized setup (e.g., the same test suite run against multiple database engines or API versions).
+
+```java
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.ValueSource;
+import static org.assertj.core.api.Assertions.assertThat;
+
+// Entire class is instantiated once per argument
+// All @Test methods in this class run for each value
+@ParameterizedClass
+@ValueSource(strings = {"postgres", "mysql", "h2"})
+class DatabaseAdapterCompatibilityTest {
+
+    private final String dialect;
+    private final DatabaseAdapter adapter;
+
+    // Constructor receives the parameterized argument
+    DatabaseAdapterCompatibilityTest(String dialect) {
+        this.dialect = dialect;
+        this.adapter = DatabaseAdapter.forDialect(dialect);
+    }
+
+    @Test
+    void insert_thenFindById_roundTripsCorrectly() {
+        var id = adapter.insert(new Record("key", "value"));
+        assertThat(adapter.findById(id)).isPresent()
+            .hasValueSatisfying(r -> assertThat(r.value()).isEqualTo("value"));
+    }
+
+    @Test
+    void batchInsert_respectsTransactionBoundary() {
+        assertThatCode(() -> adapter.batchInsert(generateRecords(100)))
+            .doesNotThrowAnyException();
+    }
+
+    // @BeforeParameterizedClassInvocation runs before all tests for one argument
+    // @AfterParameterizedClassInvocation runs after all tests for one argument
+}
+```
+
+**When to use `@ParameterizedClass` vs `@ParameterizedTest`:** Use `@ParameterizedClass` when multiple test methods share the same parameterized context (e.g., all tests in a database compatibility suite need the same dialect). Use `@ParameterizedTest` when only one method has varied inputs.
+
+---
+
+## Spring Boot @ServiceConnection — Modern Testcontainers Wiring (Spring Boot 3.1+)
+
+`@ServiceConnection` (Spring Boot 3.1+) eliminates the boilerplate `@DynamicPropertySource` configuration block when wiring Testcontainers into `@SpringBootTest`. Spring Boot automatically reads the connection details from the container and configures the corresponding Spring Boot auto-configuration (DataSource, RedisConnectionFactory, KafkaTemplate, etc.) to point at the container's dynamic port.
+
+```java
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.KafkaContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+@SpringBootTest
+@Testcontainers
+class OrderIntegrationTest {
+
+    // @ServiceConnection wires datasource URL/user/password automatically
+    // No @DynamicPropertySource block needed
+    @Container
+    @ServiceConnection
+    static final PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine");
+
+    // Works for Redis, Kafka, MongoDB, RabbitMQ, and many more (Spring Boot 3.1+)
+    @Container
+    @ServiceConnection
+    static final KafkaContainer kafka =
+        new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.0"));
+
+    @Autowired
+    OrderRepository orderRepo;
+
+    @Autowired
+    KafkaTemplate<String, Object> kafkaTemplate;
+
+    @Test
+    void placeOrder_persistsAndPublishesEvent() {
+        var order = orderRepo.save(new Order("user-1", List.of("SKU-001")));
+        assertThat(order.id()).isNotNull();
+
+        kafkaTemplate.send("orders.placed", order.id().toString(), order);
+        // Awaitility assertion on consumer...
+    }
+}
+
+// ------ OLD approach (still works, but verbose) ------
+@SpringBootTest
+@Testcontainers
+class OldStyleTest {
+
+    @Container
+    static final PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:16-alpine");
+
+    // @DynamicPropertySource required when @ServiceConnection is not available
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url",      postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
+}
+```
+
+**Supported containers out of the box (Spring Boot 3.4):** PostgreSQL, MySQL, MariaDB, MongoDB, Redis, RabbitMQ, Kafka, Cassandra, Couchbase, Elasticsearch, Neo4j, Grafana LGTM. For any container not natively supported, `@DynamicPropertySource` remains the fallback.
+
+**Gotcha — `@DataJpaTest` + `@ServiceConnection`:** When using `@DataJpaTest`, add `@AutoConfigureTestDatabase(replace = Replace.NONE)` alongside `@ServiceConnection` — otherwise Spring Boot replaces the container datasource with an embedded H2.
+
+---
+
+## Spring Framework 6.2 — @MockitoBean and @MockitoSpyBean
+
+Spring Framework 6.2 (Spring Boot 3.4+) introduced `@MockitoBean` and `@MockitoSpyBean` as first-class replacements for Spring Boot's `@MockBean` and `@SpyBean`. The new annotations live in `org.springframework.test.context.bean.override.mockito` and are part of the core Spring TestContext Framework rather than the Boot test module.
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.web.servlet.assertj.MockMvcTester;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
+
+@WebMvcTest(UserController.class)
+class UserControllerTest {
+
+    @Autowired
+    MockMvcTester mvc;    // AssertJ-based MockMvc wrapper (Spring Boot 3.4 / Spring MVC 7)
+
+    @MockitoBean             // replaces UserService bean in the context with a Mockito mock
+    UserService userService;
+
+    @MockitoSpyBean          // wraps the real AuditService with a spy — real methods called by default
+    AuditService auditService;
+
+    @Test
+    void getUser_existingId_returns200() {
+        given(userService.findById(1L))
+            .willReturn(new UserDto(1L, "Alice", "alice@example.com"));
+
+        // MockMvcTester: fluent AssertJ-based API (no Hamcrest matchers needed)
+        assertThat(mvc.get().uri("/users/1"))
+            .hasStatusOk()
+            .bodyJson()
+            .extractingPath("$.name").isEqualTo("Alice");
+    }
+
+    @Test
+    void getUser_triggersAuditLog() {
+        given(userService.findById(42L))
+            .willReturn(new UserDto(42L, "Bob", "bob@example.com"));
+
+        mvc.get().uri("/users/42").exchange();
+
+        // MockitoSpyBean: verify real audit service was called with correct args
+        verify(auditService).log("user.read", 42L);
+    }
+}
+```
+
+**`@MockitoBean` vs `@MockBean` differences:**
+
+| Feature | `@MockBean` (Boot) | `@MockitoBean` (Spring 6.2) |
+|---|---|---|
+| Package | `org.springframework.boot.test.mock.mockito` | `org.springframework.test.context.bean.override.mockito` |
+| Requires Spring Boot | Yes | No — works with plain Spring Framework |
+| Context reset strategy | Resets context if beans differ between tests | Supports `REPLACE_OR_CREATE` and `WRAP` strategies explicitly |
+| Deprecation | Not deprecated, but `@MockitoBean` is preferred in Spring 6.2+ | New canonical API |
+| Usage in non-Boot tests | Limited | Full support in `@SpringJUnitConfig` tests |
+
+**Migration:** In Spring Boot 3.4+ projects, prefer `@MockitoBean` over `@MockBean` for new test code. Existing `@MockBean` tests continue to work — no forced migration.
+
+---
+
+## MockMvcTester — AssertJ-Native MockMvc API (Spring Boot 3.4 / Spring Framework 7)
+
+`MockMvcTester` wraps `MockMvc` with an AssertJ-based fluent API, replacing Hamcrest matchers with chainable AssertJ assertions. It's auto-configured by `@WebMvcTest` when AssertJ is on the classpath, and can be injected directly as a `@Autowired` field.
+
+```java
+import org.springframework.test.web.servlet.assertj.MockMvcTester;
+import org.springframework.test.web.servlet.assertj.MvcTestResult;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+
+    @Autowired
+    MockMvcTester mvc;    // auto-configured; no setup needed
+
+    @MockitoBean
+    OrderService orderService;
+
+    @Test
+    void createOrder_validRequest_returns201() {
+        given(orderService.place(any())).willReturn(new OrderDto("ORD-1", "PLACED"));
+
+        assertThat(
+            mvc.post().uri("/orders")
+               .contentType(MediaType.APPLICATION_JSON)
+               .content("""
+                   {"productId": "P-123", "quantity": 2}
+                   """)
+        )
+            .hasStatus(HttpStatus.CREATED)
+            .bodyJson()
+            .extractingPath("$.orderId").isEqualTo("ORD-1");
+    }
+
+    @Test
+    void createOrder_invalidRequest_returns400WithValidationErrors() {
+        assertThat(
+            mvc.post().uri("/orders")
+               .contentType(MediaType.APPLICATION_JSON)
+               .content("""{"quantity": -1}""")  // missing productId, negative quantity
+        )
+            .hasStatus(HttpStatus.BAD_REQUEST)
+            .bodyJson()
+            .extractingPath("$.errors").asArray().hasSizeGreaterThan(0);
+    }
+
+    @Test
+    void getOrder_notFound_returns404() {
+        given(orderService.findById("MISSING")).willThrow(new OrderNotFoundException("MISSING"));
+
+        assertThat(mvc.get().uri("/orders/MISSING"))
+            .hasStatus(HttpStatus.NOT_FOUND)
+            .bodyJson()
+            .extractingPath("$.message").asString().contains("MISSING");
+    }
+
+    // Extract to a POJO for multi-field assertions
+    @Test
+    void getOrder_existingId_returnsFullDto() {
+        given(orderService.findById("ORD-1"))
+            .willReturn(new OrderDto("ORD-1", "PLACED"));
+
+        MvcTestResult result = mvc.get().uri("/orders/ORD-1").exchange();
+
+        assertThat(result).hasStatusOk();
+        OrderDto dto = result.getResponse().getContentAs(OrderDto.class);
+        assertThat(dto.orderId()).isEqualTo("ORD-1");
+        assertThat(dto.status()).isEqualTo("PLACED");
+    }
+}
+```
+
+**MockMvcTester vs Classic MockMvc:**
+
+```java
+// OLD — MockMvc with Hamcrest matchers
+mockMvc.perform(get("/users/1").accept(MediaType.APPLICATION_JSON))
+    .andExpect(status().isOk())
+    .andExpect(jsonPath("$.name", equalTo("Alice")))
+    .andExpect(jsonPath("$.email", endsWith("@example.com")));
+
+// NEW — MockMvcTester with AssertJ
+assertThat(mvc.get().uri("/users/1").accept(MediaType.APPLICATION_JSON))
+    .hasStatusOk()
+    .bodyJson()
+    .extractingPath("$.name").isEqualTo("Alice");
+```
+
+**Why prefer MockMvcTester:** Consistent AssertJ API across unit tests and integration tests; richer failure messages (shows actual vs expected JSON path); `hasStatus(HttpStatus.X)` is more readable than `status().isXxx()`; AssertJ's `.satisfies()`, `.asArray()`, `.asString()` chaining works naturally on extracted JSON values.
+
+---
+
+## Mockito 5.x — Notable Testing Improvements
+
+### Auto-Detection in `mockStatic` and `mockConstruction` (Mockito 5.21)
+
+Mockito 5.21 added automatic class detection for `mockStatic` and `mockConstruction`, reducing the redundant type specification in `try` blocks.
+
+```java
+import org.mockito.MockedStatic;
+import org.mockito.MockedConstruction;
+import static org.mockito.Mockito.*;
+
+// Before 5.21 — type must be specified twice
+try (MockedStatic<LocalDate> mockedDate = mockStatic(LocalDate.class)) {
+    mockedDate.when(LocalDate::now).thenReturn(LocalDate.of(2025, 5, 1));
+    // ...
+}
+
+// 5.21+ — withSettings().defaultAnswer() example; auto-detection infers the type
+// (auto-detection is most useful in construction mocking where generic inference works)
+try (MockedConstruction<EmailSender> mocked = mockConstruction(
+         EmailSender.class,                                   // type specified once
+         (mock, context) -> when(mock.send(any())).thenReturn(true)
+     )) {
+    var service = new NotificationService();  // EmailSender constructed inside
+    service.notify("alice@example.com", "Hello");
+    verify(mocked.constructed().get(0)).send("alice@example.com");
+}
+```
+
+### STRICT_STUBS with Inline Mock Maker — Gotcha [community]
+
+Mockito 5.x ships with the **inline mock maker** as default on Java 21+, enabling mocking of `final` classes and `static` methods without additional configuration. However, combining `STRICT_STUBS` with inline mocks can trigger unexpected "unnecessary stubbing" failures when a stubbed method is called inside a `verify()` check. The fix: scope `STRICT_STUBS` checks carefully — avoid re-stubbing inside assertion helpers.
+
+```java
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.STRICT_STUBS)
+class FinalClassMockTest {
+
+    @Mock
+    SealedOrFinalService service;  // Mockito 5.x can mock final/sealed classes without config
+
+    @Test
+    void mocksFinalClass_withStrictStubs() {
+        // Stub is used exactly once — STRICT_STUBS happy
+        when(service.compute(42)).thenReturn("result");
+        assertThat(service.compute(42)).isEqualTo("result");
+    }
+
+    // BAD — STRICT_STUBS flags 'when(service.compute(99))' as unnecessary
+    // if service.compute(99) is never actually called by the code under test
+    @Test
+    void unnecessaryStub_failsWithStrictStubs() {
+        when(service.compute(99)).thenReturn("never used");  // UnnecessaryStubbingException!
+        // Fix: remove the stub, or use lenient() for stubs that are conditionally needed
+        lenient().when(service.compute(99)).thenReturn("never used");  // no strict check
+    }
+}
+```
+
+---
+
 ## Stable Values (Java 25 preview — JEP 502)
 
 `StableValue` provides lazily-initialized final fields without the complexity and pitfalls of double-checked locking or `volatile`. A stable value is computed once on first access and then frozen — the JVM can apply the same optimizations (inlining, constant folding) as for `static final` fields.
@@ -4244,4 +4744,9 @@ sf.getStatistics().setStatisticsEnabled(true);
 | HikariCP `maxLifetime` >= DB `wait_timeout` | DB closes connection while pool still holds it; next borrow throws `Connection is closed` | Set `maxLifetime` ≥ 30s less than DB wait timeout |
 | HikariCP `minimumIdle = 0` in production | Pool empties at low traffic; reconnects on spike add 50–200 ms latency | Keep `minimumIdle` ≥ 2–5 to maintain warm connections |
 | `StructuredTaskScope` without `Joiner` custom policy | `ShutdownOnFailure` cancels all on first error; may not fit partial-success use cases | Use `Joiner.custom(...)` to collect all successes and log failures independently |
+| `@DynamicPropertySource` for Testcontainers wiring | Verbose; four lines per container; easy to get URL/user/password mapping wrong | Use `@ServiceConnection` (Spring Boot 3.1+) — auto-wires datasource/Redis/Kafka from container |
+| `@MockBean` in new Spring Boot 3.4+ test code | Lives in Boot module only; `@MockitoBean` (Spring 6.2) is now the canonical API with better strategy control | Prefer `@MockitoBean` and `@MockitoSpyBean` from `org.springframework.test.context.bean.override.mockito` |
+| `MockMvc` with Hamcrest matchers | Verbose; Hamcrest failure messages lack context; mixes two assertion libraries in one test | Use `MockMvcTester` with AssertJ assertions (auto-configured by `@WebMvcTest` in Spring Boot 3.4+) |
+| `@ParameterizedTest` on every method in a class that shares the same setup | Each method needs its own source annotation; setup is duplicated | Use `@ParameterizedClass` (JUnit 5.13) to run the entire class with each argument set |
+| Manual `close()` in `@AfterEach` for test resources | Verbose; easy to forget; hides intent | Use `@AutoClose` (JUnit 5.11) on the field — JUnit calls `close()` automatically after each test |
 

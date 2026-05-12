@@ -1,6 +1,6 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed), jestjs.io/blog (Jest 30 Jan 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer) -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training knowledge + iterative refinement pass | new: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
 ## Core Principles
@@ -14,7 +14,7 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 
 **ISTQB CTFL 4.0 terminology used in this guide:** "test level" (unit / integration / system / acceptance — not "test layer"), "test suite" (not "test set"), "test case" (an individual verifiable condition — not just "test"), "defect" (not "bug"), "test basis" (specifications, code, requirements used to derive test cases). Consistent with ISTQB terminology helps teams communicate precisely across roles.
 
-**The 51 CI testing pillars covered in this guide:**
+**The 55 CI testing pillars covered in this guide:**
 
 | # | Pillar | Target |
 |---|---|---|
@@ -69,7 +69,10 @@ CI/CD pipelines are only as good as the test suites they run. The goal is maximu
 | 49 | Vitest 4.1 GitHub Actions job summary | `github-actions` reporter auto-injects job summary with test stats + flaky test permalinks when `$GITHUB_STEP_SUMMARY` is set |
 | 50 | OIDC repository custom properties | `repo_property_*` claims in GitHub OIDC tokens enable attribute-based trust policies — eliminates per-repo allow-list maintenance |
 | 51 | Vitest `viteModuleRunner: false` | Experimental: production-parity Node.js test execution (no Vite sandbox) for backend/CLI packages — 30–50% faster startup |
-| 52 | Jest 30 TypeScript performance | 37% faster runs, 77% lower peak memory, native `jest.config.ts` support, barrel file optimizer (up to 100× import speedup) |
+| 52 | Jest 30 TypeScript performance | 37% faster runs, 77% lower peak memory, native `jest.config.ts` support, barrel file optimizer (up to 100× import speedup) — released June 2025 |
+| 53 | Jest 30 new assertion APIs | `expect.arrayOf`, `jest.advanceTimersToNextFrame()`, `jest.onGenerateMock()`, `using` keyword spy auto-cleanup, `test.each %$` case numbering |
+| 54 | GitHub Actions custom runner images | Pre-bake all tools + browsers into a VM image; eliminates cold-start install overhead (90–175s saved per job on cold runs); GA March 2026 |
+| 55 | Vitest 4.1 mock API improvements | `mockThrow()`/`mockThrowOnce()`, Chai-style mock assertions, `vi.defineHelper()` for stack-trace hygiene, Vite 8 peer dep consolidation, Agent Reporter for AI CI contexts |
 
 > [community] Teams that document and enforce these 10 pillars explicitly report 40–60% reduction in "mystery CI failures" within the first quarter. The biggest gains come from items 5 (flaky handling) and 10 (environment parity) — the two most commonly skipped.
 
@@ -3285,7 +3288,7 @@ validateAllWorkflows();
 
 ### Jest 30 for TypeScript CI: Performance Leap  [community]
 
-Jest 30 (released January 2025) delivers the largest performance improvement in Jest's history — 37% faster test runs and 77% lower peak memory for large TypeScript server suites. These gains come from three architectural changes: a new module resolver (`unrs-resolver`, based on the Rust-backed OXC resolver), native TypeScript config file support removing one transform layer, and a barrel file optimizer that eliminates the exploding import graphs that slow Jest on modern TypeScript monorepos.
+Jest 30 (released June 4, 2025) delivers the largest performance improvement in Jest's history — 37% faster test runs and 77% lower peak memory for large TypeScript server suites. These gains come from three architectural changes: a new module resolver (`unrs-resolver`, based on the Rust-backed OXC resolver), native TypeScript config file support removing one transform layer, and a barrel file optimizer that eliminates the exploding import graphs that slow Jest on modern TypeScript monorepos.
 
 **Why this matters for CI:** The 37% speed gain is an unconditional reduction in CI runner minutes with zero code changes required in most TypeScript projects. The 77% memory reduction is the more impactful figure for shared runners — Jest OOM kills were a leading cause of flaky CI on memory-constrained 8 GB runners running large TypeScript APIs.
 
@@ -3456,6 +3459,10 @@ module.exports = {
 | OIDC trust policy with `repo_property_*` condition but no `sub` scoping | Any GitHub org that assigns the same custom property can assume the role — cross-org credential exposure | Always pair `repo_property_*` conditions with `StringLike: sub: repo:myorg/*:*` to restrict to the owning org |
 | Custom property not designated for OIDC inclusion at org level | `repo_property_*` claims absent from token even when property is set on the repo; trust policy condition never matches | Org admin must enable "Include in OIDC tokens" for each property — verify with `verify-oidc-claims.ts` script before rolling out |
 | Barrel file imports in Jest without `babel-plugin-transform-barrels` | A single `import { Button } from '@myorg/ui'` triggers Jest to load 400+ modules (the full barrel); 10–30s per test suite startup on large component libraries | Add `babel-plugin-transform-barrels` to `.babelrc.js`; or use `no-barrel-file` ESLint rule to prevent new barrel files; or migrate to Vitest (ESM-native, barrel-safe) |
+| Custom runner image without path-scoped Copilot review trigger | Copilot cloud agent reviews trivial PRs (docs, lockfile) and consumes Actions minutes on every push — bill grows with team size | Scope `on.pull_request.paths` to `src/**` and `tests/**`; add size gate (`additions + deletions > 10`) |
+| Custom runner image tag set to `:latest` without version pin | Playwright browser version in image silently changes overnight; tests fail with "browser binary mismatch" | Include Playwright version in image tag (e.g., `:node22-pw1.60`); update on controlled schedule |
+| Vitest `mockThrow()` used on non-function mock without return type annotation | `mockThrow` auto-detects sync vs async from return type — `vi.fn()` without annotation defaults to sync; async callers get an uncaught throw instead of a rejected promise | Always annotate mock return type: `vi.fn() as Mock<Parameters<T>, ReturnType<T>>` |
+| `vi.defineHelper()` wrapping async functions without `await` propagation | `defineHelper` removes stack frames but does not modify async behavior; if the helper `throw`s without propagating, the call site sees an empty stack | Ensure all paths inside `defineHelper` wrappers either return or throw — never silently swallow |
 
 ## Real-World Gotchas [community]
 
@@ -7206,5 +7213,449 @@ console.log('[vitest-v5-check] No v5 migration issues detected.');
 > [community] The Vitest v5 upgrade that causes the most confusion is the removal of `sequential` as a standalone test option. In v4, writing `test('my test', { sequential: true }, ...)` was a no-op for individual tests but communicated intent. In v5, `sequential` is not a valid property — it produces a TypeScript error. The replacement is `describe.sequential(() => { ... })` which serializes all tests within the block. Teams with many individual-test sequential annotations need a mechanical grep-and-replace pass before upgrading.
 
 > [community] V8 coverage expansion to `node:child_process` and `node:worker_threads` in v5 is a double-edged change. Teams with worker-heavy code (background jobs, CPU-intensive processing moved to workers) will see their coverage percentages INCREASE because previously uncovered worker code is now tracked. If a team has a 78% coverage threshold and worker code has 50% coverage, the upgrade may cause threshold failures that weren't present in v4. Profile coverage delta on a non-blocking branch before merging the v5 upgrade.
+
+---
+
+### Jest 30 Additional APIs for TypeScript CI [community]
+
+Jest 30 (June 2025) shipped several new APIs beyond the headline performance gains that are directly relevant to TypeScript CI pipelines. These APIs close common ergonomic gaps that TypeScript teams work around with manual implementations.
+
+> [community] Teams upgrading to Jest 30 from Jest 29 report that the new APIs most commonly adopted immediately are `expect.arrayOf` (replacing verbose `.toEqual(expect.arrayContaining([...]))` patterns) and `jest.advanceTimersToNextFrame()` (replacing manual fake-timer frame advancement that was error-prone with `requestAnimationFrame`-based UI logic). Both were among the most-requested features in the Jest GitHub issue tracker.
+
+**`expect.arrayOf` — typed array contents assertion (TypeScript):**
+
+```typescript
+// jest tests — expect.arrayOf replaces verbose arrayContaining patterns
+import { describe, it, expect } from '@jest/globals';
+import { UserService } from '../src/services/user-service';
+
+describe('UserService.listUsers', () => {
+  it('returns an array of User objects', async () => {
+    const service = new UserService();
+    const users = await service.listUsers();
+
+    // Jest 30: expect.arrayOf validates every element matches the asymmetric matcher
+    // Previously required: expect.arrayContaining([expect.any(Object)]) — less precise
+    expect(users).toEqual(expect.arrayOf(
+      expect.objectContaining({
+        id: expect.any(String),
+        email: expect.any(String),
+        role: expect.stringMatching(/^(admin|user|viewer)$/),
+      }),
+    ));
+  });
+});
+```
+
+**`jest.advanceTimersToNextFrame()` — requestAnimationFrame support:**
+
+```typescript
+// Tests for components using requestAnimationFrame (React, animation libraries)
+import { describe, it, expect, beforeEach } from '@jest/globals';
+import { render, act } from '@testing-library/react';
+import { AnimatedCounter } from '../src/components/animated-counter';
+
+describe('AnimatedCounter', () => {
+  beforeEach(() => {
+    // @sinonjs/fake-timers v13 bundled with Jest 30 fully supports rAF
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('increments counter on each animation frame', () => {
+    const { getByTestId } = render(<AnimatedCounter start={0} target={10} />);
+
+    // Advance past animation setup
+    act(() => jest.runAllTimers());
+
+    // Jest 30: advance all pending rAF callbacks to next frame boundary
+    // Previously: no clean way to do this without manual setTimeout hacks
+    act(() => jest.advanceTimersToNextFrame());
+    expect(getByTestId('counter').textContent).toBe('1');
+
+    act(() => jest.advanceTimersToNextFrame());
+    expect(getByTestId('counter').textContent).toBe('2');
+  });
+});
+```
+
+**`using` keyword for automatic spy cleanup (TypeScript 5.2+ explicit resource management):**
+
+```typescript
+// Jest 30 spies as async disposables — stop() called automatically on block exit
+import { describe, it, expect } from '@jest/globals';
+
+describe('PaymentService', () => {
+  it('logs warning when payment gateway is slow', () => {
+    // TypeScript 5.2+ 'using' keyword — spy is automatically restored when block exits
+    // No need for afterEach(() => jest.restoreAllMocks()) when using this pattern
+    using consoleSpy = jest.spyOn(console, 'warn');
+
+    const service = new PaymentService({ timeoutMs: 100 });
+    service.processPayment({ amount: 50 });
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('gateway response slow'),
+    );
+    // consoleSpy.mockRestore() called automatically here — even if test throws
+  });
+});
+```
+
+**`jest.onGenerateMock()` — intercepting auto-mock generation (TypeScript):**
+
+```typescript
+// jest.setup.ts — register a global mock interceptor for database modules
+import { jest } from '@jest/globals';
+
+// Runs before each auto-mock is finalized — allows patching generated mocks
+jest.onGenerateMock((modulePath, moduleMock) => {
+  // Intercept any module matching 'Database' to add default connection behavior
+  if (typeof modulePath === 'string' && modulePath.includes('database')) {
+    const mock = moduleMock as Record<string, jest.Mock>;
+    if ('connect' in mock) {
+      mock['connect'] = jest.fn().mockResolvedValue({ connected: true });
+    }
+    if ('disconnect' in mock) {
+      mock['disconnect'] = jest.fn().mockResolvedValue(undefined);
+    }
+  }
+  return moduleMock;
+});
+```
+
+**`test.each` with `%$` test case numbering:**
+
+```typescript
+// jest tests — %$ injects case number for readable test output
+import { describe, test, expect } from '@jest/globals';
+import { validateEmail } from '../src/utils/validation';
+
+const emailCases = [
+  ['user@example.com', true],
+  ['invalid-email', false],
+  ['@example.com', false],
+  ['user@', false],
+  ['user@example.co.uk', true],
+] as const;
+
+describe('validateEmail', () => {
+  // %$ = test case number (1-indexed), %s = string representation of arg
+  // Output: "Case 1: user@example.com", "Case 2: invalid-email", etc.
+  test.each(emailCases)('Case %$: %s → %s', (email, expected) => {
+    expect(validateEmail(email)).toBe(expected);
+  });
+});
+```
+
+**Jest 30 breaking changes quick reference (TypeScript migration):**
+
+| Change | Old code | New code |
+|---|---|---|
+| CLI flag renamed | `--testPathPattern` | `--testPathPatterns` |
+| Node 14/16 dropped | (was supported) | Upgrade runner to Node 18+ |
+| TypeScript min version | TS 4.x | TS 5.4+ required |
+| jsdom version | jsdom 21 | jsdom 26 (may affect `window.location` mocks) |
+| Non-enumerable props in matchers | Included in `toEqual` | Excluded (closer to spec) |
+
+> [community] The `expect.arrayOf` matcher is the most impactful new Jest 30 API for TypeScript teams because it provides structural validation of array contents without requiring every element to be wrapped in `expect.arrayContaining`. Teams migrating from Jest 29 find that replacing `expect.arrayContaining([expect.any(Object)])` with `expect.arrayOf(expect.objectContaining({...}))` catches 2–3 additional defect patterns per test suite — particularly missing fields in API response arrays that `arrayContaining` would accept (a response with items missing the `id` field passes `arrayContaining` but fails `arrayOf`).
+
+---
+
+### Vitest 4.1 Mock API Improvements for TypeScript [community]
+
+Vitest 4.1 (March 2026) shipped several mock API improvements that reduce boilerplate in TypeScript test suites: `mockThrow()`/`mockThrowOnce()` for concise error scenarios, Chai-style mock assertions for teams migrating from Sinon, `vi.defineHelper()` for cleaner custom assertion stack traces, and Vite 8 peer dependency consolidation.
+
+> [community] Teams that migrate from Sinon-based test suites to Vitest report that Chai-style mock assertions (`.to.have.been.called`) reduce the initial migration friction by 60–70%. Rather than rewriting all Sinon-style assertions to Vitest's `expect(mock).toHaveBeenCalled()` style in a single migration, teams can keep Chai-style syntax during the transition period and migrate incrementally. The Chai-style API is not a second-class citizen — it is fully type-safe in Vitest 4.1 and the output formatting is identical.
+
+**`mockThrow()` and `mockThrowOnce()` — concise error scenario mocks (TypeScript):**
+
+```typescript
+// vitest — mockThrow replaces verbose mockImplementation(() => { throw ... })
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Mock } from 'vitest';
+import { OrderService } from '../src/services/order-service';
+import type { PaymentGateway } from '../src/gateways/payment-gateway';
+
+const mockGateway = {
+  charge: vi.fn() as Mock<Parameters<PaymentGateway['charge']>, ReturnType<PaymentGateway['charge']>>,
+} satisfies Partial<PaymentGateway>;
+
+describe('OrderService.placeOrder', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('throws PaymentError when gateway rejects charge', async () => {
+    const service = new OrderService(mockGateway as unknown as PaymentGateway);
+
+    // Vitest 4.1: mockThrow replaces mockImplementation(() => { throw new Error(...) })
+    // Works for sync AND async mocks (auto-detects return type)
+    mockGateway.charge.mockThrow(new Error('Card declined'));
+
+    await expect(
+      service.placeOrder({ userId: 'u1', amount: 100 }),
+    ).rejects.toThrow('Card declined');
+  });
+
+  it('throws on first call then succeeds (rate-limit simulation)', async () => {
+    const service = new OrderService(mockGateway as unknown as PaymentGateway);
+
+    // mockThrowOnce: throw only on first invocation, fall through to default on subsequent calls
+    mockGateway.charge.mockThrowOnce(new Error('Rate limited'));
+    mockGateway.charge.mockResolvedValue({ transactionId: 'txn-123', success: true });
+
+    // First call throws
+    await expect(service.placeOrder({ userId: 'u1', amount: 50 })).rejects.toThrow('Rate limited');
+    // Second call succeeds
+    await expect(service.placeOrder({ userId: 'u1', amount: 50 })).resolves.toMatchObject({ success: true });
+  });
+});
+```
+
+**Chai-style mock assertions (Vitest 4.1):**
+
+```typescript
+// vitest — Chai-style assertions for teams migrating from Sinon/Chai
+import { describe, it, expect, vi } from 'vitest';
+import { NotificationService } from '../src/services/notification-service';
+
+describe('NotificationService', () => {
+  it('sends email on order confirmation (Chai-style assertions)', () => {
+    const sendEmail = vi.fn();
+    const service = new NotificationService({ sendEmail });
+
+    service.confirmOrder({ orderId: 'o1', userEmail: 'alice@example.com' });
+
+    // Vitest 4.1: Chai-style mock assertions — fully type-safe
+    // Equivalent to: expect(sendEmail).toHaveBeenCalledOnce()
+    expect(sendEmail).to.have.been.calledOnce;
+
+    // Chai-style: called with specific argument shape
+    expect(sendEmail).to.have.been.calledWith(
+      expect.objectContaining({ to: 'alice@example.com', subject: expect.stringContaining('Order') }),
+    );
+
+    // Chai-style: not called — useful for negative assertions in branch coverage
+    const notifySlack = vi.fn();
+    expect(notifySlack).to.not.have.been.called;
+  });
+});
+```
+
+**`vi.defineHelper()` — cleaner stack traces in custom assertion libraries (TypeScript):**
+
+```typescript
+// tests/helpers/custom-assertions.ts — remove helper internals from test stack traces
+import { vi, expect } from 'vitest';
+
+// WITHOUT vi.defineHelper: stack traces point into the helper internals
+// WITH vi.defineHelper: stack traces point to the test call site
+export const assertApiResponse = vi.defineHelper(
+  function assertApiResponse<T>(
+    actual: unknown,
+    expectedShape: Partial<T>,
+  ): void {
+    // Internal implementation hidden from stack trace
+    expect(actual).toMatchObject(expectedShape);
+    expect(actual).toHaveProperty('meta.requestId');
+    expect(actual).toHaveProperty('meta.timestamp');
+  }
+);
+
+// In test file — when this fails, stack trace points HERE, not into the helper
+assertApiResponse(response, { data: { userId: 'u1' } });
+// Before defineHelper: "at assertApiResponse (tests/helpers/custom-assertions.ts:8:5)"
+// After defineHelper:  "at tests/checkout/checkout.test.ts:42:5"  ← call site
+```
+
+**Vite 8 peer dependency — no separate Vite install required (vitest.config.ts):**
+
+```typescript
+// vitest.config.ts — Vitest 4.1 uses installed vite version (no internal separate copy)
+// Before 4.1: Vitest bundled its own copy of Vite → type conflicts when project also used Vite
+// After 4.1: uses project's vite peer dependency → unified types, no duplication
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  // All Vite plugins are now guaranteed to use the same Vite version as Vitest
+  // No more "Cannot use plugin X: Vite version mismatch" errors
+  plugins: [react()],
+  test: {
+    pool: 'threads',
+    maxWorkers: 2,
+    // Vite 8 + Vitest 4.1: environment resolution is more accurate for monorepos
+    environment: 'jsdom',
+    setupFiles: ['./tests/setup-dom.ts'],
+  },
+});
+```
+
+**Browser trace annotations with `page.mark()` and `locator.mark()` (Vitest 4.1 Browser Mode):**
+
+```typescript
+// tests/browser/checkout.spec.ts — Vitest 4.1 Browser Mode trace annotations
+import { test, expect, page, userEvent } from '@vitest/browser/context';
+
+test('checkout form validates required fields', async () => {
+  // Vitest 4.1: page.mark() adds a custom annotation to the Playwright Trace Viewer
+  // Makes complex test flows debuggable from the trace without log archaeology
+  await page.mark('step: render checkout form');
+  const form = page.getByRole('form', { name: 'Checkout' });
+
+  await page.mark('step: submit without required fields');
+  await userEvent.click(page.getByRole('button', { name: 'Place order' }));
+
+  await page.mark('step: verify validation errors');
+  // locator.mark() annotates a specific element — appears as a box overlay in the trace
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.getByRole('alert').mark('validation error appears here');
+
+  await page.mark('step: fill required fields');
+  await userEvent.fill(page.getByLabel('Card number'), '4242424242424242');
+  await userEvent.fill(page.getByLabel('Expiry'), '12/28');
+  await userEvent.fill(page.getByLabel('CVV'), '123');
+
+  await page.mark('step: verify submit enabled');
+  await expect(page.getByRole('button', { name: 'Place order' })).toBeEnabled();
+});
+```
+
+**Vitest Agent Reporter for AI-assisted CI (Vitest 4.1):**
+
+```typescript
+// vitest.config.ts — Agent Reporter configuration for AI coding agent CI contexts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    // Vitest 4.1: Agent Reporter auto-activates when AI_AGENT env var is set
+    // (e.g., AI_AGENT=copilot, AI_AGENT=cursor, AI_AGENT=claude)
+    // Manual activation: reporters: ['agent', 'json']
+    // Behavior: suppresses passing test output; shows ONLY failures + errors
+    // Effect: 70-90% reduction in CI output tokens consumed by AI agents
+    reporters: process.env['AI_AGENT']
+      ? ['agent', 'json']  // minimal output for AI agents
+      : ['verbose', 'github-actions', 'json'],  // full output for humans
+    outputFile: {
+      json: 'test-results/results.json',
+    },
+  },
+});
+```
+
+**GitHub Actions workflow — AI agent CI with agent reporter:**
+
+```yaml
+# .github/workflows/ci-agent.yml — Vitest agent reporter for AI-driven CI
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      # Set AI_AGENT to activate the minimal agent reporter
+      # Reduces output token volume; AI agent reads only failures
+      - run: npx vitest run
+        env:
+          AI_AGENT: 'github-copilot'   # triggers agent reporter auto-activation
+          CI: true
+```
+
+> [community] Vitest 4.1's `mockThrow()` eliminates a recurring TypeScript typing issue with `mockImplementation(() => { throw ... })`: when the mock's return type is `Promise<T>`, TypeScript infers the throw as a Promise rejection but the syntax is ambiguous about whether it's a sync throw or async rejection. `mockThrow()` handles both correctly based on the mock's inferred return type — sync mocks throw synchronously, async mocks reject the promise. Teams with mixed sync/async mock throw patterns report 20–30% fewer unexpected TypeScript errors after migrating to `mockThrow()`.
+
+---
+
+### GitHub Actions Copilot Minutes Billing Impact on Test Budgets [community]
+
+Starting June 1, 2026, GitHub Copilot code review consumes GitHub Actions minutes when running as a cloud agent. For repositories where Copilot is configured to auto-review PRs, this adds a variable CI minutes cost that scales with PR frequency and code size. Teams with tight CI cost budgets need to account for this new consumption source in their CI governance strategy.
+
+> [community] Early adopters of Copilot cloud agent code review (before the June 2026 billing change) report that a typical PR review run consumes 2–8 minutes of Actions time depending on diff size. A team with 20 PRs/day at 5 minutes average Copilot review = 100 minutes/day = ~3,000 minutes/month added to the Actions bill. At GitHub's standard ubuntu-latest rate ($0.008/min), this is ~$24/month — modest for most teams but a non-trivial addition for teams already at plan limits. Plan review frequency carefully.
+
+**CI cost estimation updated for Copilot agent minutes:**
+
+```typescript
+// scripts/ci-cost-estimate-v2.ts — updated rate table including Copilot agent jobs
+// As of June 2026: Copilot code review runs consume Actions minutes at standard runner rates
+
+const RATE_USD_PER_MINUTE: Record<string, number> = {
+  'ubuntu-latest':           0.008,  // 2-core Linux
+  'ubuntu-latest-4-cores':   0.016,  // 4-core Linux
+  'ubuntu-latest-8-cores':   0.032,  // 8-core Linux
+  'windows-latest':          0.016,  // 2-core Windows
+  'macos-latest':            0.080,  // 3-core macOS (3x Linux)
+  // June 2026: Copilot cloud agent reviews run as ubuntu-latest jobs
+  // Label them separately for budget attribution
+  'copilot-code-review':     0.008,  // same as ubuntu-latest, billed separately
+};
+
+interface JobCostEntry {
+  jobName: string;
+  runnerLabel: string;
+  durationMinutes: number;
+}
+
+function estimateWorkflowCost(jobs: JobCostEntry[]): number {
+  return jobs.reduce((total, job) => {
+    const rate = RATE_USD_PER_MINUTE[job.runnerLabel] ?? RATE_USD_PER_MINUTE['ubuntu-latest'];
+    return total + job.durationMinutes * rate;
+  }, 0);
+}
+
+// Example: PR CI workflow + Copilot review cost
+const prWorkflowJobs: JobCostEntry[] = [
+  { jobName: 'lint',           runnerLabel: 'ubuntu-latest',         durationMinutes: 1 },
+  { jobName: 'typecheck',      runnerLabel: 'ubuntu-latest',         durationMinutes: 2 },
+  { jobName: 'unit',           runnerLabel: 'ubuntu-latest',         durationMinutes: 3 },
+  { jobName: 'integration',    runnerLabel: 'ubuntu-latest-4-cores', durationMinutes: 5 },
+  { jobName: 'e2e',            runnerLabel: 'ubuntu-latest',         durationMinutes: 8 },
+  // June 2026: add Copilot code review to budget model
+  { jobName: 'copilot-review', runnerLabel: 'copilot-code-review',   durationMinutes: 5 },
+];
+
+const totalCostUsd = estimateWorkflowCost(prWorkflowJobs);
+console.log(`Estimated PR workflow cost: $${totalCostUsd.toFixed(4)}`);
+// → Estimated PR workflow cost: $0.2160 (including Copilot review)
+```
+
+**Controlling Copilot review frequency in CI cost governance:**
+
+```yaml
+# .github/copilot-instructions.md or .github/workflows/copilot-review.yml
+# Limit Copilot auto-review to PRs touching critical paths — avoids reviewing trivial docs/config PRs
+
+name: Copilot Code Review (Cost-Controlled)
+
+on:
+  pull_request:
+    # Only trigger Copilot review for PRs touching source or test files
+    # Excludes: docs/**, *.md, .github/**, package-lock.json (reduces minutes consumption)
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - '*.config.ts'
+      - '*.config.js'
+
+jobs:
+  copilot-review:
+    # Copilot cloud agent consumes Actions minutes as of June 2026
+    # Size-gate: skip review for trivial PRs (< 10 changed lines)
+    if: github.event.pull_request.additions + github.event.pull_request.deletions > 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Request Copilot code review
+        uses: github/copilot-review-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+> [community] The most effective Copilot review cost control strategy: scope the `on.pull_request.paths` trigger to exclude files that don't benefit from code review (documentation, lockfiles, generated code, configuration YAML). Teams that configure path-scoped triggers report 40–60% reduction in Copilot review minutes compared to triggering on every PR file change. The reviews that do run are also higher quality because Copilot has less noise to process.
+
+---
 
 

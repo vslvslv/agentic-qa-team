@@ -1,12 +1,13 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 21 | score: 100/100 | date: 2026-05-12 -->
-<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
+<!-- lang: TypeScript | topic: tdd | iteration: 22 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
 <!-- extension 2026-05-12: iter 18 — added Zod v4 TDD patterns (schemaMatching with v4 APIs, z.input/z.output for test data, migration pitfall); `using`/`await using` for TDD resource teardown; Neon DB branching for database-level TDD isolation; `Promise.try` for sync-to-async TDD wrappers; gotchas #27–#29 -->
 <!-- extension 2026-05-12: iter 19 — added Vitest 4.1 TDD-relevant features: --detect-async-leaks, vi.defineHelper(), mockThrow()/mockThrowOnce(), aroundEach/aroundAll hooks, test.extend() builder, coverage.changed, test tags, GitHub Actions reporter, agent reporter; gotchas #30–#32 -->
 <!-- extension 2026-05-12: iter 20 — added "The Way of TDD" (Google TotT, March 2026) pattern synthesis; Vitest 4.1 experimental native Node.js execution for ultra-fast TDD loops; Browser Mode aroundEach tracing with page.mark(); TDD discipline checklist from The Way of TDD; gotchas #33–#35 -->
 <!-- extension 2026-05-12: iter 21 — added Vitest 4.1 viteModuleRunner:false (production-closer execution mode vs runner:node); Vitest 4.1 onCleanup() fixture teardown callback; Vitest 4.1 Chai-style mock assertions; TypeScript 6.0 this-less function context-sensitivity improvement; TypeScript 5.9 --module node20 vs nodenext distinction; TypeScript 7.0 preparation with --stableTypeOrdering; gotchas #36–#37 -->
+<!-- extension 2026-05-12: iter 22 — added Vitest 4.1 ARIA snapshot TDD for accessibility contracts (toMatchAriaSnapshot/toMatchAriaInlineSnapshot); Type-Level TDD with Vitest expectTypeOf and *.test-d.ts files; gotchas #38–#39 -->
 
 ## Core Principles
 
@@ -4027,6 +4028,314 @@ describe('Button component — TDD trace-annotated', () => {
 
 ---
 
+### Vitest 4.1 Browser Mode — ARIA Snapshot TDD for Accessibility Contracts [community]
+
+Vitest 4.1 adds ARIA snapshot testing to Browser Mode — `toMatchAriaSnapshot()` and `toMatchAriaInlineSnapshot()`. These matchers assert against the **accessibility tree** (what screen readers see), not the DOM or visual output. In TDD, this enables an entirely new Red test category: the failing test case specifies the required accessibility contract of a component _before_ the component exists.
+
+ARIA snapshots are particularly powerful for TypeScript component libraries where the accessibility contract is part of the public API specification. The test case defines the expected tree structure (roles, labels, states), the component must satisfy it to go Green, and any accessibility regression breaks the contract test during Refactor.
+
+```typescript
+// vitest.config.ts — Browser Mode with ARIA snapshot support (Vitest 4.1)
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    browser: {
+      enabled: true,
+      provider: { name: 'playwright' },
+      name: 'chromium',
+    },
+  },
+});
+```
+
+```typescript
+// navigation.browser.test.ts — ARIA snapshot TDD for a navigation component
+import { page } from '@vitest/browser/context';
+import { describe, it, expect } from 'vitest';
+import { render } from '@testing-library/react';
+import { SiteNav } from './SiteNav.js';
+
+// ---- RED: write the accessibility contract before any implementation ----
+// The inline snapshot is the specification — it will fail because SiteNav does not exist yet.
+describe('SiteNav accessibility contract', () => {
+  it('exposes the expected landmark structure to screen readers', async () => {
+    render(<SiteNav links={[
+      { label: 'Home',    href: '/' },
+      { label: 'About',  href: '/about' },
+      { label: 'Contact', href: '/contact' },
+    ]} />);
+
+    // toMatchAriaInlineSnapshot: snapshot stored inline (great for TDD — spec is right next to the test)
+    await expect.element(page.getByRole('navigation')).toMatchAriaInlineSnapshot(`
+      - navigation "Site navigation":
+        - link "Home"
+        - link "About"
+        - link "Contact"
+    `);
+    // RED: fails because SiteNav doesn't exist yet.
+    // GREEN: implement SiteNav with a <nav aria-label="Site navigation"> and proper link elements.
+    // The snapshot IS the accessibility specification.
+  });
+
+  // Test case 2: RED — active link communicates state to screen readers
+  it('marks the current page link with aria-current', async () => {
+    render(<SiteNav
+      links={[
+        { label: 'Home',  href: '/' },
+        { label: 'About', href: '/about' },
+      ]}
+      currentPath="/about"
+    />);
+
+    await expect.element(page.getByRole('navigation')).toMatchAriaInlineSnapshot(`
+      - navigation "Site navigation":
+        - link "Home"
+        - link "About" [aria-current=page]
+    `);
+    // RED: forces implementation to set aria-current="page" on the active link.
+    // Without TDD, aria-current is the first thing skipped under deadline pressure.
+  });
+});
+```
+
+```typescript
+// form.browser.test.ts — toMatchAriaSnapshot with file-based snapshots
+// Use toMatchAriaSnapshot (not Inline) for complex forms — file-based snapshots
+// are easier to review in PRs and can be updated with --update-snapshots.
+import { page } from '@vitest/browser/context';
+import { describe, it, expect } from 'vitest';
+import { render } from '@testing-library/react';
+import { RegistrationForm } from './RegistrationForm.js';
+
+describe('RegistrationForm accessibility', () => {
+  it('has a complete and labelled form structure', async () => {
+    render(<RegistrationForm />);
+
+    const form = page.getByRole('form', { name: 'Create account' });
+    // Snapshot stored in __snapshots__/form.browser.test.ts.snap
+    await expect.element(form).toMatchAriaSnapshot();
+    // First run: creates the snapshot (Red → Green automatically).
+    // Subsequent runs: fails if accessibility structure regresses.
+    // Update with: npx vitest --browser --update-snapshots
+  });
+
+  // Test case: verify error states are accessible
+  it('announces field validation errors to screen readers', async () => {
+    const { getByRole } = render(<RegistrationForm />);
+    // Trigger validation by submitting empty form
+    getByRole('button', { name: 'Submit' }).click();
+
+    // Inline snapshot specifying the error-state accessibility tree
+    await expect.element(page.getByRole('form')).toMatchAriaInlineSnapshot(`
+      - form "Create account":
+        - textbox "Email" [invalid]:
+          - "Email is required" [role=alert]
+        - textbox "Password" [invalid]:
+          - "Password is required" [role=alert]
+        - button "Submit"
+    `);
+    // RED: forces the implementation to:
+    // 1. Use aria-invalid on invalid fields
+    // 2. Render role=alert error messages associated with their inputs
+    // Without TDD, alert associations are the first omission in form implementations.
+  });
+});
+```
+
+**Why ARIA snapshot TDD matters for TypeScript component libraries:**
+
+1. **Accessibility as a first-class contract:** The ARIA snapshot IS the failing test specification — not a documentation comment, not a linting rule, but a failing Red test that forces accessibility implementation before the component can go Green.
+2. **Regression detection at the contract level:** Visual regression tests (`toMatchScreenshot`) catch pixel-level changes; ARIA snapshot tests catch semantic regressions — a button that becomes a div, a label that loses its association, a live region that stops being announced.
+3. **TypeScript prop contract alignment:** When a TypeScript prop `currentPath?: string` is added, a new ARIA snapshot test case should be written first that specifies how the accessibility tree changes when `currentPath` is set. The type change and the accessibility contract change are driven by the same TDD cycle.
+
+**Inline vs. file-based ARIA snapshots — TDD guidance:**
+
+| Approach | When to use | TDD phase | 
+|----------|-------------|-----------|
+| `toMatchAriaInlineSnapshot(...)` | New components, specifying contract upfront | Write the snapshot as the Red specification |
+| `toMatchAriaInlineSnapshot()` (empty) | Discovering the accessibility tree of existing code | Run once to generate, then review and commit |
+| `toMatchAriaSnapshot()` (file-based) | Complex components with large trees, updated via `--update-snapshots` | Red = first run creates baseline; regression = any change to the tree |
+
+**[community] ARIA snapshot TDD surfaces accessibility defects that linting tools miss.** Axe and accessibility linters check rule compliance; ARIA snapshots check _structural contract_ — whether the semantic relationships between elements match the intended user experience. A missing `aria-label` on a navigation landmark, an icon button without a name, or a missing `aria-describedby` link between an error and its field are all caught by the ARIA snapshot but not necessarily by Axe alone.
+
+---
+
+### Type-Level TDD with `expectTypeOf` and `*.test-d.ts` Files [community]
+
+TypeScript's type system is itself a specification layer. Type-Level TDD applies the Red→Green→Refactor cycle to type contracts: you write a failing _type-level_ test case that specifies how a function's types should behave, then implement the types to make it pass. Vitest provides `expectTypeOf` for this purpose in dedicated `*.test-d.ts` files.
+
+This is distinct from runtime TDD: type-level test cases run at compile time only (no JavaScript execution), and their "Red" phase is a TypeScript compile error, not a test assertion failure. Vitest integrates `*.test-d.ts` files into the standard `vitest typecheck` pipeline, producing type errors as test failures in the same output as runtime test cases.
+
+**When to apply type-level TDD:**
+- Designing generic utility types (`Result<T, E>`, `DeepPartial<T>`, `Prettify<T>`)
+- Specifying discriminated union narrowing behaviour
+- Verifying that forbidden type combinations are rejected at compile time
+- TDD'ing TypeScript declaration files (`.d.ts`) for published libraries
+
+```typescript
+// result.test-d.ts — type-level TDD for the Result<T, E> generic type
+// Run with: npx vitest typecheck --watch
+import { expectTypeOf, describe, it } from 'vitest';
+import { ok, err, Result } from './result.js';
+
+describe('Result<T, E> type contract', () => {
+  // ---- RED (type-level): ok() must return Result<T, never> when E is not provided ----
+  it('infers the success type from the ok() argument', () => {
+    const result = ok(42);
+    // Type-level assertion: result must be typed as Result<number, never>
+    expectTypeOf(result).toEqualTypeOf<Result<number, never>>();
+    // RED: fails if ok() infers Result<unknown, unknown> or widens to Result<any, any>
+  });
+
+  // ---- RED (type-level): err() must narrow the error type ----
+  it('infers the error type from the err() argument', () => {
+    const result = err('validation-failed');
+    expectTypeOf(result).toEqualTypeOf<Result<never, string>>();
+  });
+
+  // ---- RED (type-level): .map() must preserve the error type ----
+  it('.map() transforms the value type while preserving the error type', () => {
+    const result: Result<number, string> = ok(21);
+    const mapped = result.map(n => n * 2);
+    // map() must produce Result<number, string> — not Result<number, unknown>
+    expectTypeOf(mapped).toEqualTypeOf<Result<number, string>>();
+  });
+
+  // ---- RED (type-level): narrowing after success check must reveal .value ----
+  it('narrows to { success: true; value: T } inside a success guard', () => {
+    const result: Result<string, Error> = ok('hello');
+    if (result.success) {
+      // Inside the guard, .value must be string (not string | undefined)
+      expectTypeOf(result.value).toEqualTypeOf<string>();
+      // .error must not exist on the success branch
+      expectTypeOf(result).not.toHaveProperty('error');
+    }
+  });
+
+  // ---- RED (type-level): forbidden usage — accessing .value on unnarrowed result ----
+  it('does NOT expose .value on an unnarrowed Result', () => {
+    const result: Result<string, Error> = ok('hello');
+    // This must be a compile error — .value is only safe after narrowing
+    // @ts-expect-error — accessing .value without checking .success first
+    const _unsafe = result.value;
+    // If @ts-expect-error is NOT triggered, the type is too permissive (a compile error here = Red)
+    // If @ts-expect-error IS triggered, the type correctly blocks unsafe access (Green)
+  });
+});
+```
+
+**How `@ts-expect-error` enables Red type-level tests:**
+
+`@ts-expect-error` is the type-level equivalent of a Red test: it asserts that the next line _must_ produce a TypeScript error. If the line does NOT produce an error (because the type is too permissive), TypeScript reports `"Unused '@ts-expect-error' directive"` — which Vitest typecheck treats as a failing test case. This is the type-level Red signal.
+
+```typescript
+// type-guards.test-d.ts — testing that forbidden combinations are rejected
+import { expectTypeOf, it } from 'vitest';
+import { parseTemperature, TemperatureUnit } from './temperature.js';
+
+it('rejects invalid temperature units at the type level', () => {
+  // ---- RED (type-level): 'kelvin' should NOT be a valid TemperatureUnit ----
+  // @ts-expect-error — 'kelvin' is not assignable to TemperatureUnit
+  parseTemperature(100, 'kelvin');
+  // If this @ts-expect-error is NOT triggered, TemperatureUnit is too wide (e.g., string).
+  // GREEN: TemperatureUnit = 'celsius' | 'fahrenheit' narrows the type correctly.
+});
+
+it('accepts valid temperature units at the type level', () => {
+  // ---- These must NOT produce TypeScript errors ----
+  const celsius = parseTemperature(100, 'celsius');
+  const fahrenheit = parseTemperature(212, 'fahrenheit');
+  expectTypeOf(celsius).toEqualTypeOf<number>();
+  expectTypeOf(fahrenheit).toEqualTypeOf<number>();
+});
+```
+
+```typescript
+// generic-constraints.test-d.ts — type-level TDD for generic utility types
+
+// RED: specify the DeepReadonly<T> type contract before implementation
+import { expectTypeOf, describe, it } from 'vitest';
+import { DeepReadonly } from './types.js';
+
+interface MutableCart {
+  items:  Array<{ sku: string; qty: number }>;
+  total:  number;
+  meta:   { createdAt: Date };
+}
+
+describe('DeepReadonly<T>', () => {
+  it('makes top-level properties readonly', () => {
+    type ReadonlyCart = DeepReadonly<MutableCart>;
+    // top-level: total must be readonly
+    expectTypeOf<ReadonlyCart['total']>().toEqualTypeOf<number>();
+    // The property itself must not be assignable — verified with @ts-expect-error:
+    type _Test = { readonly x: DeepReadonly<MutableCart>['total'] };
+    // TypeScript enforces readonly at the property level, not the value type level.
+    // Use type-level assignment tests for full coverage.
+  });
+
+  it('makes nested properties readonly', () => {
+    type ReadonlyCart = DeepReadonly<MutableCart>;
+    // Nested: items elements must also be readonly
+    expectTypeOf<ReadonlyCart['items'][number]['sku']>().toEqualTypeOf<string>();
+    // The key test: the element type must be Readonly (no mutation allowed)
+    type ReadonlyItem = ReadonlyCart['items'][number];
+    // @ts-expect-error — sku is deeply readonly; assignment must be rejected
+    const _: { sku: string } = {} as ReadonlyItem & { sku: string };
+  });
+});
+```
+
+**Vitest configuration for type-level TDD:**
+
+```typescript
+// vitest.config.ts — enable typecheck for *.test-d.ts files
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    typecheck: {
+      enabled: true,
+      tsconfig: './tsconfig.json',   // Same strict tsconfig as production
+      include: ['src/**/*.test-d.ts'],
+      // Run tsc separately — typecheck: true adds overhead to the watch loop
+      // Recommendation: enable in CI, run manually locally with `vitest typecheck`
+    },
+
+    // Runtime test cases (separate from type tests)
+    include: ['src/**/*.test.ts'],
+  },
+});
+```
+
+```bash
+# Type-level TDD watch loop (separate from runtime tests)
+# Fastest: only type-check the specific .test-d.ts file being developed
+npx vitest typecheck --watch src/domain/result/result.test-d.ts
+
+# Full typecheck pass (CI)
+npx vitest typecheck run
+
+# Combined: type tests + runtime tests (recommended for CI)
+npx vitest run && npx vitest typecheck run
+```
+
+**Type-Level TDD vs. `tsc --noEmit`:**
+
+| Approach | What it catches | When to use |
+|----------|----------------|-------------|
+| `tsc --noEmit` | Any compile error in any `.ts` file | CI gate: all files must compile |
+| `vitest typecheck` on `*.test-d.ts` | Specific type contract violations | TDD cycle for generic types and discriminated union APIs |
+| `@ts-expect-error` in test files | Types that _must_ be rejected | Specifying forbidden type combinations as Red tests |
+| `expectTypeOf(...).toEqualTypeOf<T>()` | Exact type shape assertions | Specifying the exact inferred type of a function result |
+
+**[community] Type-level TDD is most valuable when publishing TypeScript libraries.** For libraries where the TypeScript API surface IS the product — `Result<T, E>`, `EventBus<Events>`, `Repository<T>` — type-level test cases in `*.test-d.ts` files are the TDD test cases for the library's public contract. A type regression (widening `Result<T, never>` to `Result<T, unknown>`) is caught by the Red type test before a consuming team discovers it at runtime.
+
+**[community] `expectTypeOf` is stricter than `satisfies`.** Where `satisfies` validates that a value conforms to a shape, `expectTypeOf().toEqualTypeOf<T>()` requires the types to be structurally identical — no widening, no extra properties. This matters in TDD because `satisfies` passes when a type is a subtype of `T`, while `toEqualTypeOf` catches when a function returns `string | number` when you specified `string`. Use `toEqualTypeOf` for contract-level type precision and `satisfies` for fixture construction.
+
+---
+
 ### Real-World Gotchas [community] — Additions (iter 20)
 
 33. **[community] Native Node.js type-stripping (`--experimental-strip-types`) breaks tests that use `const enum`.** TypeScript's `const enum` declarations are not erasable — they emit JavaScript at compile time. When tests run via Node.js native stripping (Vitest 4.1 `runner: 'node'` or direct `--experimental-strip-types`), any file that imports a `const enum` (directly or transitively) will fail at runtime with `Cannot find name 'MyEnum'`. This is not a TDD principle violation but a sharp migration edge. The TDD test suite will catch this instantly — on the first Red→Green cycle using native execution mode, `const enum` usages will throw. The fix: replace `const enum` with `as const` objects (`export const Direction = { Up: 'Up', Down: 'Down' } as const`), which are erasable. If `const enum` is in a third-party library, enable `verbatimModuleSyntax` and use type-only imports from that library. Enabling `erasableSyntaxOnly: true` in `tsconfig.json` will surface these issues at compile time before runtime — making the Red phase (compile error) come first, as TDD requires.
@@ -4436,6 +4745,14 @@ it('returns success response with users', async () => {
 
 37. **[community] `viteModuleRunner: false` with `vi.mock()` requires Node.js 22.15+, not just 22.x.** Teams upgrading to use `viteModuleRunner: false` in Vitest 4.1 and running `vi.mock()` calls may encounter `vi.mock is not supported in this context` errors when running on Node.js 22.0–22.14. The Module Loader API required for `vi.mock()` interception under `viteModuleRunner: false` was backported to Node.js 22.15.0 LTS. Projects pinned to Node.js 22.x without a patch-level minimum will silently fail in some CI environments that run on earlier 22.x patch versions. The fix: pin `"node": ">=22.15"` in `package.json`'s `engines` field and update CI `setup-node@v4` to `node-version: '22.15'` or newer. A TDD test case that runs `vi.mock()` under `viteModuleRunner: false` on Node 22.0 will throw at setup time, not at the assertion — making the failure message look like a Vitest configuration error rather than a Node.js version issue.
 
+---
+
+### Real-World Gotchas [community] — Additions (iter 22)
+
+38. **[community] ARIA snapshot tests break when updated via `--update-snapshots` without a design review.** Vitest's ARIA snapshot workflow (`toMatchAriaSnapshot`) uses the same `--update-snapshots` flag as visual snapshots and jest snapshots. Teams that run `--update-snapshots` reflexively when any snapshot test fails will silently accept accessibility regressions — a missing `aria-label`, a demoted heading level, a live region that no longer fires. The TDD discipline for ARIA snapshots: treat them as accessibility contracts, not disposable baselines. Update them only when the accessibility structure is intentionally redesigned — the same threshold you would apply to a breaking interface change. Before running `--update-snapshots` on an ARIA snapshot, review the diff: does the tree change represent an intentional accessibility improvement, or does it represent a regression being silently accepted?
+
+39. **[community] `expectTypeOf(...).toEqualTypeOf<T>()` in `*.test-d.ts` files fails silently on TypeScript type cache mismatches.** When running `vitest typecheck --watch`, TypeScript's incremental compilation cache sometimes serves stale type information — causing a type test to report Green even though the type has regressed. The symptom: a `*.test-d.ts` test case passes locally but fails in CI (which runs without the incremental cache). The root cause is `tsBuildInfoFile` incremental caching not invalidating correctly when a dependent file changes. The fix: for `vitest typecheck` in CI, always pass `--force` to disable incremental compilation: `npx vitest typecheck run --typecheck.ignoreSourceErrors`. For local TDD sessions, this is generally not an issue — but teams should be aware that type-level TDD has a different cache invalidation surface than runtime TDD, and a Green type test in a stale watch session is not a guarantee. Run `npx tsc --noEmit --incremental false` as a CI gate alongside `vitest typecheck`.
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4476,3 +4793,5 @@ it('returns success response with users', async () => {
 | TypeScript 5.9 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-9.html | TDD-friendly `tsc --init` defaults; `import defer` for lazy module evaluation; `noUncheckedSideEffectImports`; `--module node20` for stable Node.js 20 semantics |
 | TypeScript 6.0 Release Notes | Docs | https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html | Major breaking changes: `types:[]` default breaks Vitest/Jest globals without explicit config; removed deprecated module options; ES2025 support; `Map.getOrInsert` in typed fakes; `this`-less function inference improvement; `--stableTypeOrdering` for TS 7.0 migration prep |
 | Google Testing Blog — "The Way of TDD" | Blog post | https://testing.googleblog.com/2026/03/the-way-of-tdd.html | 2026 Google TotT post; six TDD discipline commitments; emphasises Refactor phase as mandatory, Red as information, and baby steps as precise thinking — not timid |
+| Vitest 4.1 ARIA Snapshots Guide | Docs | https://vitest.dev/guide/browser/aria-snapshots | TDD for accessibility contracts: `toMatchAriaSnapshot` / `toMatchAriaInlineSnapshot` assert against the accessibility tree; catches semantic regressions that visual snapshots and Axe linting miss |
+| Vitest Type Testing Guide | Docs | https://vitest.dev/guide/testing-types.html | Type-level TDD with `expectTypeOf` in `*.test-d.ts` files; `@ts-expect-error` as Red type tests; `toEqualTypeOf` for exact type contract assertions; `vitest typecheck` for CI integration |
