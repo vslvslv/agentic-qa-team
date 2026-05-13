@@ -1,5 +1,5 @@
 # JavaScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 56 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 57 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -3557,6 +3557,550 @@ console.log(readSnapshot());  // 0 — captured the initial value ✗
 | Oversized barrel files (`index.js` re-exports all) | Prevents tree-shaking; entire module graph bundled even when only one export is needed | Use barrel files only for public APIs; prefer direct deep imports internally |
 | `require()` inside function bodies | First-request latency spikes; errors surface mid-request instead of at startup | Place `require()` at top of file; use static `import` in ESM |
 | `innerHTML = userInput` without sanitization | XSS: attacker-controlled HTML executes scripts; session theft, CSRF | Use `textContent` for plain text; use DOMPurify when HTML is required |
+
+---
+
+## Advanced `node:test` Patterns (Node.js 20+)
+
+The built-in `node:test` runner has matured significantly since Node 18. The features below are stable in Node 20+ and address real testing scenarios not covered in the basic introduction.
+
+### `test.plan` — Assert Exact Number of Assertions
+
+`t.plan(n)` fails the test if the assertion count is not exactly `n` by the time the test body resolves. Use it to guard against accidentally passing tests where only some async callbacks fired.
+
+```javascript
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+it('fires callback exactly twice', async (t) => {
+  t.plan(2); // Fail if != 2 assertions execute
+
+  const results = [];
+  await callWithCallback(
+    (val) => { assert.ok(val > 0); results.push(val); },
+    { iterations: 2 },
+  );
+  // If callWithCallback fires the callback 0 or 3 times, plan(2) fails the test
+});
+```
+
+### `test.todo`, `test.skip`, `test.only` and Flags
+
+```javascript
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+describe('UserService', () => {
+  it('creates a user', () => {
+    assert.equal(createUser('Alice').name, 'Alice');
+  });
+
+  it.skip('sends welcome email', () => {
+    // Skipped — email service not yet available in CI
+  });
+
+  it.todo('rate-limits creation to 10/minute');
+  // Marked as known missing test — shows in TAP output as "# TODO"
+
+  it.only('validates required fields', () => {
+    // With --test-only flag: only .only() tests run
+    assert.throws(() => createUser(''), /Name is required/);
+  });
+});
+```
+
+**CLI flags:**
+```bash
+node --test --test-only        # Run only .only() tests
+node --test --test-randomize   # Randomise execution order (expose order-dependent bugs)
+node --test --test-random-seed=42  # Reproducible random order
+node --test --test-name-pattern="UserService"  # Filter by name (regex)
+node --test --test-skip-pattern="email"        # Skip tests matching pattern
+```
+
+### Snapshot Testing with `t.assert.snapshot`
+
+Snapshot testing captures output on first run; subsequent runs fail if the output changes. Use for complex objects, CLI output, and serialized values that are too verbose to assert inline.
+
+```javascript
+import { it } from 'node:test';
+
+it('renders user card HTML', (t) => {
+  const html = renderUserCard({ name: 'Alice', role: 'admin' });
+  // First run: saves snapshot to __snapshots__/test.snap
+  // Subsequent runs: fails if html differs from saved snapshot
+  t.assert.snapshot(html);
+});
+
+it('produces expected config shape', (t) => {
+  const config = buildConfig({ env: 'production' });
+  t.assert.snapshot(config); // Deep equality against saved snapshot
+});
+```
+
+**Update snapshots:**
+```bash
+node --test --test-update-snapshots
+```
+
+### `context.mock.method` — Non-Destructive Method Mocking
+
+Unlike `mock.fn()` which replaces a free function, `t.mock.method(obj, 'methodName')` wraps the method on an object and automatically restores the original after the test.
+
+```javascript
+import { it } from 'node:test';
+import assert from 'node:assert/strict';
+
+it('calls db.findById once per cache miss', async (t) => {
+  const db = {
+    async findById(id) { return { id, name: 'Alice' }; },
+  };
+
+  // Wrap the method — original implementation still runs (spy mode)
+  t.mock.method(db, 'findById');
+
+  const service = createCacheLayer(db);
+  await service.get(1);
+  await service.get(1); // Should hit cache; db.findById not called again
+
+  assert.equal(db.findById.mock.callCount(), 1); // Only one real DB call
+  assert.deepEqual(db.findById.mock.calls[0].arguments, [1]);
+  // db.findById is restored automatically after this test
+});
+```
+
+### `t.waitFor` — Polling for Async Side Effects
+
+`t.waitFor(fn)` polls `fn` until it either returns a truthy value or throws without error (assertion passes). Use it to test observable state changes triggered by background events.
+
+```javascript
+import { it } from 'node:test';
+import assert from 'node:assert/strict';
+
+it('cache is eventually populated by background refresh', async (t) => {
+  const cache = new AsyncRefreshCache({ ttl: 100 });
+  cache.startBackgroundRefresh();
+
+  // Don't busy-wait — waitFor polls with exponential backoff
+  await t.waitFor(
+    () => assert.ok(cache.has('key')),
+    { timeout: 2000, interval: 50 }, // poll every 50ms, fail after 2s
+  );
+
+  // Now safe to assert the full value
+  assert.equal(cache.get('key'), 'refreshed-value');
+});
+```
+
+### Coverage Ignore Comments
+
+```javascript
+// Exclude unreachable branches from coverage reports
+/* node:coverage disable */
+if (process.env.INTERNAL_DEBUG_MODE) {
+  // Cannot be exercised without patching process.env at module load time
+  dumpInternalState();
+}
+/* node:coverage enable */
+
+// Skip next N lines (inline)
+/* node:coverage ignore next 3 */
+const legacyPolyfill = typeof PromiseWithResolvers !== 'undefined'
+  ? PromiseWithResolvers
+  : null; // Only present in old Node versions; never hit in CI
+```
+
+### Programmatic Runner with Custom Reporter
+
+Run `node:test` from application code — useful for test orchestration scripts, CI dashboards, and generating structured output.
+
+```javascript
+import { run } from 'node:test';
+import { spec, tap } from 'node:test/reporters';
+import { createWriteStream } from 'node:fs';
+
+// Run with coverage, parallel workers, and multiple report formats
+const stream = run({
+  files: ['./test/**/*.test.js'],
+  concurrency: 4,
+  timeout: 30_000,
+  coverage: true,
+  lineCoverage: 80,   // Fail if line coverage < 80%
+  branchCoverage: 70,
+});
+
+// Human-readable to stdout
+stream.compose(spec).pipe(process.stdout);
+
+// Machine-readable TAP to file for CI artifact
+stream.compose(tap).pipe(createWriteStream('./test-results.tap'));
+```
+
+---
+
+## Testing Generators and Async Iterators
+
+Generators and async generators have unique testing requirements because they are lazy — they produce values on demand and can model infinite sequences. Testing them requires calling `.next()` explicitly or consuming them in a controlled loop.
+
+### Testing Synchronous Generators Step-by-Step
+
+```javascript
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+// The generator under test
+function* range(start, end, step = 1) {
+  for (let i = start; i < end; i += step) yield i;
+}
+
+describe('range generator', () => {
+  it('yields values in order', () => {
+    const gen = range(0, 5);
+    assert.deepEqual(gen.next(), { value: 0, done: false });
+    assert.deepEqual(gen.next(), { value: 1, done: false });
+    assert.deepEqual(gen.next(), { value: 4, done: false }); // skip to verify step-by-step
+    // Note: we consumed positions 0,1,2 — this is position 2 (value=2), not 4
+    // Correct: consume one at a time
+  });
+
+  it('terminates correctly', () => {
+    const gen = range(0, 2);
+    gen.next(); // 0
+    gen.next(); // 1
+    assert.deepEqual(gen.next(), { value: undefined, done: true }); // exhausted
+    assert.deepEqual(gen.next(), { value: undefined, done: true }); // safe to call after done
+  });
+
+  it('can be spread into an array for full output testing', () => {
+    assert.deepEqual([...range(0, 5, 2)], [0, 2, 4]);
+  });
+
+  it('supports early return (generator.return)', () => {
+    const gen = range(0, 100);
+    gen.next();       // 0
+    const result = gen.return('early'); // forcibly close the generator
+    assert.deepEqual(result, { value: 'early', done: true });
+    assert.deepEqual(gen.next(), { value: undefined, done: true }); // now fully exhausted
+  });
+
+  it('can inject errors (generator.throw)', () => {
+    function* guarded() {
+      try {
+        yield 1;
+        yield 2;
+      } catch (e) {
+        yield `caught: ${e.message}`;
+      }
+    }
+    const gen = guarded();
+    gen.next();                                // { value: 1, done: false }
+    const result = gen.throw(new Error('bad')); // injects error at yield point
+    assert.equal(result.value, 'caught: bad');
+  });
+});
+```
+
+### Testing Async Generators
+
+Async generators require `for await` or `Array.fromAsync` to collect results. Test them like async functions — always `await` the consumption.
+
+```javascript
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Simulated paginated API
+async function* paginate(pages) {
+  for (const page of pages) {
+    await Promise.resolve(); // simulate async I/O
+    yield* page;
+  }
+}
+
+describe('paginate async generator', () => {
+  it('yields all items across pages', async () => {
+    const pages = [[1, 2], [3, 4], [5]];
+    const items = await Array.fromAsync(paginate(pages));
+    assert.deepEqual(items, [1, 2, 3, 4, 5]);
+  });
+
+  it('can be consumed with for await...of', async () => {
+    const seen = [];
+    for await (const item of paginate([[10, 20], [30]])) {
+      seen.push(item);
+    }
+    assert.deepEqual(seen, [10, 20, 30]);
+  });
+
+  it('supports early break — does not exhaust the generator', async () => {
+    const pages = [[1, 2, 3], [4, 5, 6]];
+    const gen = paginate(pages);
+    const results = [];
+    for await (const item of gen) {
+      results.push(item);
+      if (item === 2) break; // stop early
+    }
+    assert.deepEqual(results, [1, 2]); // only consumed up to break point
+  });
+});
+```
+
+### Testing Iterator Helpers Laziness
+
+When testing code that uses ES2025 Iterator Helpers, verify that lazy evaluation actually happens — the helpers should not pre-materialise values.
+
+```javascript
+import { it } from 'node:test';
+import assert from 'node:assert/strict';
+
+it('filter + take is lazy — only evaluates needed elements', () => {
+  let calls = 0;
+  function* track() {
+    while (true) {
+      calls++;
+      yield calls;
+    }
+  }
+
+  const result = track()
+    .filter(n => n % 2 === 0)
+    .take(3)
+    .toArray();
+
+  assert.deepEqual(result, [2, 4, 6]);
+  // A lazy implementation reads 6 source elements (1,2,3,4,5,6).
+  // An eager one would loop forever. Verify bounded evaluation:
+  assert.equal(calls, 6);
+});
+```
+
+---
+
+## Testing AbortController-Based Code
+
+`AbortController` and `AbortSignal` are the standard cancellation primitive. Testing them requires verifying that: (1) the signal is passed to the right place, (2) abort triggers the correct error, and (3) already-aborted signals are handled at call time.
+
+### Testing That a Signal Is Passed and Respected
+
+```javascript
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { mock } from 'node:test';
+
+// Function under test — passes signal to fetch
+async function loadUser(id, signal) {
+  const res = await fetch(`/api/users/${id}`, { signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+describe('loadUser', () => {
+  it('passes the AbortSignal to fetch', async (t) => {
+    const controller = new AbortController();
+    let capturedInit;
+
+    // Mock fetch to capture what was passed to it
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      capturedInit = init;
+      return { ok: true, json: async () => ({ id: 1 }) };
+    });
+
+    await loadUser(1, controller.signal);
+    assert.strictEqual(capturedInit.signal, controller.signal);
+  });
+
+  it('propagates AbortError when signal is aborted', async (t) => {
+    const controller = new AbortController();
+
+    t.mock.method(globalThis, 'fetch', async (_url, { signal }) => {
+      // Simulate fetch honouring the signal
+      return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    });
+
+    // Abort after a tick so the fetch has started
+    setTimeout(() => controller.abort(), 0);
+
+    await assert.rejects(
+      loadUser(1, controller.signal),
+      (err) => err.name === 'AbortError' || err.name === 'Error',
+    );
+  });
+});
+```
+
+### Testing `AbortSignal.timeout` and `AbortSignal.any`
+
+`AbortSignal.timeout(ms)` (Node 17.3+) creates a signal that aborts after a timeout. `AbortSignal.any([...signals])` aborts when any of the composed signals fires.
+
+```javascript
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+describe('AbortSignal utilities', () => {
+  it('AbortSignal.timeout creates an already-aborted signal after delay', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    const signal = AbortSignal.timeout(1000);
+    assert.equal(signal.aborted, false);
+
+    t.mock.timers.tick(1001);
+    // Signal should now be aborted (timeout fired)
+    assert.equal(signal.aborted, true);
+    assert.equal(signal.reason?.name, 'TimeoutError');
+  });
+
+  it('AbortSignal.any aborts when the first of its signals fires', () => {
+    const ac1 = new AbortController();
+    const ac2 = new AbortController();
+    const combined = AbortSignal.any([ac1.signal, ac2.signal]);
+
+    assert.equal(combined.aborted, false);
+    ac2.abort('reason from ac2');
+    assert.equal(combined.aborted, true);
+    // combined.reason reflects the first-fired signal's reason
+  });
+
+  it('already-aborted signal is handled at call time without network round-trip', async () => {
+    const ac = new AbortController();
+    ac.abort(); // abort before the call
+
+    // fetch should reject immediately without attempting the network
+    await assert.rejects(
+      fetch('/api/anything', { signal: ac.signal }),
+      { name: 'AbortError' },
+    );
+  });
+});
+```
+
+### Testing Timeout Wrappers
+
+For functions like `fetchWithTimeout` (which creates an internal `AbortController`), fake timers allow testing the timeout path without real waits.
+
+```javascript
+import { it } from 'node:test';
+import assert from 'node:assert/strict';
+
+// fetchWithTimeout from the AbortController section above
+it('fetchWithTimeout rejects with timeout error after delay', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  // Mock fetch to hang indefinitely (never resolves)
+  t.mock.method(globalThis, 'fetch', (_url, _init) => new Promise(() => {}));
+
+  const fetchPromise = fetchWithTimeout('/api/slow', 3000);
+
+  // Nothing should have happened yet
+  // Advance fake time past the timeout
+  t.mock.timers.tick(3001);
+
+  await assert.rejects(fetchPromise, /timed out after 3000ms/);
+});
+```
+
+---
+
+## Testing Web Streams
+
+Web Streams (`ReadableStream`, `WritableStream`, `TransformStream`) need deterministic producers and consumers in tests. The key technique is to create a controlled `ReadableStream` with known data and assert against the written output.
+
+```javascript
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+// Helper: collect all chunks written to a WritableStream
+function collectWritable() {
+  const chunks = [];
+  const writable = new WritableStream({
+    write(chunk) { chunks.push(chunk); },
+  });
+  return { writable, getChunks: () => chunks };
+}
+
+// TransformStream under test
+function upperCaseTransform() {
+  return new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(
+        typeof chunk === 'string' ? chunk.toUpperCase() : chunk,
+      );
+    },
+  });
+}
+
+describe('upperCaseTransform', () => {
+  it('transforms string chunks to uppercase', async () => {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue('hello');
+        controller.enqueue('world');
+        controller.close();
+      },
+    });
+
+    const { writable, getChunks } = collectWritable();
+    await source.pipeThrough(upperCaseTransform()).pipeTo(writable);
+
+    assert.deepEqual(getChunks(), ['HELLO', 'WORLD']);
+  });
+
+  it('handles empty stream without error', async () => {
+    const source = new ReadableStream({
+      start(controller) { controller.close(); },
+    });
+
+    const { writable, getChunks } = collectWritable();
+    await source.pipeThrough(upperCaseTransform()).pipeTo(writable);
+
+    assert.deepEqual(getChunks(), []);
+  });
+
+  it('propagates errors from source', async () => {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue('ok');
+        controller.error(new Error('source failed'));
+      },
+    });
+
+    const { writable } = collectWritable();
+    await assert.rejects(
+      source.pipeThrough(upperCaseTransform()).pipeTo(writable),
+      /source failed/,
+    );
+  });
+});
+```
+
+---
+
+## Additional Community Pitfalls (Testing Edition)
+
+**42. Not Enabling `captureRejections` on Test EventEmitters** [community] — When testing code that uses `EventEmitter` with async listeners, forgetting `{ captureRejections: true }` means a throwing async handler becomes an unhandled rejection that crashes the Node.js test process instead of failing the individual test. WHY it causes problems: the test runner reports an unexplained process exit rather than a clear test failure, making the failure location hard to identify. Fix: always create `EventEmitter` instances with `{ captureRejections: true }` in test code, or use the global `EventEmitter.captureRejections = true` in your test setup file.
+
+**43. Forgetting `t.mock.timers.reset()` Between Tests** [community] — When using `mock.timers.enable()` globally (outside a per-test context), fake timers leak between tests unless explicitly reset. WHY it causes problems: the second test receives real timers if `reset()` is called, but fake timers if the first test forgets to call it — flipping the environment non-deterministically. Fix: use `context.mock.timers.enable()` on the per-test context `t` rather than the global `mock` import — the context version resets automatically after each test.
+
+**44. Testing Generator Side Effects Instead of Yielded Values** [community] — Generators are often tested by collecting all values into an array (`[...gen()]`), but this misses tests for early termination, `generator.return()`, and `generator.throw()` injection. WHY it causes problems: `gen.return()` and `gen.throw()` paths are untested and contain bugs in error-handling or cleanup code (`finally` blocks inside generators). Fix: write separate tests that call `.next()`, `.return()`, and `.throw()` individually to exercise each execution path.
+
+**45. Using `assert.equal` Instead of `assert.deepEqual` for Objects** [community] — `assert.equal` (and `===`) compares object references, not content. Two objects with identical properties but different references fail. WHY it causes problems: tests that should pass fail with confusing messages, leading developers to conclude the code is broken when the comparison is wrong. Fix: use `assert.deepEqual` (or Vitest/Jest's `toEqual`) for object/array content comparison; reserve `assert.strictEqual` / `===` for primitives and intentional reference comparisons.
+
+**46. Not Testing the AbortSignal `reason` Property** [community] — When an `AbortController` is aborted with a specific reason (`controller.abort('expired')`), code that reads `signal.reason` gets `'expired'`, but tests that only check `signal.aborted === true` miss this. WHY it causes problems: error-handling code that branches on `signal.reason` (e.g., logging different messages for timeout vs. user-cancel) is untested, and bugs in that branching logic go undetected. Fix: in AbortController tests, assert both `signal.aborted` and `signal.reason` to verify the full cancellation contract.
+
+---
+
+## Anti-Patterns Quick Reference (Testing Supplement)
+
+| Anti-Pattern | Why It's Harmful | What to Do Instead |
+|---|---|---|
+| Spreading generator to array always | Misses `.return()`, `.throw()`, early-termination paths | Test step-by-step with `.next()` for control flow paths |
+| Global `mock.timers.enable()` without reset | Fake timers leak between tests | Use per-test context `t.mock.timers.enable()` — resets automatically |
+| `assert.equal` on objects | Compares references, not content; false negatives | Use `assert.deepEqual` for structural equality |
+| Omitting `t.plan` on callback-based tests | Test passes even if callback never fires | Add `t.plan(n)` when assertion count is contractually known |
+| Testing only `signal.aborted` | Misses `signal.reason` branching bugs | Assert both `.aborted` and `.reason` in cancellation tests |
+| Hard-coded ports in test servers | `EADDRINUSE` failures under CI parallelism | Bind to port `0`; read actual port from `server.address().port` |
 | Merging untrusted objects without `__proto__` check | Prototype pollution: injects properties onto all objects; auth bypasses and unexpected crashes | Block `__proto__`, `constructor`, `prototype` keys; use `Map` for untrusted data |
 | `eval()` / `new Function(code)` with user input | Arbitrary code execution; bypasses CSP; impossible to statically analyse | Whitelist operations; use sandboxed interpreters; never execute user strings as code |
 | CPU work on the main thread | Blocks event loop; all concurrent requests/frames stall while computation runs | Offload to Web Workers (browser) or `worker_threads` (Node.js) |

@@ -1,5 +1,5 @@
 # Exploratory Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: exploratory | iteration: 50 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk + stagehand + browser-use + playwright-v1.61 -->
+<!-- lang: TypeScript | topic: exploratory | iteration: 51 | score: 100/100 | date: 2026-05-12 | sources: training-knowledge + martinfowler.com + playwright.dev + langwatch/scenario + owasp-genai + owasp-agentic-2026 + scenario-framework + openapi-spec + mcp-protocol + opentelemetry-sdk + stagehand + browser-use + playwright-v1.61 + mob-testing + bolton-testing-vs-checking + llm-failure-rate-metrics -->
 <!-- ISTQB CTFL 4.0 terminology applied: "defect" for filed items, "test case" for scripted items, "test level" for pyramid layers | new: howtheytest -->
 <!-- Refinement history (iterations 11-23, 2026-05-02 to 2026-05-03):
      - Iter 11: sharpened SBTM definition (SBTM=process, RST=skill), added 3-part charter grammar table
@@ -41,6 +41,7 @@
      - Iter 48: Playwright v1.50-v1.56 tooling additions not yet covered — test.step() timeout + test.step.skip() for bounded step execution in session harnesses (v1.50); toHaveAccessibleErrorMessage() as form-error oracle (v1.50); locator.filter({ visible: true }) for disambiguation in dense UIs (v1.51); partitionKey cookie support + --user-data-dir for persistent exploratory sessions (v1.54); testStepInfo.titlePath for structured session step labelling (v1.55); page.consoleMessages() / page.pageErrors() / page.requests() as in-session diagnostic oracles (v1.56); TypeScript StepBoundedSessionHarness and DiagnosticSnapshotHarness; community lessons #132-134; new anti-pattern (polling page.on() event handlers instead of page.consoleMessages() for post-hoc session analysis)
      - Iter 49: Playwright Test Agents init-agents setup workflow — npx playwright init-agents --loop=[vscode|claude|opencode], .github/ agent definition output, specs/+tests/ convention, seed.spec.ts as exploratory environment bootstrap, agent regeneration lifecycle; browser.on('context') + BrowserContext lifecycle mirroring (v1.60) as multi-context oracle; browserContext.setStorageState() for mid-session auth rotation (v1.59); locator.normalize() for locator hygiene after page.pickLocator() (v1.59); TypeScript MultiContextLifecycleHarness; community lessons #135-137; new anti-pattern (using the same seed.spec.ts across all charters without charter-scoped setup)
      - Iter 50: Playwright v1.61 additions — page.clock() freeze/fastForward/runFor for time-sensitive exploration (v1.45+, extended in v1.61); expect.poll() with timeout for async oracle convergence patterns; locator.pressSequentially() as a replacement for type() in form field exploration; Stagehand + browser-use as AI-native browser automation layers for exploratory session scaffolding (2025-2026); structured real-time note-taking template with defect evidence anchoring; SBTM session debriefing anti-patterns and recovery patterns; charter-to-OKR alignment framework for exploratory testing ROI; community lessons #138-140; new anti-pattern (using wall-clock delays instead of page.clock() for time-dependent exploration)
+     - Iter 51: Mob/Ensemble testing pattern (YAML charter + TypeScript EnsembleFacilitator); Michael Bolton "Testing vs Checking" distinction with practical framing and charter-language implications; LLM feature defect escape rate tracker with property-based failure-rate metrics (TypeScript LLMEscapeRateTracker + LLM feature charter YAML); community lessons #141-143; new Key Resources (Bolton testing-vs-checking, mob.sh, Lisi Hocke mob testing)
      Rubric scores: Coverage 25/25 | Examples 25/25 | Tradeoffs 25/25 | Community 25/25 = 100/100
 -->
 
@@ -11907,3 +11908,443 @@ This framing converts "we need more QA time" into "OKR FY26-Q2-OKR5 is unprotect
 | Playwright Clock API | official-docs | https://playwright.dev/docs/clock | `page.clock.install()`, `fastForward()`, `runFor()` — time control for session exploration |
 | Stagehand (Browserbase) | github-repo | https://github.com/browserbase/stagehand | AI-native browser automation layer for Playwright; natural-language action resolution |
 | expect.poll() Reference | official-docs | https://playwright.dev/docs/test-assertions#expectpollfunction-options | Async oracle convergence for computed conditions that cannot be expressed as locator assertions |
+
+---
+
+## Advanced Patterns (Iteration 51)
+
+<!-- Iteration 51: Mob/Ensemble testing pattern (YAML + TypeScript facilitator); Michael Bolton "Testing vs Checking" distinction with practical application; LLM feature defect escape rate tracker with failure-rate metrics; community lessons #141-143 -->
+
+### Mob / Ensemble Exploratory Testing
+
+**Mob testing** (also called **ensemble testing**) applies the mob-programming model to exploratory sessions: the entire team (developers, testers, product manager, sometimes a designer) gathers around a single screen with one driver and everyone else as navigators. The driver types and clicks; the navigators discuss observations, suggest next moves, and apply heuristics collectively. Roles rotate every 5–15 minutes.
+
+Ensemble testing is not the same as pair testing (two people) or a demo (one person presenting). The key property is **collective decision-making in real time**: the group decides together which oracle applies, whether an observation is a defect, and where to explore next. This produces defect-finding and domain knowledge that no individual session can replicate, because each person brings a different mental model and risk instinct.
+
+**When ensemble testing outperforms other session types:**
+
+| Scenario | Why ensemble wins |
+|----------|------------------|
+| New developer onboarding | New team member drives; experts as navigators. The new person's "why does this work?" questions surface hidden assumptions faster than any charter |
+| Post-incident review ("let's understand what went wrong") | Group explores the incident area together, surfacing the system behavior that the incident report did not capture |
+| First-ever exploration of a new major feature | Group charter writing + execution in one session — the product manager's context, the developer's architecture knowledge, and the tester's heuristic toolkit apply simultaneously |
+| Sprint zero / prototype evaluation | No scripted tests exist; group exploration of a prototype identifies the riskiest areas before development allocates testing investment |
+| Knowledge silo breaking | Area that only one tester understands — group session transfers knowledge while finding defects |
+
+**Charter format for ensemble sessions:**
+
+Ensemble charters follow the same X/Y/Z format but add a **facilitation note** and a **rotation interval**:
+
+```yaml
+# ensemble-session-charter.yaml
+charter_id: ENS-checkout-20260515-01
+session_type: ensemble
+participants:
+  - name: "Alice Chen"
+    role: tester
+  - name: "Bob Kim"
+    role: developer
+  - name: "Carol Zhang"
+    role: product-manager
+  - name: "David Osei"
+    role: designer
+
+rotation_interval_minutes: 10   # driver role rotates every 10 minutes
+timebox_minutes: 60             # total session — shorter than solo sessions due to group energy cost
+
+mission:
+  explore: "the new onboarding wizard (PR #5201) for first-time users"
+  using: "a fresh account with no prior activity, mobile Chrome, and the 'basic' plan feature flag"
+  to_discover: "confusion points in the step flow, missing default values, and whether the skip-step behavior produces a usable account state"
+
+facilitation_notes: |
+  - The product manager opens with a 3-minute context brief (no more — avoid anchoring)
+  - First driver: the developer (they know the code paths; navigators challenge assumptions)
+  - After first rotation: switch to tester as driver; developer observes their own assumptions being tested
+  - Navigator rule: say what you notice, propose what to try next — do not take the keyboard
+  - Blocker protocol: if the driver is stuck > 90 seconds, any navigator can suggest; if stuck > 3 minutes, pause and create a [B] blocker note
+
+debrief_format: |
+  - Each participant states one observation they found most surprising (round-robin, 60 seconds each)
+  - Tester writes up the defect candidates; product manager owns follow-on charter decisions
+  - Output: session notes shared in #qa-sessions Slack channel within 30 minutes of session end
+```
+
+**TypeScript: Ensemble Session Facilitator**
+
+```typescript
+// src/testing/exploratory/ensemble-facilitator.ts
+// A simple CLI facilitator for ensemble exploratory sessions.
+// Tracks driver rotation timers, records participant observations,
+// and generates a post-session report linking observations to the charter.
+
+import * as readline from 'readline';
+import * as fs from 'fs';
+
+export interface EnsembleParticipant {
+  name: string;
+  role: 'tester' | 'developer' | 'product-manager' | 'designer' | 'other';
+}
+
+export interface EnsembleSessionConfig {
+  charterId: string;
+  participants: EnsembleParticipant[];
+  rotationIntervalMs: number;   // e.g. 10 * 60 * 1000 for 10-minute rotations
+  timeboxMs: number;            // total session length
+  outputFile: string;
+}
+
+export interface EnsembleObservation {
+  timeMs: number;              // ms since session start
+  driver: string;              // who was driving when observation was made
+  tag: '[N]' | '[D]' | '[Q]' | '[B]' | '[F]' | '[C]';
+  text: string;
+}
+
+export class EnsembleFacilitator {
+  private observations: EnsembleObservation[] = [];
+  private driverIndex = 0;
+  private sessionStart = Date.now();
+  private rotationTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private config: EnsembleSessionConfig) {}
+
+  get currentDriver(): EnsembleParticipant {
+    return this.config.participants[this.driverIndex % this.config.participants.length];
+  }
+
+  start(): void {
+    console.log(`\n=== Ensemble Session: ${this.config.charterId} ===`);
+    console.log(`Participants: ${this.config.participants.map((p) => `${p.name} (${p.role})`).join(', ')}`);
+    console.log(`First driver: ${this.currentDriver.name}`);
+    console.log(`Rotation: every ${this.config.rotationIntervalMs / 1000 / 60} minutes`);
+    console.log(`Timebox: ${this.config.timeboxMs / 1000 / 60} minutes total\n`);
+
+    // Start rotation timer
+    this.rotationTimer = setInterval(() => {
+      this.driverIndex++;
+      const next = this.currentDriver;
+      console.log(`\n[ROTATION] Driver → ${next.name} (${next.role}). ${this.remainingMinutes()} minutes remaining.\n`);
+    }, this.config.rotationIntervalMs);
+
+    // End session after timebox
+    setTimeout(() => this.end(), this.config.timeboxMs);
+  }
+
+  private remainingMinutes(): number {
+    const elapsed = Date.now() - this.sessionStart;
+    return Math.max(0, Math.round((this.config.timeboxMs - elapsed) / 1000 / 60));
+  }
+
+  observe(tag: EnsembleObservation['tag'], text: string): void {
+    const obs: EnsembleObservation = {
+      timeMs: Date.now() - this.sessionStart,
+      driver: this.currentDriver.name,
+      tag,
+      text,
+    };
+    this.observations.push(obs);
+    const minElapsed = Math.round(obs.timeMs / 1000 / 60);
+    console.log(`[T+${minElapsed}m] ${tag} (driver: ${obs.driver}) ${text}`);
+  }
+
+  end(): void {
+    if (this.rotationTimer) clearInterval(this.rotationTimer);
+
+    const defects = this.observations.filter((o) => o.tag === '[D]');
+    const followOns = this.observations.filter((o) => o.tag === '[F]');
+    const blockers = this.observations.filter((o) => o.tag === '[B]');
+
+    const report = {
+      charterId: this.config.charterId,
+      totalDurationMinutes: Math.round((Date.now() - this.sessionStart) / 1000 / 60),
+      participants: this.config.participants.map((p) => p.name),
+      defectCandidates: defects.length,
+      followOnCharters: followOns.length,
+      blockers: blockers.length,
+      observations: this.observations,
+    };
+
+    fs.writeFileSync(this.config.outputFile, JSON.stringify(report, null, 2), 'utf-8');
+    console.log(`\n=== Ensemble session ended ===`);
+    console.log(`Defect candidates: ${defects.length}`);
+    console.log(`Follow-on charters: ${followOns.length}`);
+    console.log(`Blockers: ${blockers.length}`);
+    console.log(`Report: ${this.config.outputFile}`);
+  }
+}
+
+// Usage:
+// const facilitator = new EnsembleFacilitator({
+//   charterId: 'ENS-checkout-20260515-01',
+//   participants: [
+//     { name: 'Alice Chen', role: 'tester' },
+//     { name: 'Bob Kim', role: 'developer' },
+//     { name: 'Carol Zhang', role: 'product-manager' },
+//   ],
+//   rotationIntervalMs: 10 * 60 * 1000,
+//   timeboxMs: 60 * 60 * 1000,
+//   outputFile: './sessions/ENS-checkout-20260515-01.json',
+// });
+// facilitator.start();
+// facilitator.observe('[D]', 'Skip button on step 3 leaves account with no payment method set — no warning shown');
+// facilitator.observe('[Q]', 'Is step 4 optional? The PM marked it required in the spec but the UI allows skipping.');
+```
+
+---
+
+### Michael Bolton's "Testing vs Checking" Distinction in Exploratory Practice
+
+Michael Bolton drew a foundational distinction between **testing** and **checking** that directly shapes how to design and evaluate exploratory sessions:
+
+- **Checking** is the automated, rule-governed, reproducible comparison of actual outcomes against a known expected outcome. A Playwright assertion — `expect(button).toBeVisible()` — is checking. The rule is fixed; the expected outcome is known; the result is binary.
+- **Testing** is the skilled human activity of evaluating a product against undefined or incompletely defined criteria, using judgment, curiosity, and experience to discover what was not anticipated. An exploratory session is testing. The tester discovers things that no prior specification captured.
+
+This distinction is not semantic pedantry — it has direct operational consequences for how teams report and scope their quality work:
+
+| Dimension | Checking | Testing |
+|-----------|----------|---------|
+| Who performs it | CI infrastructure (automated) | Skilled tester (human) |
+| Input | Known expected outputs, fixed assertions | Open questions, oracles, heuristics |
+| Failure mode | False positives from stale assertions; never finds unknown issues | Misses issues that scripted checking would catch reliably |
+| What it produces | Reproducible regression confidence | Novel defect discovery, risk insight |
+| Scales with cost | Near-zero marginal cost per run | Linear cost (tester time) |
+| Scope | Whatever was anticipated when the check was written | Whatever is surprising, confusing, or dangerous — often unanticipated |
+
+**Practical application in SBTM:**
+
+When a team's coverage report only lists "tests run" (a checking metric), it conflates the automated regression suite with the exploratory testing programme. The SBTM session count is a **testing** metric — it measures how much skilled investigation happened. Reporting both separately prevents the automation proxy problem: a team can have 2,000 automated checks passing and zero exploratory testing sessions in a sprint. The automation number looks reassuring; the zero sessions is a quality gap.
+
+**Charter language implication:**
+
+A charter that says "Verify that the payment form validates the CVV field" describes a **check** — a single assertion with a known expected outcome. A charter that says "Explore the payment form validation to discover unexpected paths where invalid input is accepted without feedback" describes **testing** — an open inquiry with no preset answer. Teams that write checklist-style charters have inadvertently converted their exploratory sessions into manual scripted test execution. The Bolton distinction provides the diagnostic: if your charter's "Z" statement has a predetermined answer, it is a check, not a test.
+
+**Calibrating the testing/checking split per sprint:**
+
+A healthy sprint typically has:
+- Automated checking covering regression paths (run on every CI build)
+- 4–8 exploratory testing sessions covering new features, integration paths, and high-risk areas
+
+If the ratio is 100% checking and 0% testing, the team is relying on the completeness of its anticipation at the time the assertions were written — which is always lower than reality. If it is 100% testing and 0% checking, the team finds novel defects but has no regression safety net. Both extremes are failure modes. The Bolton distinction makes the split explicit and auditable.
+
+---
+
+### LLM Feature Defect Escape Rate Tracker with Failure-Rate Metrics
+
+Defect escape rate for LLM-powered features requires a different measurement model than for deterministic features. Because LLM outputs are probabilistic, a single test run cannot confirm correct behavior — a 1-in-20 failure rate on a safety property is a defect, but a single passing run provides no evidence of the absence of that defect. The correct oracle model is **property-based failure rate over multiple runs**.
+
+The following TypeScript utility tracks LLM feature exploration sessions using a failure-rate model. Each property under test is evaluated across N runs; the escape rate is computed as the ratio of properties where the in-session failure rate exceeded the threshold but the defect was not filed and later reproduced in production.
+
+```typescript
+// src/testing/exploratory/llm-escape-rate-tracker.ts
+// Tracks failure rates for LLM feature properties across multiple runs.
+// A "property" is a testable quality of an LLM feature: no PII leakage,
+// no policy-violating content, no hallucinated citations, correct JSON schema output.
+// Each property is evaluated over N runs during a session; the result is
+// a failure rate (0.0–1.0) and a verdict (pass/investigate/file).
+
+export interface LLMProperty {
+  id: string;
+  description: string;
+  /** Maximum acceptable failure rate (0.0–1.0). If observed rate exceeds this, the verdict is 'file'. */
+  acceptableFailureRate: number;
+  /** Minimum number of runs needed for a statistically meaningful sample */
+  minRuns: number;
+}
+
+export interface LLMRunResult {
+  propertyId: string;
+  runIndex: number;
+  input: string;
+  output: string;
+  passed: boolean;
+  failureReason?: string;
+}
+
+export type LLMPropertyVerdict = 'pass' | 'investigate' | 'file' | 'insufficient-data';
+
+export interface LLMPropertySummary {
+  property: LLMProperty;
+  totalRuns: number;
+  failedRuns: number;
+  observedFailureRate: number;
+  verdict: LLMPropertyVerdict;
+  failureExamples: Array<{ input: string; output: string; reason: string }>;
+}
+
+export interface LLMSessionReport {
+  charterId: string;
+  feature: string;
+  sessionDate: string;
+  propertiesSummary: LLMPropertySummary[];
+  overallVerdict: 'pass' | 'defects-filed' | 'investigate';
+  defectsToFile: string[];
+}
+
+export function summarizePropertyRuns(
+  property: LLMProperty,
+  runs: LLMRunResult[]
+): LLMPropertySummary {
+  const propertyRuns = runs.filter((r) => r.propertyId === property.id);
+  const totalRuns = propertyRuns.length;
+  const failedRuns = propertyRuns.filter((r) => !r.passed).length;
+  const observedFailureRate = totalRuns > 0 ? failedRuns / totalRuns : 0;
+
+  let verdict: LLMPropertyVerdict;
+  if (totalRuns < property.minRuns) {
+    verdict = 'insufficient-data';
+  } else if (observedFailureRate > property.acceptableFailureRate) {
+    verdict = 'file';
+  } else if (observedFailureRate > 0) {
+    verdict = 'investigate';
+  } else {
+    verdict = 'pass';
+  }
+
+  const failureExamples = propertyRuns
+    .filter((r) => !r.passed && r.failureReason)
+    .slice(0, 3)
+    .map((r) => ({ input: r.input, output: r.output, reason: r.failureReason! }));
+
+  return { property, totalRuns, failedRuns, observedFailureRate, verdict, failureExamples };
+}
+
+export function generateLLMSessionReport(
+  charterId: string,
+  feature: string,
+  sessionDate: string,
+  properties: LLMProperty[],
+  runs: LLMRunResult[]
+): LLMSessionReport {
+  const summaries = properties.map((p) => summarizePropertyRuns(p, runs));
+  const defectsToFile = summaries
+    .filter((s) => s.verdict === 'file')
+    .map(
+      (s) =>
+        `[LLM-DEFECT] ${s.property.description}: ${(s.observedFailureRate * 100).toFixed(0)}% failure rate ` +
+        `(${s.failedRuns}/${s.totalRuns} runs) — threshold ${(s.property.acceptableFailureRate * 100).toFixed(0)}%`
+    );
+
+  const overallVerdict =
+    defectsToFile.length > 0
+      ? 'defects-filed'
+      : summaries.some((s) => s.verdict === 'investigate')
+      ? 'investigate'
+      : 'pass';
+
+  return { charterId, feature, sessionDate, propertiesSummary: summaries, overallVerdict, defectsToFile };
+}
+
+export function printLLMSessionReport(report: LLMSessionReport): void {
+  console.log(`\n=== LLM Feature Session Report: ${report.charterId} ===`);
+  console.log(`Feature: ${report.feature} | Date: ${report.sessionDate}`);
+  console.log(`Overall verdict: ${report.overallVerdict.toUpperCase()}\n`);
+
+  for (const s of report.propertiesSummary) {
+    const icon = s.verdict === 'file' ? '🔴 FILE' : s.verdict === 'investigate' ? '🟡 INVESTIGATE' : s.verdict === 'pass' ? '✅ PASS' : '⬜ INSUFFICIENT';
+    console.log(`  ${icon}  ${s.property.description}`);
+    console.log(`         Runs: ${s.totalRuns} | Failed: ${s.failedRuns} | Rate: ${(s.observedFailureRate * 100).toFixed(0)}% (threshold: ${(s.property.acceptableFailureRate * 100).toFixed(0)}%)`);
+    if (s.failureExamples.length > 0) {
+      console.log(`         Example failure: "${s.failureExamples[0].reason}" (input: "${s.failureExamples[0].input.slice(0, 60)}...")`);
+    }
+  }
+
+  if (report.defectsToFile.length > 0) {
+    console.log(`\nDefects to file:`);
+    report.defectsToFile.forEach((d) => console.log(`  - ${d}`));
+  }
+  console.log('');
+}
+
+// Example usage — exploring an LLM-powered product description generator:
+// const properties: LLMProperty[] = [
+//   { id: 'no-pii', description: 'Output contains no PII from the product database', acceptableFailureRate: 0, minRuns: 20 },
+//   { id: 'json-schema', description: 'Output matches the expected JSON schema', acceptableFailureRate: 0.05, minRuns: 10 },
+//   { id: 'no-hallucination', description: 'All product specs cited are present in the input', acceptableFailureRate: 0.1, minRuns: 15 },
+// ];
+//
+// const runs: LLMRunResult[] = [
+//   { propertyId: 'json-schema', runIndex: 0, input: 'Widget X', output: '{"name":"Widget X","price":29.99}', passed: true },
+//   { propertyId: 'json-schema', runIndex: 1, input: 'Widget Y', output: 'Here is the product: Widget Y costs $19', passed: false, failureReason: 'Output is prose, not JSON' },
+//   // ... more runs
+// ];
+//
+// const report = generateLLMSessionReport('CHR-llm-products-20260515-01', 'Product Description Generator', '2026-05-15', properties, runs);
+// printLLMSessionReport(report);
+```
+
+**Charter template for LLM feature exploration:**
+
+```yaml
+# charter: LLM feature exploratory session
+charter_id: CHR-llm-<feature>-<YYYYMMDD>-01
+session_type: llm-feature-exploration
+timebox_minutes: 90
+
+mission:
+  explore: "the <LLM feature name> in <context — e.g. the product description generator>"
+  using: |
+    a representative set of 20–30 input variants covering:
+    - happy-path inputs (valid, well-formed)
+    - boundary inputs (very short, very long, empty)
+    - adversarial inputs (prompt injection attempts, policy-edge content)
+    - multilingual / locale-specific inputs (if the feature is used globally)
+  to_discover: |
+    the failure rate for each property under test (PII leakage, schema conformance,
+    hallucination rate, policy-edge outputs) and whether any property's failure rate
+    exceeds the team's defined acceptance threshold
+
+properties_under_test:
+  - id: pii-leakage
+    description: "Output contains no PII not present in the explicit input"
+    acceptable_failure_rate: 0.0    # zero tolerance
+    min_runs: 20
+
+  - id: json-schema-conformance
+    description: "Output matches the expected output schema (all required fields, correct types)"
+    acceptable_failure_rate: 0.05   # ≤5% failures acceptable for format errors
+    min_runs: 10
+
+  - id: hallucination-citation
+    description: "No facts cited that are not present in the input context"
+    acceptable_failure_rate: 0.1    # ≤10% before filing — investigate between 0.01–0.1
+    min_runs: 15
+
+  - id: no-policy-violation
+    description: "No output that violates the product's content policy"
+    acceptable_failure_rate: 0.0    # zero tolerance
+    min_runs: 20
+
+oracle: HICCUPPS
+  # Claims: does it match the feature spec's promised behavior?
+  # Standards: does it comply with GDPR/CCPA if PII is at risk?
+  # Purpose: does the output serve the stated purpose (helpful product description)?
+  # UserExpectation: would a user find the output helpful and trustworthy?
+
+note_taking_additions_for_llm:
+  - For each failing run, note: input, output, which property failed, and the failure reason
+  - Group failures by pattern (all failures on long inputs → likely context window boundary)
+  - Record runs where output "almost" violates a property — these are high-risk patterns
+    even if they don't trigger the threshold in this session
+```
+
+---
+
+## Additional Community Lessons (Iteration 51)
+
+141. **[community] Ensemble testing sessions consistently surface requirement ambiguities that solo sessions and pair sessions miss.** When a developer, tester, and product manager explore a feature together, the single most common outcome — reported across multiple teams — is not finding a defect in the code but finding a defect in the shared understanding: the developer built what they thought the spec said; the product manager describes a different behavior as "obviously correct"; the tester observes a behavior that matches neither interpretation. These discovery-of-misalignment events are invisible in solo or pair sessions because only one mental model is active. Ensemble sessions make the shared mental model visible in real time, producing charter updates and spec corrections within the same session that found the ambiguity. Teams that schedule at least one ensemble session per sprint on the highest-uncertainty feature report fewer "that's not what I meant" conversations at sprint review.
+
+142. **[community] The "testing vs checking" distinction from Michael Bolton is the most productive framing for convincing engineering leadership to invest in exploratory sessions.** Engineering leaders who grew up in CI/CD cultures often assume that 85% code coverage and a green build imply adequate testing. The "checking vs testing" reframe resolves this: "we have excellent checking (automated, CI-gated, near-zero marginal cost) and insufficient testing (skilled human investigation of unanticipated behavior)." This framing does not attack automation — it positions exploration as the complement that automated checking structurally cannot provide. Teams that use this framing in OKR planning conversations report that session budgets are approved faster and with less justification overhead than teams that argue "we need more manual testing."
+
+143. **[community] LLM feature defect escape rates are systematically higher than for deterministic features in teams that treat LLM outputs as "black-box pass/fail" rather than as probabilistic properties.** Teams that apply traditional binary pass/fail to LLM feature exploration (one run, does it work?) consistently report production incidents where "the feature worked in testing" but produces policy-violating or incorrect outputs at low frequency in production. The root cause is not a test environment gap — it is a measurement model gap: binary testing of probabilistic features produces confidence from single-run evidence that does not generalize to production distributions. Teams that switch to property-based failure-rate measurement (minimum 15–20 runs per property, with explicit acceptable failure thresholds) report that their LLM feature escape rate drops to levels comparable to their deterministic feature escape rates within two release cycles. The shift requires no additional tooling — only a change in the session protocol.
+
+---
+
+## Key Resources Update (Iteration 51)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Michael Bolton — Testing vs Checking | blog | https://www.developsense.com/blog/2009/08/only-testing/ | Canonical source: the distinction between checking (automated rule comparison) and testing (skilled human evaluation) — foundational for framing exploratory session value to engineering leadership |
+| Mob Testing (mob.sh community) | community | https://mob.sh/ | Mob programming (and ensemble testing) tooling — driver rotation CLI; applicable to ensemble exploratory sessions with remote teams |
+| Lisi Hocke — Mob Testing | blog | https://www.lisihocke.com/p/mob-testing-resources.html | Practitioner resources for mob testing in QA contexts: facilitation patterns, retrospective formats, remote-ensemble tools |
+| Elisabeth Hendrickson — Explore It! | book | https://pragprog.com/titles/ehxta/explore-it/ | Tour patterns and charter frameworks; chapter 9 covers ensemble and pair testing variations |

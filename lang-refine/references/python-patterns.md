@@ -1,5 +1,5 @@
 # Python Patterns & Best Practices
-<!-- sources: mixed (official + community) | iteration: 53 | score: 100/100 | date: 2026-05-12 -->
+<!-- sources: mixed (official + community) | iteration: 54 | score: 100/100 | date: 2026-05-12 -->
 <!-- iteration trace:
      Iter 0: 96/100 — initial draft (all checklist items present; 2 examples with undefined process())
      Iter 1: 100/100 (+4) — fixed walrus/generator examples; added 8th community gotcha with full WHY; strengthened os.path WHY
@@ -57,6 +57,7 @@
      Iter 51 (2026-05-12): 100/100 (+~340 lines) — added Python 3.15 section: TypeForm (PEP 747), TypedDict closed/extra_items (PEP 728), re.prefixmatch() (soft-dep re.match()), profiling package (sampling + tracing profilers), UTF-8 default encoding (PEP 686), profile module deprecation; pytest 9.0 additions: faulthandler_exit_on_timeout, consider_namespace_packages, monkeypatch.syspath_prepend() deprecation; community gotchas #57 (assertWarns no longer swallows non-matching warnings, Python 3.15) and #58 (cProfile/profile module deprecated, migrate to profiling.tracing); sourced from docs.python.org/3.15/whatsnew + peps.python.org + docs.pytest.org/en/stable/changelog.html
      Iter 52 (2026-05-12): 100/100 (+0) — added Python 3.15 lazy import keyword (PEP 810) with testing impact section; frozendict (PEP 814) + sentinel (PEP 661) for immutable test fixtures; threading.synchronized_iterator()/concurrent_tee() for lock-free concurrent iteration; asyncio.TaskGroup.cancel() for structured async cleanup; community gotchas #59 (TaskGroup.cancel() does not suppress already-completed task results) and #60 (lazy import + import-time side-effect ordering pitfall); sourced from docs.python.org/3.15/whatsnew + peps.python.org/pep-0810/ + peps.python.org/pep-0814/ + peps.python.org/pep-0661/
      Iter 53 (2026-05-12): 100/100 (+~300 lines) — added conftest.py hierarchical organisation, fixture factories, parametrize indirect patterns, mock.patch context manager vs decorator comparison, FastAPI TestClient + ASGITransport + dependency_overrides + lifespan patterns, pytest-bdd Gherkin integration; community gotchas #61 (TestClient lifespan without context manager), #62 (asyncio_mode="auto" auto-collects helpers), #63 (stacked @patch arg order reversal); sourced from docs.pytest.org + fastapi.tiangolo.com + pytest-bdd docs + practitioner synthesis
+     Iter 54 (2026-05-12): 100/100 (+~200 lines) — added Pydantic v2 testing patterns (ValidationError assertions, TypeAdapter, model_validate, field/model validators, model_json_schema); pytest-xdist advanced patterns (--dist modes, worker_id fixture, per-worker database isolation, tmp_path_factory worker isolation); pytest custom plugin development (@pytest.hookimpl, pytest_configure, pytest_runtest_*, conftest-as-plugin, INI options); community gotchas #64 (pydantic v2 ValidationError loc path format changed), #65 (xdist --dist=no breaks worker_id fixture), #66 (conftest plugin vs installed plugin load order); sourced from docs.pydantic.dev + pytest-xdist docs + docs.pytest.org/en/stable/how-to/writing_plugins + practitioner synthesis
 -->
 
 
@@ -11546,5 +11547,519 @@ def test_send_email_context():
 ```
 
 **Rule:** Prefer context managers when patching more than one target. If using stacked decorators, add a comment listing the bottom-up order explicitly, and write argument names that match the decorator order, not the reading order.
+
+---
+
+## Pydantic v2 Testing Patterns
+
+[Pydantic v2](https://docs.pydantic.dev/latest/) (released 2023, now the ecosystem standard) rewrote validation in Rust for 5–50× speed gains. Its testing surface differs from v1 in several important ways that catch teams off guard.
+
+### Asserting `ValidationError` Contents (Pydantic v2)
+
+In v2, `ValidationError.errors()` returns a list of dicts with `loc`, `msg`, `type`, and `input` keys. The `loc` is a **tuple of strings/ints** (not a dotted string as in v1). Use `pytest.raises` with a context manager and inspect individual error dicts.
+
+```python
+import pytest
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from typing import Self
+
+
+class UserCreate(BaseModel):
+    username: str
+    age: int
+    email: str
+
+    @field_validator("username")
+    @classmethod
+    def username_no_spaces(cls, v: str) -> str:
+        if " " in v:
+            raise ValueError("username must not contain spaces")
+        return v.lower()
+
+    @field_validator("age")
+    @classmethod
+    def age_must_be_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("age must be positive")
+        return v
+
+    @model_validator(mode="after")
+    def check_email_domain(self) -> Self:
+        if "@" not in self.email:
+            raise ValueError("email must contain @")
+        return self
+
+
+def test_valid_user():
+    user = UserCreate(username="alice", age=30, email="alice@example.com")
+    assert user.username == "alice"
+    assert user.age == 30
+
+
+def test_username_with_spaces():
+    with pytest.raises(ValidationError) as exc_info:
+        UserCreate(username="alice bob", age=30, email="alice@example.com")
+
+    errors = exc_info.value.errors()
+    # v2: loc is a TUPLE, e.g. ("username",) — not "username" as a string
+    assert any(
+        e["loc"] == ("username",) and "spaces" in e["msg"]
+        for e in errors
+    ), f"Expected username space error, got: {errors}"
+
+
+def test_multiple_validation_errors():
+    """v2 collects ALL errors before raising — one ValidationError, many dicts."""
+    with pytest.raises(ValidationError) as exc_info:
+        UserCreate(username="", age=-1, email="not-an-email")
+
+    errors = exc_info.value.errors()
+    locs = {e["loc"] for e in errors}
+    # All three fields fail — v2 does not short-circuit
+    assert ("age",) in locs
+    assert ("email",) in locs
+
+
+def test_error_count():
+    """Assert exact number of validation errors for regression protection."""
+    with pytest.raises(ValidationError) as exc_info:
+        UserCreate(username="bad name", age=0, email="bad")
+    assert exc_info.value.error_count() == 3   # v2 API: .error_count()
+```
+
+### `TypeAdapter` for Standalone Validation in Tests
+
+`TypeAdapter` validates arbitrary types (not just `BaseModel` subclasses) — useful for testing list schemas, union types, and bare primitives.
+
+```python
+from pydantic import TypeAdapter, ValidationError
+from typing import Annotated
+from pydantic import Field
+
+
+PositiveInt = Annotated[int, Field(gt=0)]
+
+adapter = TypeAdapter(list[PositiveInt])
+
+
+def test_valid_list():
+    result = adapter.validate_python([1, 2, 3])
+    assert result == [1, 2, 3]
+
+
+def test_invalid_list_item():
+    with pytest.raises(ValidationError) as exc_info:
+        adapter.validate_python([1, -5, 3])
+    errors = exc_info.value.errors()
+    # loc is (1,) — the index of the failing item
+    assert errors[0]["loc"] == (1,)
+    assert errors[0]["type"] == "greater_than"
+
+
+def test_json_roundtrip():
+    """Validate JSON serialization + deserialization preserves structure."""
+    from pydantic import BaseModel
+
+    class Order(BaseModel):
+        id: int
+        items: list[str]
+        total: float
+
+    original = Order(id=1, items=["a", "b"], total=9.99)
+    json_bytes = original.model_dump_json()
+    restored = Order.model_validate_json(json_bytes)
+    assert restored == original
+
+
+def test_model_json_schema():
+    """Regression test: lock down the public JSON Schema to catch breaking changes."""
+    from pydantic import BaseModel
+    import json
+
+    class Product(BaseModel):
+        id: int
+        name: str
+        price: float
+
+    schema = Product.model_json_schema()
+    # Assert shape, not exact content — avoids fragile full-schema comparisons
+    assert schema["type"] == "object"
+    assert set(schema["required"]) == {"id", "name", "price"}
+    props = schema["properties"]
+    assert props["id"]["type"] == "integer"
+    assert props["price"]["type"] == "number"
+```
+
+---
+
+## pytest-xdist Advanced Patterns
+
+`pytest-xdist` parallelises tests across worker processes. The key challenge is that tests must be **independent** — shared state causes flaky failures that are hard to reproduce.
+
+### Distribution Modes
+
+```bash
+# Distribute across all CPU cores (auto-detects)
+pytest -n auto
+
+# Fixed worker count
+pytest -n 4
+
+# --dist controls HOW tests are grouped per worker:
+pytest -n 4 --dist=load          # default: dynamic load-balancing (random)
+pytest -n 4 --dist=loadscope     # same-scope fixtures run on same worker
+pytest -n 4 --dist=loadfile      # all tests in a file go to same worker
+pytest -n 4 --dist=worksteal     # work-stealing (better for uneven test times)
+pytest -n 4 --dist=no            # disable distribution (run serially, no workers)
+```
+
+| `--dist` mode | Best for | Trade-off |
+|---|---|---|
+| `load` (default) | Most suites | May split module fixtures across workers |
+| `loadscope` | Module-scoped fixtures | Less parallelism if many shared fixtures |
+| `loadfile` | File-level DB state | Wastes parallelism on large files |
+| `worksteal` | Long-running heterogeneous tests | Slightly more overhead |
+
+### `worker_id` Fixture and Per-Worker Resource Isolation
+
+Each worker gets a unique ID (`gw0`, `gw1`, …). Use it to carve out isolated resources (database names, temp directories, port numbers).
+
+```python
+# conftest.py
+import pytest
+
+
+@pytest.fixture(scope="session")
+def worker_id(request) -> str:
+    """Return the xdist worker ID, or 'gw0' when running serially."""
+    worker_input = getattr(request.config, "workerinput", None)
+    if worker_input is not None:
+        return worker_input["workerid"]   # e.g. "gw0", "gw1", "gw2"
+    return "gw0"   # serial run — treat as single worker
+
+
+@pytest.fixture(scope="session")
+def db_name(worker_id: str) -> str:
+    """Each worker gets its own database to prevent cross-worker interference."""
+    return f"test_db_{worker_id}"   # test_db_gw0, test_db_gw1, …
+
+
+@pytest.fixture(scope="session")
+def db_engine(db_name: str):
+    """Session-scoped engine — created once per worker, not once per process."""
+    from sqlalchemy import create_engine
+    engine = create_engine(f"postgresql://localhost/{db_name}")
+    yield engine
+    engine.dispose()
+```
+
+### `tmp_path_factory` with Worker Isolation
+
+The built-in `tmp_path_factory` already creates worker-unique directories when xdist is active. For shared resources (e.g., a one-time dataset download), use `FileLock` to coordinate:
+
+```python
+# conftest.py
+import pytest
+from pathlib import Path
+
+
+@pytest.fixture(scope="session")
+def shared_data_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """
+    Download a large dataset once, shared across all tests on this worker.
+    With xdist, each worker has its own tmp_path — no cross-worker sharing.
+    If you need truly shared data, use a fixed path + filelock.
+    """
+    root = tmp_path_factory.getbasetemp()
+    data_file = root / "dataset.csv"
+    if not data_file.exists():
+        # Simulate download (replace with real download logic)
+        data_file.write_text("id,value\n1,100\n2,200\n")
+    return root
+
+
+@pytest.fixture(scope="session")
+def shared_fixture_with_filelock(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """
+    Truly shared across workers: use a fixed path with a file lock.
+    Requires: pip install filelock
+    """
+    from filelock import FileLock
+
+    shared_root = tmp_path_factory.getbasetemp().parent  # parent = shared across workers
+    data_file = shared_root / "shared_data.json"
+    lock_file = shared_root / "shared_data.json.lock"
+
+    with FileLock(str(lock_file)):
+        if not data_file.exists():
+            import json
+            data_file.write_text(json.dumps({"generated": True}))
+
+    return data_file
+```
+
+### `@pytest.mark.xdist_group` for Serialising Dependent Tests
+
+When tests must run on the same worker (e.g., they share in-memory state or use the same external port), mark them with `xdist_group`:
+
+```python
+import pytest
+
+
+@pytest.mark.xdist_group("serial_group_1")
+def test_create_resource():
+    """Creates a resource — must run before test_read_resource on same worker."""
+    # ...
+
+
+@pytest.mark.xdist_group("serial_group_1")
+def test_read_resource():
+    """Reads the resource — guaranteed to run on same worker as create."""
+    # ...
+
+
+# All tests in the same class can share a group:
+@pytest.mark.xdist_group(name="db_migration_tests")
+class TestMigration:
+    def test_apply_migration_001(self):
+        pass
+
+    def test_apply_migration_002(self):
+        pass
+
+    def test_rollback_migration(self):
+        pass
+```
+
+---
+
+## Writing Custom pytest Plugins
+
+Custom plugins extend pytest behaviour with hooks. They can live in `conftest.py` (project-local) or be installed as packages (shareable across projects).
+
+### Plugin via `conftest.py`
+
+```python
+# tests/conftest.py — automatically loaded as a plugin by pytest
+
+def pytest_configure(config):
+    """Register custom markers to suppress PytestUnknownMarkWarning."""
+    config.addinivalue_line("markers", "slow: mark test as slow-running")
+    config.addinivalue_line("markers", "integration: requires external services")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Automatically skip @pytest.mark.slow tests unless --run-slow is passed."""
+    if not config.getoption("--run-slow", default=False):
+        skip_slow = pytest.mark.skip(reason="use --run-slow to run")
+        for item in items:
+            if "slow" in item.keywords:
+                item.add_marker(skip_slow)
+
+
+def pytest_addoption(parser):
+    """Add --run-slow CLI option."""
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="Run tests marked as @pytest.mark.slow",
+    )
+```
+
+### `@pytest.hookimpl` for Hook Ordering and Exception Handling
+
+```python
+# conftest.py
+
+import pytest
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """
+    Capture test result and attach extra info on failure.
+    tryfirst=True: run before other implementations of this hook.
+    hookwrapper=True: allows yielding to run the hook, then post-processing.
+    """
+    outcome = yield   # Run the actual hook + other implementations
+    report = outcome.get_result()
+
+    if report.when == "call" and report.failed:
+        # Attach extra debugging info to the report
+        extra_info = getattr(item, "_extra_debug_info", None)
+        if extra_info:
+            report.sections.append(("Extra Debug Info", extra_info))
+            logger.debug("Test %s failed. Extra info: %s", item.nodeid, extra_info)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Run final cleanup after all tests. trylast=True: run after other plugins."""
+    logger.info(
+        "Session finished. Exit status: %s. Tests collected: %d",
+        exitstatus,
+        session.testscollected,
+    )
+```
+
+### Reusable Plugin as a Package
+
+```python
+# myproject/testing/plugin.py — installable plugin
+
+import pytest
+from unittest.mock import MagicMock
+
+
+def pytest_configure(config) -> None:
+    """Called once after command-line options are parsed."""
+    config.addinivalue_line(
+        "markers", "requires_auth: test requires authenticated user context"
+    )
+
+
+@pytest.fixture
+def mock_auth_user():
+    """Provide a pre-configured mock user for auth-gated tests."""
+    user = MagicMock()
+    user.id = 42
+    user.email = "test@example.com"
+    user.is_authenticated = True
+    return user
+
+
+@pytest.fixture
+def assert_raises_http(client):
+    """
+    Helper fixture for asserting HTTP error codes in API tests.
+    Usage: assert_raises_http(404, lambda: client.get("/nonexistent"))
+    """
+    def _assert(status_code: int, fn):
+        response = fn()
+        assert response.status_code == status_code, (
+            f"Expected HTTP {status_code}, got {response.status_code}: "
+            f"{response.text[:200]}"
+        )
+    return _assert
+```
+
+```toml
+# pyproject.toml — register the plugin so pytest auto-discovers it
+[project.entry-points."pytest11"]
+myproject-testing = "myproject.testing.plugin"
+```
+
+---
+
+### Community Gotcha #64: Pydantic v2 `ValidationError.errors()` `loc` Format Changed from v1  [community]
+
+**Problem:** Pydantic v1 used dotted-string `loc` values like `"address.city"`. Pydantic v2 uses **tuples** like `("address", "city")`. Code that checks `e["loc"] == "address.city"` silently passes (string != tuple evaluates to `False` without raising) or fails in confusing ways.
+
+**Why:** The v2 API is more precise — nested field paths are unambiguous tuples, and integer indices (for list items) are native ints. Dotted strings can't represent list-index paths like `("items", 0, "price")`.
+
+```python
+from pydantic import BaseModel, ValidationError
+
+
+class Address(BaseModel):
+    city: str
+    zip_code: str
+
+
+class User(BaseModel):
+    name: str
+    address: Address
+
+
+def test_nested_validation_error():
+    with pytest.raises(ValidationError) as exc_info:
+        User(name="Alice", address={"city": "NYC", "zip_code": 12345})
+        # zip_code expects str, gets int
+
+    errors = exc_info.value.errors()
+
+    # v1 (WRONG for v2): e["loc"] == "address.zip_code"
+    # v2 (CORRECT): loc is a tuple
+    assert any(e["loc"] == ("address", "zip_code") for e in errors), (
+        f"Unexpected error locs: {[e['loc'] for e in errors]}"
+    )
+```
+
+**Fix:** Always use tuple comparison for `loc` in v2. If you need a human-readable path, use `" → ".join(str(p) for p in e["loc"])`.
+
+---
+
+### Community Gotcha #65: `pytest-xdist` `worker_id` Fixture Unavailable Without `-n`  [community]
+
+**Problem:** Code that reads `request.config.workerinput["workerid"]` to get the xdist worker ID raises `KeyError` when tests run without `-n` (serial mode). This breaks local development where developers run `pytest` without `-n`.
+
+**Why:** `workerinput` is only populated by the xdist controller when workers are spawned. In serial mode there is no controller, no `workerinput` attribute, and `getattr(config, "workerinput", None)` returns `None`.
+
+```python
+# BAD — crashes in serial mode
+@pytest.fixture(scope="session")
+def worker_id(request) -> str:
+    return request.config.workerinput["workerid"]   # KeyError when no -n
+
+
+# GOOD — graceful fallback
+@pytest.fixture(scope="session")
+def worker_id(request) -> str:
+    worker_input = getattr(request.config, "workerinput", {})
+    return worker_input.get("workerid", "gw0")
+
+
+# BEST — use the official xdist utility if available
+@pytest.fixture(scope="session")
+def worker_id(request) -> str:
+    try:
+        from xdist import get_unique_id   # xdist 3.5+ helper
+        return get_unique_id(request.session)
+    except ImportError:
+        worker_input = getattr(request.config, "workerinput", {})
+        return worker_input.get("workerid", "gw0")
+```
+
+**Rule:** Always guard `workerinput` access with `getattr(..., {})` and `.get("workerid", "gw0")`. CI runs `-n auto`; local developers often don't. Both must work.
+
+---
+
+### Community Gotcha #66: `conftest.py` Plugin Hooks Run After Installed Plugins  [community]
+
+**Problem:** A `conftest.py` that overrides `pytest_configure` to register INI options runs **after** installed plugins (those registered via `pytest11` entry points). If an installed plugin reads a custom INI option during its own `pytest_configure`, the option isn't registered yet and raises `ValueError: unrecognized arguments`.
+
+**Why:** pytest's plugin load order is: built-in → installed (`pytest11`) → `conftest.py`. `conftest.py` is loaded late in the pipeline, after installed plugins have already initialised.
+
+```python
+# WRONG: INI option registered in conftest.py is invisible to installed plugins
+# conftest.py
+def pytest_configure(config):
+    config.addinivalue_line("myapp_env", "test")  # too late for installed plugins
+
+
+# CORRECT: create a tiny installed plugin for options that installed plugins need
+# myapp/testing/_pytest_plugin.py
+def pytest_addoption(parser):
+    parser.addini("myapp_env", default="test", help="Environment for myapp tests")
+
+
+def pytest_configure(config):
+    # Register markers used across the project
+    config.addinivalue_line("markers", "db: requires database")
+```
+
+```toml
+# pyproject.toml
+[project.entry-points."pytest11"]
+myapp = "myapp.testing._pytest_plugin"
+```
+
+**Rule:** If your plugin option needs to be read by other installed plugins, package it as an installed plugin (entry point). Use `conftest.py` only for project-local customisations that don't interact with other plugins.
+
+---
 
 **Rule:** Never apply `sys.set_lazy_imports("all")` or `lazy import` to modules that perform side effects at import time (signal handlers, plugin registries, atexit hooks, logging configuration). Use `sys.set_lazy_imports_filter()` to create an allowlist. In test code, prefer explicit eager imports in `conftest.py` to preserve deterministic collection and fixture setup order.

@@ -5,6 +5,40 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.0.20 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 17/100)
+
+### qa-refine (5 guides, +3,111 lines)
+- playwright-patterns.md: +491 lines — download testing, multi-tab/popup, routeWebSocket edge cases
+- k6-patterns.md: +786 lines — xk6 extension authoring (JS+output), microservices orchestration, Web Vitals
+- cypress-patterns.md: +564 lines — cypress-real-events, CLS/INP/FCP Web Vitals, Argos visual CI, cy.origin() advanced
+- detox-patterns.md: +684 lines — accessibility state assertions, Expo Router 4 deep links, EAS Build CI workflow
+- appium-wdio-patterns.md: +586 lines — Appium 2.x plugin system, mobile a11y testing, BrowserStack real devices
+
+### qa-methodology-refine (12 guides, +6,591 lines)
+- test-pyramid-guide.md: +525 lines — AI/LLM pyramid adaptation, Testcontainers Cloud Turbo, Vitest 4.1 APIs
+- tdd-guide.md: +622 lines — Hexagonal Architecture + TDD, London vs Chicago schools, WebSocket TDD
+- bdd-guide.md: +441 lines — Serenity/JS full example, Specification by Example, @vitest/bdd
+- test-isolation-guide.md: +467 lines — ioredis-mock, memfs virtual FS, crypto.randomUUID isolation
+- test-data-guide.md: +652 lines — GDPR/privacy compliance, fast-check PBT, snapshot/golden files, versioning
+- contract-testing-guide.md: +443 lines — Schema Registry patterns, MessageProviderPact, state teardown
+- flakiness-guide.md: +700 lines — expect.soft/poll/toPass, MTBF scorecard, LLM-assisted classification
+- coverage-guide.md: +719 lines — SonarQube integration, Stryker maxTestRunnerReuse, coverage badges
+- ci-cd-testing-guide.md: +685 lines — CTRF format, GitHub Actions merge queue, auto-quarantine via Issues
+- accessibility-guide.md: +300 lines — ARIA Grid pattern, virtual scroll a11y, testInfo.attach() fixture
+- shift-left-guide.md: +797 lines — Lighthouse CI, k6 perf testing, Vitest 4.1 aroundEach/detectAsyncLeaks
+- exploratory-guide.md: +441 lines — mob/ensemble testing, Testing vs Checking, LLM failure rate metrics
+
+### lang-refine (5 guides, +2,525 lines)
+- typescript-patterns.md: +459 lines — NoInfer<T>, TS 5.4/5.5 features, Result pattern, conditional type helpers
+- javascript-patterns.md: +560 lines — node:test advanced, generators/async iterators, AbortController, Web Streams
+- java-patterns.md: +517 lines — virtual threads testing, WireMock advanced, Testcontainers advanced
+- python-patterns.md: +515 lines — Pydantic v2 testing, pytest-xdist advanced, custom pytest plugins
+- csharp-patterns.md: +474 lines — FakeTimeProvider, Verify snapshot testing, Minimal API testing
+
+**Total: ~12,428 lines added across 22 guides**
+
+---
+
 ## v1.16.0.19 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 16/100)
 
 ### qa-refine (5 guides, +3,252 lines)

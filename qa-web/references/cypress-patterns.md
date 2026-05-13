@@ -1,6 +1,7 @@
 # Cypress Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 45 | score: 98/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official + community + training knowledge | iteration: 46 | score: 99/100 | date: 2026-05-12 -->
 <!-- official: docs.cypress.io/guides/references/best-practices, /api/commands/session, /api/commands/intercept, /api/commands/selectfile, /guides/end-to-end-testing/testing-strategies, /guides/component-testing/overview, /guides/cloud/introduction, /api/commands/press, /api/commands/env, /app/references/changelog#15-0-0, /app/references/changelog#15-14-2, /app/continuous-integration/github-actions (Apr 2026), /app/guides/network-requests, /app/references/module-api, /api/cypress-api/stop, /api/commands/prompt, /api/cypress-api/element-selector-api, /api/cypress-api/expose, /app/references/migration-guide, /app/tooling/typescript-support, /app/references/experiments, /guides/references/cypress-studio, /api/cypress-api/require, /app/references/experiments#experimentalCspAllowList, /app/references/changelog#15-11-0, /api/cypress-api/custom-commands, /guides/core-concepts/retry-ability -->
+<!-- new in this iteration (46): 4 new patterns (142-145): cypress-real-events full setup + 6 usage patterns (CSS hover/tab-navigation/drag-drop/touch-swipe/right-click/clipboard), Core Web Vitals CLS+INP+FCP+LCP measurement command with browser guard, Argos visual CI full setup (registerArgosTask/cy.argosScreenshot/argosCSS masking/responsive viewports/GitHub Actions workflow), cy.origin() advanced patterns (subdomain SSO/cookie injection/Cypress.require() experimentalOriginDependencies/cy.session() cached cross-origin auth); 10 new community gotchas (129-138): cypress-real-events Chromium-only silent no-op, realType requires explicit focus, realSwipe direction relative to viewport not element, cy.origin() cannot be nested, cy.origin() resets cy.intercept() routes, Argos clip option ignored use argosCSS, CLS measurement requires wait after visit, realPress chord fires sequential not simultaneous, grepFilterSpecs helper-file limitation, addQuery() sync requirement -->
 <!-- new in this iteration (45): 5 new patterns (137-141): @cypress/grep tag-based CI tier filtering, Cypress.Commands.addQuery() typed retry-able query commands, Component Testing with React Context and Redux providers, cy.intercept() TypeScript generic types, Real-world auth patterns (API login/JWT injection/OAuth cy.origin()/MFA bypass); 4 new community gotchas (125-128): grepFilterSpecs static-scan limitation, addQuery() sync requirement, React Query singleton stale cache in CT, cy.origin() closure serialization error -->
 <!-- new in this iteration (44): 2 new patterns (135-136): --pass-with-no-tests CLI flag, React SSR hydration mismatch fix with data-cy-bootstrap; 2 new community gotchas (123-124): cy.prompt() requires Cypress Cloud in all environments (no offline mode), TypeScript 6 const enum breakage in Cypress config files -->
 <!-- new in this iteration (43): 3 new patterns (132-134): Cypress.require() in cy.origin() callbacks with experimentalOriginDependencies, experimentalCspAllowList for preserving real CSP headers, detect-flake-but-always-fail retry strategy; 3 new community gotchas (120-122): Cypress.require() static-string limitation, experimentalCspAllowList + hash nonce breakage, detect-flake-but-always-fail openMode/runMode boolean requirement -->
@@ -9708,5 +9709,568 @@ export function loginWithTotpBypass(email: string): void {
 127. **React Query in CT specs always returns stale cached data from a previous test when the `QueryClient` is a module-level singleton** [community] — A common setup mistake in Cypress CT is placing `const queryClient = new QueryClient()` at the module level of `cypress/support/component.ts`. Because module-level state persists across tests within a spec run, the second test in a spec file receives React Query's in-memory cache populated by the first test — including data fetched via `cy.intercept()` stubs. The cache hit bypasses the intercept entirely, and the second test never fires a network request. The symptom is that the second test's `cy.wait('@alias')` call times out because no request was made. Fix: create a `new QueryClient()` inside `cy.mount()` for every mount call, or call `queryClient.clear()` in `afterEach`. The per-mount approach is more reliable because it requires no global teardown.
 
 128. **OAuth `cy.origin()` callback body cannot reference variables from the outer scope via closure — use `args` parameter** [community] — The `cy.origin()` callback runs in a separate JavaScript context (the IdP origin's execution environment). Closures over outer-scope variables do not work: `cy.origin(idpOrigin, () => { cy.get('#username').type(email) })` throws `ReferenceError: email is not defined` at runtime because `email` from the outer test scope is not serialized into the callback bundle. All data the callback needs must be passed via the `args` parameter and destructured in the callback signature: `cy.origin(idpOrigin, { args: { email, password } }, ({ email: e, password: p }) => { ... })`. The `args` values are serialized to JSON and deserialized in the callback context, so they must be JSON-serializable. Passing functions, class instances, or circular references as `args` throws a serialization error at call time.
+
+---
+
+## Additional Real-World Gotchas (Iteration 46) [community]
+
+129. **`cypress-real-events` commands are Chromium-only and silently no-op in Firefox — CI using Firefox fails after adding `cy.realHover()`** [community] — `cypress-real-events` uses the Chrome DevTools Protocol (CDP) to fire real pointer and keyboard events. When the same test runs against Firefox (WebDriver BiDi, Cypress 14.1+) or Electron, `cy.realHover()` and `cy.realClick()` do nothing — no event is dispatched, no error is thrown, and the test continues. The silent no-op means tests appear green in Firefox CI while the feature under test (CSS `:hover`, clipboard, native drag) is never actually exercised. Always guard real-events usage with `if (Cypress.browser.family === 'chromium')` or add `{ browser: 'chrome' }` to the `it()` block. Add a `cy.log('[SKIP] real events require Chromium')` branch in the else to make the skip visible in CI logs.
+
+130. **`cy.realType()` types without the target element having focus — the first character lands on whatever is currently focused** [community] — Unlike `cy.type()`, which accepts a jQuery selector and automatically focuses the target before typing, `cy.realType()` dispatches keydown/keypress/keyup events to the currently focused element in the browser. If you call `.get('[data-cy="search"]').realType('hello')` without first clicking or calling `.focus()` on the element, the characters land on whichever element last received focus (often `document.body`). Always chain `cy.get(selector).click().realType(text)` or `cy.get(selector).focus(); cy.realType(text)` to ensure the correct element has native focus before dispatching real key events.
+
+131. **`cy.realSwipe()` direction option is relative to the viewport, not the element — toLeft means "swipe the pointer left" not "reveal content to the left"** [community] — Teams migrating from mobile emulation tests misread `cy.realSwipe('toLeft')` as "reveal content to the left" (i.e., a left-swipe gesture showing the next slide). In reality, `toLeft` moves the pointer leftward on the viewport, which in a carousel means the previous slide is shown (the content moves left to reveal the one before it). This is the opposite of what carousel libraries label "slide left". Document your team's convention explicitly: `realSwipe('toLeft')` = "pointer moves left" = previous item; `realSwipe('toRight')` = "pointer moves right" = next item. The mislabelling has caused subtle test logic inversions that pass locally (human reads the slide direction correctly) but fail in review.
+
+132. **`cy.origin()` cannot be nested — calling `cy.origin()` inside another `cy.origin()` callback throws `CypressError: cy.origin() cannot be called from within a cy.origin() callback`** [community] — Multi-hop SSO flows (app → IdP A → IdP B → app) are common in enterprise SAML chains. Attempting to nest `cy.origin()` calls to handle each hop fails with a hard error. The workaround is to handle the entire redirect chain at the final origin only — Cypress follows redirects automatically until the URL settles on the target domain, then you issue a single `cy.origin()` for that final domain. For chains where intermediate domains require interaction, break the flow into separate `cy.visit()` + `cy.origin()` calls at the top level of the test, or use `cy.request()` to POST directly to the IdP's token endpoint when the form interaction is not needed.
+
+133. **`cy.origin()` resets `cy.intercept()` routes — intercepts registered before `cy.origin()` are not active inside the callback** [community] — `cy.intercept()` operates in the primary (app) origin's network context. When `cy.origin()` switches execution to a different origin, the stub table is not carried over — any `cy.intercept()` routes you defined for `/api/auth` are not active while Cypress is inside the IdP origin context. If the IdP makes API calls that you need to intercept (e.g., a feature-flag fetch during login), you must register those intercepts inside the `cy.origin()` callback, not before it. After `cy.origin()` completes and control returns to the main origin, your original intercepts resume.
+
+134. **Argos visual CI `@argos-ci/cypress` screenshot comparison uses `cy.argosScreenshot()` which differs from `cy.screenshot()` in clip behavior** [community] — Argos's `cy.argosScreenshot()` takes a full-page screenshot by default and uploads it to the Argos Cloud dashboard for visual diffing across branches. Unlike `cy.screenshot({ clip: { x,y,w,h } })`, `cy.argosScreenshot()` does not accept a clip region — it always captures the full viewport. Teams that use `cy.screenshot()` with clip regions to avoid dynamic areas (ads, timestamps, user avatars) must instead use Argos's `threshold` option or mask specific elements using `cy.argosScreenshot('name', { disableAnimations: true })` combined with CSS `[data-test-exclude] { visibility: hidden }` to suppress dynamic content before the snapshot.
+
+135. **Web Vitals CLS measurement in Cypress requires a manual PerformanceObserver — `getEntriesByType('layout-shift')` is not cumulative** [community] — `window.performance.getEntriesByType('layout-shift')` returns an array of individual layout-shift entries, each with a `value` property. CLS (Cumulative Layout Shift) is the SUM of `value` for entries where `hadRecentInput` is `false`. Teams that check `lcpEntries[0].value` instead of summing all entries underestimate CLS significantly. Additionally, layout-shift entries are only available after the page has finished shifting — assert on CLS after `cy.get('[data-cy="main-content"]').should('be.visible')` and a brief `cy.wait(500)` to allow all shifts to complete. Never call the CLS assertion immediately after `cy.visit()`.
+
+---
+
+### 142. `cypress-real-events` Full Setup and Patterns (CDP-Native Events)  [community]
+
+`cypress-real-events` fires real browser events via the Chrome DevTools Protocol (CDP), making them `isTrusted: true` and triggering behaviour that synthetic Cypress events cannot — CSS `:hover`, clipboard operations, native drag-and-drop, and touch gestures. It is Chromium-only.
+
+```typescript
+// 1. Install
+// npm install --save-dev cypress-real-events
+
+// 2. cypress/support/e2e.ts — register plugin
+import 'cypress-real-events';
+
+// 3. tsconfig.json — add types
+// { "compilerOptions": { "types": ["cypress", "node", "cypress-real-events"] } }
+```
+
+```typescript
+// cypress/support/e2e.ts — Chromium guard helper
+// Prevents test failures when running the same spec on Firefox
+Cypress.Commands.add('realIfChromium', (fn: () => void) => {
+  if (Cypress.browser.family === 'chromium') {
+    fn();
+  } else {
+    cy.log('[SKIP] real events require Chromium — test skipped on this browser');
+  }
+});
+
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      realIfChromium(fn: () => void): void;
+    }
+  }
+}
+```
+
+```typescript
+// Pattern A: CSS :hover state — only real events trigger pure-CSS hover styles
+it('shows tooltip on hover', { browser: 'chrome' }, () => {
+  cy.visit('/components/tooltip');
+
+  // cy.trigger('mouseover') does NOT trigger CSS :hover — use realHover()
+  cy.get('[data-cy="tooltip-trigger"]').realHover();
+  cy.get('[data-cy="tooltip-content"]').should('be.visible');
+
+  // Move mouse away to dismiss hover state
+  cy.get('body').realHover();
+  cy.get('[data-cy="tooltip-content"]').should('not.be.visible');
+});
+
+// Pattern B: Tab navigation and focus management (keyboard accessibility)
+it('tabs through all interactive elements in the form', { browser: 'chrome' }, () => {
+  cy.visit('/forms/checkout');
+
+  // Click first focusable element to establish focus
+  cy.get('[data-cy="name-input"]').click();
+
+  // Tab through each field in order
+  cy.realPress('Tab');
+  cy.get('[data-cy="email-input"]').should('have.focus');
+
+  cy.realPress('Tab');
+  cy.get('[data-cy="card-number-input"]').should('have.focus');
+
+  cy.realPress('Tab');
+  cy.get('[data-cy="expiry-input"]').should('have.focus');
+
+  // Shift+Tab to go backward (chord via realPress)
+  cy.realPress(['Shift', 'Tab']);
+  cy.get('[data-cy="card-number-input"]').should('have.focus');
+});
+
+// Pattern C: Native drag and drop (HTML5 drag events with isTrusted=true)
+it('reorders list items via drag and drop', { browser: 'chrome' }, () => {
+  cy.visit('/kanban');
+
+  cy.get('[data-cy="card-design"]').realMouseDown();
+  cy.get('[data-cy="card-design"]').realMouseMove(0, 120);   // move down 120px
+  cy.get('[data-cy="lane-in-progress"]').realMouseUp();
+
+  cy.get('[data-cy="lane-in-progress"]')
+    .find('[data-cy="card-design"]')
+    .should('exist');
+});
+
+// Pattern D: Touch swipe for mobile viewport carousel
+it('swipes through carousel slides on touch viewport', { browser: 'chrome' }, () => {
+  cy.viewport('iphone-x');
+  cy.visit('/carousel');
+
+  cy.get('[data-cy="slide-1"]').should('be.visible');
+
+  // realSwipe direction: 'toLeft' = pointer moves left = shows next slide
+  cy.get('[data-cy="carousel-track"]').realSwipe('toLeft', { length: 300 });
+  cy.get('[data-cy="slide-2"]').should('be.visible');
+
+  cy.get('[data-cy="carousel-track"]').realSwipe('toRight', { length: 300 });
+  cy.get('[data-cy="slide-1"]').should('be.visible');
+});
+
+// Pattern E: Right-click context menu
+it('opens context menu on right-click', { browser: 'chrome' }, () => {
+  cy.visit('/file-manager');
+
+  cy.get('[data-cy="file-item"]').first().realClick({ button: 'right' });
+  cy.get('[data-cy="context-menu"]').should('be.visible');
+  cy.get('[data-cy="ctx-delete"]').should('be.visible');
+
+  // Dismiss by pressing Escape
+  cy.realPress('Escape');
+  cy.get('[data-cy="context-menu"]').should('not.exist');
+});
+```
+
+```typescript
+// Pattern F: Clipboard read/write (requires CDP permission grant)
+// Note: cy.realHover() + clipboard.writeText() requires Browser.grantPermissions first
+
+it('copies text to clipboard via keyboard shortcut', { browser: 'chrome' }, () => {
+  cy.visit('/code-editor');
+
+  // Grant clipboard permissions via CDP before test
+  cy.window().then((win) => {
+    return (win as any).Cypress.automation('remote:debugger:protocol', {
+      command: 'Browser.grantPermissions',
+      params: {
+        permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        origin: win.location.origin,
+      },
+    });
+  });
+
+  cy.get('[data-cy="code-block"]').click();
+  cy.realPress(['ControlOrMeta', 'A']);  // Select All
+  cy.realPress(['ControlOrMeta', 'C']);  // Copy
+
+  cy.window().then(async (win) => {
+    const text = await win.navigator.clipboard.readText();
+    expect(text).to.match(/function\s+\w+/);
+  });
+});
+```
+
+**[community]** WHY: `cy.trigger('mouseover')` fires a synthetic DOM event (`isTrusted: false`), which CSS `:hover` ignores because browsers apply `:hover` based on the actual pointer position tracked by the rendering engine — not by JavaScript events. Component libraries like Headless UI, Radix UI, and Floating UI conditionally check `event.isTrusted` before showing tooltips or popups, precisely to prevent test automation from accidentally triggering UI. `cypress-real-events` bypasses this by using CDP `Input.dispatchMouseEvent` which instructs Chrome's rendering engine to move the actual cursor, updating `:hover` state exactly as a real user would. The tradeoff: CDP-based events can only target the visible portion of the element (coordinates outside the viewport are clipped) and do not work in Firefox, Electron, or WebKit.
+
+---
+
+### 143. Web Vitals CLS, INP, and FCP Measurement  [community]
+
+Extend the performance timing patterns from Pattern 82 (LCP via Navigation Timing) with Cumulative Layout Shift (CLS), Interaction to Next Paint (INP), and First Contentful Paint (FCP) — the full Core Web Vitals set for smoke-level performance gates in E2E tests.
+
+```typescript
+// cypress/support/commands.ts — Core Web Vitals custom commands
+// These are smoke-level checks, not a Lighthouse replacement.
+// Run on Chrome only — performance APIs vary between browsers.
+
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      measureWebVitals(limits: {
+        lcpMs?: number;
+        fcpMs?: number;
+        clsMax?: number;
+        inpMs?: number;
+      }): Chainable<void>;
+    }
+  }
+}
+
+Cypress.Commands.add('measureWebVitals', (limits) => {
+  if (Cypress.browser.name === 'electron') {
+    cy.log('[SKIP] Web Vitals not available in Electron — run with --browser chrome');
+    return;
+  }
+
+  cy.window().then((win) => {
+    // ---- First Contentful Paint (FCP) ----
+    const paintEntries = win.performance.getEntriesByType('paint');
+    const fcpEntry = paintEntries.find((e) => e.name === 'first-contentful-paint');
+    if (fcpEntry && limits.fcpMs !== undefined) {
+      expect(
+        fcpEntry.startTime,
+        `FCP ${fcpEntry.startTime.toFixed(0)}ms > limit ${limits.fcpMs}ms`
+      ).to.be.lessThan(limits.fcpMs);
+      cy.log(`FCP: ${fcpEntry.startTime.toFixed(0)}ms (limit: ${limits.fcpMs}ms)`);
+    }
+
+    // ---- Largest Contentful Paint (LCP) ----
+    const lcpEntries = win.performance.getEntriesByType('largest-contentful-paint');
+    if (lcpEntries.length > 0 && limits.lcpMs !== undefined) {
+      const lcp = lcpEntries[lcpEntries.length - 1].startTime;
+      expect(
+        lcp,
+        `LCP ${lcp.toFixed(0)}ms > limit ${limits.lcpMs}ms`
+      ).to.be.lessThan(limits.lcpMs);
+      cy.log(`LCP: ${lcp.toFixed(0)}ms (limit: ${limits.lcpMs}ms)`);
+    }
+
+    // ---- Cumulative Layout Shift (CLS) ----
+    // CLS = sum of layout-shift entry values where hadRecentInput is false
+    const lsEntries = win.performance.getEntriesByType('layout-shift') as PerformanceEntryList;
+    const cls = lsEntries
+      .filter((e) => !(e as unknown as { hadRecentInput: boolean }).hadRecentInput)
+      .reduce((sum, e) => sum + (e as unknown as { value: number }).value, 0);
+    if (limits.clsMax !== undefined) {
+      expect(
+        cls,
+        `CLS ${cls.toFixed(4)} > limit ${limits.clsMax}`
+      ).to.be.lessThan(limits.clsMax);
+      cy.log(`CLS: ${cls.toFixed(4)} (limit: ${limits.clsMax})`);
+    }
+  });
+
+  // ---- Interaction to Next Paint (INP) — requires a user interaction ----
+  // INP is only populated after at least one user interaction; measure after a meaningful click.
+  if (limits.inpMs !== undefined) {
+    cy.window().then((win) => {
+      // INP is in the 'event' entry type (Chrome 96+)
+      const eventEntries = win.performance.getEntriesByType('event');
+      if (eventEntries.length === 0) {
+        cy.log('[INFO] No INP entries — no user interactions recorded on this page');
+        return;
+      }
+      // INP = 98th percentile interaction duration; approximate with max for smoke tests
+      const maxInteraction = Math.max(
+        ...eventEntries.map((e) => e.duration)
+      );
+      expect(
+        maxInteraction,
+        `INP (max interaction) ${maxInteraction.toFixed(0)}ms > limit ${limits.inpMs}ms`
+      ).to.be.lessThan(limits.inpMs);
+      cy.log(`INP (max): ${maxInteraction.toFixed(0)}ms (limit: ${limits.inpMs}ms)`);
+    });
+  }
+});
+```
+
+```typescript
+// Usage in a spec — measure vitals after the page has fully loaded
+it('homepage meets Core Web Vitals thresholds', { browser: 'chrome' }, () => {
+  cy.visit('/');
+
+  // Wait for the main content to be painted before reading vitals
+  cy.get('[data-cy="hero-section"]').should('be.visible');
+
+  // Allow layout shifts to settle (200ms is sufficient for most deferred content)
+  cy.wait(200);
+
+  cy.measureWebVitals({
+    fcpMs: 1800,   // "Good" threshold: < 1.8s
+    lcpMs: 2500,   // "Good" threshold: < 2.5s
+    clsMax: 0.1,   // "Good" threshold: < 0.1
+    inpMs: 200,    // "Good" threshold: < 200ms
+  });
+});
+
+// Measure INP after triggering an interaction
+it('product filter interaction has acceptable INP', { browser: 'chrome' }, () => {
+  cy.visit('/products');
+  cy.get('[data-cy="filter-category"]').select('Electronics');
+  cy.get('[data-cy="product-grid"]').should('be.visible');
+
+  cy.measureWebVitals({
+    inpMs: 200,    // Click → next paint must complete within 200ms
+    clsMax: 0.1,   // Filter results should not cause significant layout shift
+  });
+});
+
+// Regression guard: add to CI smoke suite per-page
+const PAGES_TO_CHECK = ['/login', '/dashboard', '/products', '/checkout'] as const;
+PAGES_TO_CHECK.forEach((page) => {
+  it(`${page} meets Web Vitals thresholds`, { browser: 'chrome' }, () => {
+    cy.visit(page);
+    cy.get('main, [role="main"]').should('be.visible');
+    cy.wait(300);  // allow deferred content
+    cy.measureWebVitals({ fcpMs: 2000, lcpMs: 3000, clsMax: 0.15 });
+  });
+});
+```
+
+**[community]** WHY: `getEntriesByType('layout-shift')` returns INDIVIDUAL layout-shift events — not the CLS score. The CLS spec requires summing shifts within a session window where no input occurred within 500ms before the shift. Cypress timing (from `cy.visit()` to the assertion) typically puts all shifts in one session window, so summing all entries with `hadRecentInput === false` is a close approximation. Use `clsMax: 0.1` as the "Good" threshold and `clsMax: 0.25` as the "Needs Improvement" gate. INP replaces FID (First Input Delay) as a Core Web Vital as of March 2024 — FID measured the delay to the first event handler; INP measures the full duration (input → handler → rendering) for all interactions, using the 98th percentile. In Cypress, measuring the max interaction duration after one click is a practical smoke check, not the full percentile distribution.
+
+---
+
+### 144. Argos Visual CI — Self-Hosted Visual Regression with `@argos-ci/cypress`  [community]
+
+Argos is an open-source visual regression platform that integrates directly with GitHub CI. Unlike Percy (cloud-only) and `cypress-image-snapshot` (local comparisons only), Argos uploads screenshots to its SaaS service, creates pull request status checks, and provides a web UI for reviewing diffs. The free tier covers public repositories.
+
+```typescript
+// 1. Install
+// npm install --save-dev @argos-ci/cypress @argos-ci/cli
+
+// 2. Import in cypress/support/e2e.ts
+import '@argos-ci/cypress/support';
+
+// 3. Add to cypress.config.ts
+import { defineConfig } from 'cypress';
+import { registerArgosTask } from '@argos-ci/cypress/task';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on, config) {
+      registerArgosTask(on, config);  // registers argos:upload task
+      return config;
+    },
+  },
+  component: {
+    setupNodeEvents(on, config) {
+      registerArgosTask(on, config);
+      return config;
+    },
+  },
+  // Argos screenshot directory — must match --screenshots-folder CLI arg
+  screenshotsFolder: 'cypress/screenshots',
+});
+```
+
+```typescript
+// Usage: replace cy.screenshot() with cy.argosScreenshot()
+// cy.argosScreenshot() captures the full viewport and uploads to Argos
+
+it('dashboard layout matches baseline', () => {
+  cy.visit('/dashboard');
+  cy.get('[data-cy="dashboard-loaded"]').should('be.visible');
+
+  // Disable CSS animations/transitions before snapshot (prevents diff noise)
+  cy.argosScreenshot('dashboard', {
+    disableAnimations: true,
+  });
+});
+
+it('product card renders correctly across states', () => {
+  cy.visit('/products/123');
+
+  cy.argosScreenshot('product-card-default');
+
+  cy.get('[data-cy="add-to-cart"]').click();
+  cy.argosScreenshot('product-card-in-cart');
+
+  cy.get('[data-cy="wishlist-btn"]').click();
+  cy.argosScreenshot('product-card-wishlisted');
+});
+
+// Mask dynamic content to prevent false-positive diffs
+it('order history page layout', () => {
+  cy.visit('/orders');
+  cy.get('[data-cy="orders-table"]').should('be.visible');
+
+  // Mask date cells and user-specific order IDs
+  cy.argosScreenshot('orders-page', {
+    disableAnimations: true,
+    // Apply CSS class to mask elements (Argos renders masked areas as solid grey blocks)
+    argosCSS: `
+      [data-cy="order-date"], [data-cy="order-id"] {
+        visibility: hidden;
+      }
+    `,
+  });
+});
+```
+
+```typescript
+// Responsive visual testing across breakpoints
+const VIEWPORTS = [
+  { width: 375,  height: 812,  name: 'mobile' },
+  { width: 768,  height: 1024, name: 'tablet' },
+  { width: 1440, height: 900,  name: 'desktop' },
+] as const;
+
+describe('Homepage — visual regression across viewports', () => {
+  VIEWPORTS.forEach(({ width, height, name }) => {
+    it(`renders correctly at ${name} viewport`, () => {
+      cy.viewport(width, height);
+      cy.visit('/');
+      cy.get('[data-cy="hero"]').should('be.visible');
+
+      cy.argosScreenshot(`homepage-${name}`, { disableAnimations: true });
+    });
+  });
+});
+```
+
+```yaml
+# .github/workflows/cypress.yml — upload Argos screenshots after Cypress run
+name: Cypress Tests + Argos Visual CI
+
+on: [push, pull_request]
+
+jobs:
+  cypress:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cypress-io/github-action@v7
+        with:
+          build: npm run build
+          start: npm start
+        env:
+          ARGOS_TOKEN: ${{ secrets.ARGOS_TOKEN }}
+
+      # Upload screenshots to Argos for visual diffing
+      - name: Upload screenshots to Argos
+        run: npx @argos-ci/cli upload cypress/screenshots
+        env:
+          ARGOS_TOKEN: ${{ secrets.ARGOS_TOKEN }}
+        if: always()  # upload even on test failure for debugging
+```
+
+**[community]** WHY: `cy.screenshot()` creates a local PNG that exists only during the CI run — once the job artifact expires (typically 30-90 days), the baseline is gone and comparisons are impossible. Percy and Argos solve this by persisting baselines in their cloud storage permanently (until you explicitly reset them). The key architectural difference: Argos creates GitHub PR status checks that block merging when visual diffs exceed a threshold, making visual regression a first-class gate rather than a manual review step. `disableAnimations: true` is critical in Argos screenshots — without it, CSS transitions mid-animation produce different pixel states on every run, triggering false-positive diffs that overflow the review queue and cause teams to ignore real regressions.
+
+---
+
+### 145. `cy.origin()` Advanced Patterns — Subdomain SSO, Chained Redirects, and Cookie Injection  [community]
+
+`cy.origin()` (required since Cypress 14 for subdomains) handles complex cross-origin scenarios beyond basic OAuth. This pattern covers subdomain navigation, sharing cookies between origins, and `Cypress.require()` for reusing custom commands inside `cy.origin()`.
+
+```typescript
+// Scenario A: Subdomain navigation (e.g., app.example.com → accounts.example.com)
+// Cypress 14+ requires cy.origin() even for subdomains (same registrable domain, different host)
+
+it('logs in via subdomain SSO', () => {
+  cy.visit('https://app.example.com/login');
+  cy.get('[data-cy="sso-login"]').click();
+
+  // accounts.example.com is a different origin — cy.origin() is required (Cy 14+)
+  cy.origin('https://accounts.example.com', () => {
+    cy.get('[data-cy="username"]').type('alice@example.com');
+    cy.get('[data-cy="password"]').type('secret', { log: false });
+    cy.get('[data-cy="submit"]').click();
+  });
+
+  // Control returns to app.example.com after the redirect
+  cy.url().should('include', 'https://app.example.com/dashboard');
+  cy.get('[data-cy="user-greeting"]').should('contain', 'Alice');
+});
+```
+
+```typescript
+// Scenario B: Inject a cookie from one origin before visiting another
+// (useful when IdP sets a pre-auth cookie that the app reads on load)
+
+it('pre-injects IdP cookie for fast auth', () => {
+  // Manually set the cookie for the IdP origin before visiting
+  cy.setCookie('idp_hint', 'enterprise-sso', {
+    domain: 'accounts.example.com',
+    path: '/',
+    secure: true,
+    httpOnly: false,
+  });
+
+  cy.visit('https://app.example.com');
+  // App reads idp_hint cookie and skips the IdP login form
+  cy.url().should('include', '/dashboard');
+});
+```
+
+```typescript
+// Scenario C: Reuse custom commands inside cy.origin() with Cypress.require()
+// Requires: experimentalOriginDependencies: true in cypress.config.ts
+
+// cypress.config.ts — enable experimentalOriginDependencies
+import { defineConfig } from 'cypress';
+export default defineConfig({
+  e2e: {
+    experimentalOriginDependencies: true,
+  },
+});
+
+// cypress/support/origin-commands.ts — commands used inside cy.origin() callbacks
+// MUST export commands as a bare file that Cypress.require() can load
+export function typeCredentials(email: string, password: string): void {
+  cy.get('#username').type(email);
+  cy.get('#password').type(password, { log: false });
+  cy.get('[type="submit"]').click();
+}
+
+// In the spec:
+it('logs in via Auth0 using shared origin command', () => {
+  cy.visit('/login');
+  cy.get('[data-cy="sso-btn"]').click();
+
+  cy.origin(
+    Cypress.env('AUTH0_ORIGIN') as string,
+    { args: { email: 'alice@example.com', password: Cypress.env('TEST_PASSWORD') as string } },
+    ({ email, password }) => {
+      // Load the shared command module inside the callback context
+      const { typeCredentials } = Cypress.require('../support/origin-commands');
+      typeCredentials(email, password);
+    }
+  );
+
+  cy.url().should('include', '/dashboard');
+});
+```
+
+```typescript
+// Scenario D: cy.origin() with cy.session() for cached cross-origin auth
+// Wrapping cy.origin() inside cy.session() caches the resulting cookies/localStorage
+// so subsequent tests skip the IdP form entirely.
+
+export function loginViaEntraId(upn: string): void {
+  const idpOrigin = Cypress.env('ENTRAID_ORIGIN') as string;
+
+  cy.session(
+    ['entraid', upn],
+    () => {
+      cy.visit('/');
+      cy.get('[data-cy="sign-in-entra"]').click();
+
+      cy.origin(idpOrigin, { args: { upn } }, ({ upn: u }) => {
+        cy.get('input[type="email"]').type(u);
+        cy.get('input[type="submit"]').click();
+        cy.get('input[type="password"]').type(Cypress.env('TEST_PASSWORD') as string, { log: false });
+        cy.get('input[type="submit"]').click();
+        // "Stay signed in?" dialog
+        cy.get('#idBtn_Back').click();  // "No" — skip persistent sign-in
+      });
+
+      cy.url().should('not.include', idpOrigin);
+    },
+    {
+      validate() {
+        cy.request({ url: '/api/me', failOnStatusCode: false })
+          .its('status').should('eq', 200);
+      },
+      cacheAcrossSpecs: true,
+    }
+  );
+}
+```
+
+**[community]** WHY: Cypress 14 tightened cross-origin rules — subdomain navigation that worked without `cy.origin()` in Cypress 13 (`example.com` → `accounts.example.com`) now throws `CypressError: Cypress detected that you switched origins`. The most disruptive upgrade scenario is when `injectDocumentDomain` was used as a workaround in Cypress 13 — that option was removed in Cypress 15. Teams must migrate to `cy.origin()` before upgrading to Cypress 15. The `Cypress.require()` pattern (Scenario C) is the only supported way to share helper functions between the outer test scope and the `cy.origin()` callback — regular `import` statements inside the callback fail at runtime because the callback bundle does not process TypeScript imports at the call site.
+
+---
+
+## Additional Real-World Gotchas (Iteration 46, continued) [community]
+
+136. **`cy.argosScreenshot()` ignores `clip` option — always captures the full viewport; use `argosCSS` for masking** [community] — Unlike `cy.screenshot({ clip })`, there is no `clip` option for `cy.argosScreenshot()`. Teams that try to pass `{ clip: { x: 0, y: 0, width: 800, height: 400 } }` see the option silently ignored and receive a full-page screenshot. Use the `argosCSS` option to apply CSS that hides or masks dynamic content before the snapshot: `cy.argosScreenshot('name', { argosCSS: '[data-cy="timestamp"] { visibility: hidden }' })`. For element-level screenshots, call `cy.get('[data-cy="chart"]').screenshot('chart-argos')` to create a local screenshot, then upload the entire screenshots directory with the Argos CLI.
+
+137. **`cy.measureWebVitals()` CLS reads zero when layout shifts happen before `cy.visit()` resolves** [community] — The `layout-shift` PerformanceObserver buffer fills as the page paints, but if `cy.visit()` resolves before the above-the-fold paint completes (possible on fast CI machines), `cy.window().then(...)` runs before the shifts are recorded. The buffer is also bounded — Chrome keeps only a limited number of entries. Always add a `cy.wait(200)` or `cy.get('[data-cy="main-content"]').should('be.visible')` BEFORE calling `getEntriesByType('layout-shift')` to guarantee the paint phase has completed and entries are populated.
+
+138. **`cy.realPress()` multi-key chord (e.g., `['ControlOrMeta', 'A']`) fires keydown for all keys in sequence, not simultaneously — some apps check `event.ctrlKey` on the final key** [community] — `cy.realPress(['Control', 'A'])` fires `keydown Control`, then `keydown A` with `ctrlKey: true`, then `keyup A`, then `keyup Control`. Most shortcut handlers listen for `keydown` with `event.ctrlKey === true` on the letter key, which works correctly. However, some apps (particularly those using `keypress` instead of `keydown`) receive the chord differently and the shortcut does not fire. If `cy.realPress(['ControlOrMeta', 'C'])` doesn't copy to clipboard, fall back to `cy.focused().type('{ctrl}c')` which uses `cy.type()` chord notation with Cypress's own keyboard simulation. The two approaches are not interchangeable.
+
 
 ---

@@ -1,6 +1,7 @@
 # Detox Patterns & Best Practices (JavaScript/TypeScript)
-<!-- lang: JavaScript/TypeScript | sources: official docs + community + training knowledge | iteration: 55 | score: 99/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript/TypeScript | sources: official docs + community + training knowledge | iteration: 56 | score: 99/100 | date: 2026-05-12 -->
 <!-- WebFetch live sources verified for Detox 20.47–20.51.1 (Jan–May 2026 releases) + PRs #4932 #4912 #4928 #4936 #4943 #4948 #4868 + Issues #4937 #4942 #4945 #4901 #4850 #4887 (May 2026) -->
+<!-- iteration 56 (2026-05-12) adds: Pattern 67 (comprehensive accessibility state testing with getAttributes()+accessibilityState — disabled/checked/selected/busy/expanded assertions + a11y audit helper), Pattern 68 (Expo Router 4+/SDK 53+ deep link testing — cold-start/warm-start/back-stack/redirect patterns + .detoxrc.js + GitHub Actions EAS workflow), Pattern 69 (cross-platform conditional assertion helpers — platformValue/onPlatform/perPlatform TypeScript helpers with biometric/date-picker/keyboard examples), Pattern 70 (EAS Build local + Detox for CI/CD binary production — eas.json config + GitHub Actions workflow + xcode-select fix), Gotcha 103 (getAttributes() returns different accessibilityState key casing on iOS vs Android — normalization helper), Gotcha 104 (Expo Router 4 +not-found.tsx silently swallows mistyped deep link URLs — always assert screen-unique testID + not-found guard), Gotcha 105 (device.getPlatform() throws before device is initialized — defer all device.* calls to after launchApp()), Gotcha 106 (EAS Build --local on macos-15 uses Xcode 15 by default — add xcode-select step); 70 patterns total; ~11850+ lines -->
 <!-- iteration 54 (2026-05-12) adds: Pattern 62 (detox-copilot AI-assisted natural-language test steps — opt-in LLM layer in Detox 20.50+, AnthropicPromptHandler example, caching, CI job separation), Gotcha 97 (Android 16/API 36 enforced edge-to-edge breaks scrollTo('bottom') in open-keyboard forms — tapReturnKey() workaround), Gotcha 98 (iOS 26 extended home indicator zone preempts swipe('up') near bottom safe area — startNormalizedY workaround), anti-pattern checklist rows 97-100; 62 patterns total; ~10590+ lines -->
 <!-- iteration 53 (2026-05-12) adds: Gotcha 94 (launchApp({ resetAppState: true, permissions: {} }) silently ignores permissions on Android — separate the reset and permissions calls, Issue #4850), Gotcha 95 (Node.js 20+ emits DEP0190 security deprecation warning during Detox test runs due to spawn(shell:true) with array args in TestRunnerCommand.js, Issue #4887 — benign but noisy), Gotcha 96 (device.appStatus() does not exist yet — workaround using private client.currentStatus() is unreliable when sync is disabled, Issue #4945 — Pattern 61 for the safe helper), Pattern 61 (idle-aware polling with disableSynchronization + currentStatus() private API workaround — safe pattern for media/animation-heavy screens), anti-pattern checklist rows 94-96, Android 16 Espresso looper fix note (PR #4868, Detox 20.45+); 61 patterns total; ~10400+ lines -->
 <!-- iteration 51 (2026-05-12) adds: Gotcha 85 (iOS 26+ biometric API breaking change: --matchFace/--matchFinger deprecated, use --biometricMatch/--biometricNonmatch with --booted flag, Detox 20.51+, PR #4932), Gotcha 86 (Android <Modal> creates separate native Window — tap events silently bypass modal layer, Issue #4928), Gotcha 87 (RN 0.85 requires Detox 20.51+, version matrix update), Gotcha 88 (atIndex(N).getAttributes() on iOS returned ALL matching elements before fix in 20.51.x, PR #4912), Pattern 60 (Android Modal interaction workaround using restructured hierarchy), anti-pattern checklist rows 85-88, 4 new source links; 63 patterns total; ~9920+ lines -->
@@ -11424,4 +11425,687 @@ export function getArtifactDir(subdir: 'screenshots' | 'junit'): string {
 | Using the same screenshot label in parallel shards | Include `JEST_WORKER_ID` and timestamp in every `device.takeScreenshot()` call; colliding filenames produce incorrect or missing artifacts (Gotcha 102) |
 | Omitting `moduleNameMapper` when using tsconfig `paths` in e2e tests | Add matching `moduleNameMapper` entries to `jest.config.ts`; or use `pathsToModuleNameMapper` from `ts-jest` to keep them in sync automatically (Gotcha 99) |
 | Running `tsc --noEmit` inside each test file's transform | Set `diagnostics: false` in ts-jest config; run `tsc --noEmit` as a separate CI step to keep test execution fast (Pattern 63) |
+
+---
+
+## Additional Patterns (iteration 56 additions)
+
+### Pattern 67 — Comprehensive accessibility state testing with `getAttributes()` + `accessibilityState` [community]
+
+React Native exposes rich accessibility state through `accessibilityState` props (`disabled`, `checked`, `selected`, `busy`, `expanded`). Detox's `toHaveToggleValue()` only covers the `checked` dimension of this space. For full WCAG-compliant accessibility validation, read the raw `accessibilityState` via `element.getAttributes()` and assert the full state object.
+
+This pattern is particularly important for:
+- Form validation (disabled submit buttons during loading)
+- Accordion/collapsible panels (expanded state)
+- Loading indicators (busy state)
+- Checkboxes and radio buttons (checked state)
+- Tab bars and navigation items (selected state)
+
+```typescript
+// e2e/accessibility-state.test.ts
+import { element, by, expect as detoxExpect, waitFor } from 'detox';
+import { jestExpect } from '@jest/globals';
+
+// Helper: read the full accessibility state from an element
+async function getAccessibilityState(testId: string): Promise<{
+  disabled?: boolean;
+  checked?: boolean | 'mixed';
+  selected?: boolean;
+  busy?: boolean;
+  expanded?: boolean;
+}> {
+  const attrs = await element(by.id(testId)).getAttributes();
+  // getAttributes() returns an object with an `accessibilityState` field on both platforms
+  // On iOS: maps to UIAccessibilityTraits + accessibilityValue
+  // On Android: maps to ViewCompat.setStateDescription + AccessibilityNodeInfo
+  return (attrs as any).accessibilityState ?? {};
+}
+
+describe('Accessibility State Assertions', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  it('submit button is disabled while form is incomplete', async () => {
+    // Navigate to the form screen
+    await element(by.id('new-item-tab')).tap();
+
+    // No input yet — submit should be disabled
+    const submitState = await getAccessibilityState('submit-button');
+    jestExpect(submitState.disabled).toBe(true);
+
+    // Fill in required fields
+    await element(by.id('title-input')).typeText('Test Item');
+    await element(by.id('description-input')).typeText('A description');
+
+    // Now submit should be enabled
+    await waitFor(element(by.id('submit-button')))
+      .not.toBeVisible()  // Wait for any loading state to clear
+      .withTimeout(2000)
+      .catch(() => {}); // ignore if already visible
+
+    const enabledState = await getAccessibilityState('submit-button');
+    jestExpect(enabledState.disabled).toBeFalsy();
+  });
+
+  it('accordion section announces expanded state correctly', async () => {
+    await element(by.id('faq-section-1-header')).tap();
+
+    // After tap, the section should be expanded
+    const expandedState = await getAccessibilityState('faq-section-1-header');
+    jestExpect(expandedState.expanded).toBe(true);
+
+    // Collapse it
+    await element(by.id('faq-section-1-header')).tap();
+    const collapsedState = await getAccessibilityState('faq-section-1-header');
+    jestExpect(collapsedState.expanded).toBe(false);
+  });
+
+  it('loading indicator is marked as busy during network request', async () => {
+    await element(by.id('refresh-button')).tap();
+
+    // Spinner should report busy=true while loading
+    const loadingState = await getAccessibilityState('loading-indicator');
+    jestExpect(loadingState.busy).toBe(true);
+
+    // Wait for load to complete
+    await waitFor(element(by.id('loading-indicator')))
+      .not.toBeVisible()
+      .withTimeout(8000);
+  });
+
+  it('checkbox cycles through checked states correctly', async () => {
+    // Indeterminate checkboxes report checked='mixed' on some platforms
+    const initialState = await getAccessibilityState('select-all-checkbox');
+    // May start as false (none selected), 'mixed' (some selected), or true (all selected)
+    jestExpect(['mixed', true, false]).toContain(initialState.checked);
+
+    // Tap once to select all
+    await element(by.id('select-all-checkbox')).tap();
+    const checkedState = await getAccessibilityState('select-all-checkbox');
+    jestExpect(checkedState.checked).toBe(true);
+
+    // Tap again to deselect all
+    await element(by.id('select-all-checkbox')).tap();
+    const uncheckedState = await getAccessibilityState('select-all-checkbox');
+    jestExpect(uncheckedState.checked).toBe(false);
+  });
+});
+```
+
+**Companion: Full WCAG a11y audit helper** — use this in a dedicated a11y test file to catch regressions:
+
+```typescript
+// e2e/helpers/a11y-audit.ts
+
+interface A11yAuditResult {
+  element: string;
+  issue: string;
+  severity: 'error' | 'warning';
+}
+
+/**
+ * Basic a11y audit: checks that interactive elements have non-empty labels,
+ * and that disabled elements are correctly marked in accessibilityState.
+ * Extend with additional checks as needed.
+ */
+export async function auditInteractiveElements(
+  testIds: string[]
+): Promise<A11yAuditResult[]> {
+  const issues: A11yAuditResult[] = [];
+
+  for (const testId of testIds) {
+    try {
+      const attrs = await element(by.id(testId)).getAttributes() as any;
+
+      // Check 1: element must have a non-empty accessibility label
+      if (!attrs.label && !attrs.text) {
+        issues.push({
+          element: testId,
+          issue: 'Missing accessibility label — screen readers will announce the testID or nothing',
+          severity: 'error',
+        });
+      }
+
+      // Check 2: if element is visually disabled, accessibilityState.disabled must be set
+      if (attrs.enabled === false && !attrs.accessibilityState?.disabled) {
+        issues.push({
+          element: testId,
+          issue: 'Element is not interactive but accessibilityState.disabled is not set',
+          severity: 'warning',
+        });
+      }
+    } catch {
+      // Element not on screen — skip
+    }
+  }
+
+  return issues;
+}
+```
+
+**[community] note**: On Android with React Native New Architecture (Fabric), `getAttributes().accessibilityState` may return an empty object `{}` instead of `undefined` when no state is set. Always use `?? {}` when destructuring to avoid `TypeError: Cannot read properties of undefined`. This differs from iOS behavior where missing state properties are simply absent from the result object.
+
+---
+
+### Pattern 68 — Expo Router 4+ deep link testing with file-based routing (SDK 53+)
+
+Expo Router 4 (shipping with Expo SDK 53+) uses a file-system-based routing model where routes are automatically derived from the `app/` directory. Deep links and URL-based navigation differ significantly from React Navigation's programmatic approach, requiring different Detox patterns.
+
+**Key differences from React Navigation:**
+- Routes are identified by file path (`/product/[id]` → `app/product/[id].tsx`)
+- The URL scheme is configured in `app.json` under `expo.scheme`
+- `expo-router` uses its own Link component rather than `navigation.navigate()`
+- Initial URL can be injected via `launchApp({ url })` for cold-start deep link tests
+
+```typescript
+// e2e/deep-link-expo-router.test.ts
+// For Expo Router 4+ (Expo SDK 53+) projects
+
+describe('Expo Router deep link navigation', () => {
+  // Cold-start deep link: app launches directly to a route
+  it('launches directly to the product detail page via URL scheme', async () => {
+    // Replace 'myapp' with the scheme from app.json > expo.scheme
+    await device.launchApp({
+      newInstance: true,
+      url: 'myapp://product/42',
+    });
+
+    // Expo Router mounts the file at app/product/[id].tsx
+    // The route parameter [id]=42 should be visible in the UI
+    await waitFor(element(by.id('product-detail-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+
+    await expect(element(by.id('product-id-text'))).toHaveText('42');
+  });
+
+  // Warm-start deep link: app is already running, receives a new URL
+  it('navigates to a nested route while app is in foreground', async () => {
+    // Start at the home tab
+    await device.launchApp({ newInstance: true });
+    await waitFor(element(by.id('home-screen'))).toBeVisible().withTimeout(5000);
+
+    // Open a nested route: app/settings/notifications.tsx
+    await device.openURL({ url: 'myapp://settings/notifications' });
+
+    await waitFor(element(by.id('notifications-settings-screen')))
+      .toBeVisible()
+      .withTimeout(5000);
+  });
+
+  // Test the back-stack: Expo Router builds a history stack from visited URLs
+  it('back button returns to the previous route in the URL stack', async () => {
+    await device.launchApp({ newInstance: true });
+
+    // Navigate to a product
+    await device.openURL({ url: 'myapp://product/10' });
+    await waitFor(element(by.id('product-detail-screen'))).toBeVisible().withTimeout(4000);
+
+    // Navigate to a related product
+    await element(by.id('related-product-11')).tap();
+    await waitFor(element(by.id('product-detail-screen'))).toBeVisible().withTimeout(4000);
+    await expect(element(by.id('product-id-text'))).toHaveText('11');
+
+    // Press back — Expo Router should pop to product/10
+    await device.pressBack(); // Android hardware back
+    // On iOS use: await element(by.id('back-button')).tap();
+
+    await waitFor(element(by.id('product-id-text')))
+      .toHaveText('10')
+      .withTimeout(3000);
+  });
+
+  // Test redirect rules configured in app.json or via expo-router/redirect
+  it('follows redirect from legacy path to new canonical route', async () => {
+    // Example: app.json has redirect /old-product/:id → /product/:id
+    await device.launchApp({
+      newInstance: true,
+      url: 'myapp://old-product/99',
+    });
+
+    // Should redirect to the product screen
+    await waitFor(element(by.id('product-detail-screen')))
+      .toBeVisible()
+      .withTimeout(6000);
+
+    await expect(element(by.id('product-id-text'))).toHaveText('99');
+  });
+});
+```
+
+**Expo Router 4+ `.detoxrc.js` configuration for SDK 53:**
+
+```javascript
+// .detoxrc.js — Expo SDK 53 + Expo Router 4
+/** @type {Detox.DetoxConfig} */
+module.exports = {
+  testRunner: {
+    args: { '$0': 'jest', config: 'e2e/jest.config.ts' },
+    jest: { setupTimeout: 120000 },
+  },
+  apps: {
+    'ios.expo53': {
+      type: 'ios.app',
+      binaryPath: 'ios/build/Build/Products/Release-iphonesimulator/YourApp.app',
+      // Expo SDK 53 uses expo-modules-core v2 — requires Detox 20.9+
+      build: [
+        'npx expo prebuild --clean --platform ios',
+        'xcodebuild -workspace ios/YourApp.xcworkspace',
+        '         -scheme YourApp',
+        '         -configuration Release',
+        '         -sdk iphonesimulator',
+        '         -derivedDataPath ios/build',
+        '         | xcpretty',
+      ].join(' '),
+    },
+  },
+  configurations: {
+    'ios.expo53.release': {
+      device: { type: 'simulator', device: { type: 'iPhone 16' } },
+      app: 'ios.expo53',
+    },
+  },
+};
+```
+
+**[community] gotcha**: Expo Router 4 introduced `+not-found.tsx` as the 404 catch-all route. If your test opens a deep link with a misspelled path, Expo Router silently renders the `+not-found` screen instead of throwing an error. Always assert on a screen-specific `testID` to confirm you reached the intended route — never rely on "no crash" as a pass condition.
+
+---
+
+### Pattern 69 — Cross-platform conditional assertion helper for iOS/Android behavioral differences
+
+Many Detox tests need to handle real behavioral differences between iOS and Android within the same test file. A naive approach uses nested `if (platform === 'ios')` blocks that are hard to maintain. A typed helper centralizes this logic and makes cross-platform intent explicit.
+
+```typescript
+// e2e/helpers/platform-expect.ts
+
+type Platform = 'ios' | 'android';
+
+interface PlatformExpectation<T> {
+  ios: T;
+  android: T;
+}
+
+/**
+ * Returns the platform-specific value. Type-safe: TypeScript enforces
+ * that both platforms are always specified.
+ *
+ * Usage: platformValue({ ios: 'Done', android: 'OK' })
+ */
+export function platformValue<T>(values: PlatformExpectation<T>): T {
+  const platform = device.getPlatform() as Platform;
+  return values[platform];
+}
+
+/**
+ * Run a callback only on the specified platform.
+ * On other platforms the callback is skipped (no-op).
+ */
+export async function onPlatform(
+  platform: Platform,
+  fn: () => Promise<void>
+): Promise<void> {
+  if (device.getPlatform() === platform) {
+    await fn();
+  }
+}
+
+/**
+ * Run different logic per platform in a single readable block.
+ */
+export async function perPlatform(handlers: {
+  ios: () => Promise<void>;
+  android: () => Promise<void>;
+}): Promise<void> {
+  const platform = device.getPlatform() as Platform;
+  await handlers[platform]();
+}
+```
+
+```typescript
+// e2e/checkout.test.ts — using cross-platform helpers
+
+import { platformValue, onPlatform, perPlatform } from '../helpers/platform-expect';
+
+describe('Checkout flow', () => {
+  it('completes payment with biometric confirmation', async () => {
+    await element(by.id('pay-button')).tap();
+
+    // iOS shows Face ID dialog; Android shows fingerprint bottom sheet
+    await perPlatform({
+      ios: async () => {
+        await waitFor(element(by.label('Face ID')))
+          .toBeVisible()
+          .withTimeout(3000);
+        await device.matchFace();
+      },
+      android: async () => {
+        await waitFor(element(by.id('fingerprint-prompt')))
+          .toBeVisible()
+          .withTimeout(3000);
+        await device.matchFinger();
+      },
+    });
+
+    await waitFor(element(by.id('payment-success-screen')))
+      .toBeVisible()
+      .withTimeout(6000);
+  });
+
+  it('shows the correct keyboard type for phone number input', async () => {
+    await element(by.id('phone-input')).tap();
+
+    // Android numeric keyboard label vs iOS dial-pad
+    const expectedKeyboardLabel = platformValue({
+      ios: 'dial pad',      // VoiceOver trait label for UIKeyboardTypeNumberPad
+      android: 'numeric',   // TalkBack type label for TYPE_NUMBER_FLAG_DECIMAL
+    });
+
+    // Assert keyboard type via accessibility label on the keyboard itself
+    // (device.captureViewHierarchy() reveals the actual label in your build)
+    await onPlatform('ios', async () => {
+      await expect(element(by.label(expectedKeyboardLabel))).toBeVisible();
+    });
+  });
+
+  it('handles the date picker correctly on both platforms', async () => {
+    await element(by.id('delivery-date-picker')).tap();
+
+    await perPlatform({
+      ios: async () => {
+        // iOS uses a native UIDatePicker wheel — use scrollPickerViewToRowIndex
+        // Column 0 = month, Column 1 = day, Column 2 = year
+        await element(by.id('date-picker-spinner'))
+          .scrollPickerViewToRowIndex(5, 0); // June (index 5)
+        await element(by.id('date-picker-confirm')).tap();
+      },
+      android: async () => {
+        // Android material date picker — tap the day directly
+        await element(by.id('android-date-picker')).tap();
+        await element(by.label('15 June 2025')).tap();
+        await element(by.id('date-picker-ok')).tap();
+      },
+    });
+
+    // Both platforms should update the same display field
+    const displayDate = platformValue({
+      ios: 'Jun 15, 2025',
+      android: '15/06/2025',
+    });
+    await expect(element(by.id('selected-date-display'))).toHaveText(displayDate);
+  });
+});
+```
+
+**[community] note**: A common anti-pattern is writing a single `if (device.getPlatform() === 'ios')` check at the describe level and then duplicating the entire test file for Android. This diverges: bugs fixed in one file are silently absent from the other. The `perPlatform()` helper keeps both paths in one place and in version control together.
+
+---
+
+### Pattern 70 — EAS Build local + Detox for consistent CI/CD binary production
+
+Expo Application Services (EAS) Build `--local` mode runs the build pipeline on the developer's machine or CI runner using the same toolchain as the EAS cloud. This ensures Detox tests run against the exact binary that would be shipped — not a debug build.
+
+```bash
+# Install EAS CLI
+npm install -g eas-cli
+
+# Authenticate (CI: use EXPO_TOKEN environment variable instead)
+eas login
+
+# Build iOS simulator binary locally — output is a .tar.gz containing the .app
+eas build --platform ios --profile preview --local --output ./builds/app-preview.tar.gz
+
+# Extract the .app
+mkdir -p ./builds/ios-preview
+tar -xzf ./builds/app-preview.tar.gz -C ./builds/ios-preview
+
+# Run Detox against the extracted binary
+DETOX_APP_BINARY_PATH=./builds/ios-preview/YourApp.app \
+  npx detox test -c ios.eas.preview
+```
+
+**`.detoxrc.js` for EAS local builds:**
+
+```javascript
+// .detoxrc.js
+/** @type {Detox.DetoxConfig} */
+module.exports = {
+  apps: {
+    'ios.eas': {
+      type: 'ios.app',
+      // Override via DETOX_APP_BINARY_PATH env var in CI
+      binaryPath: process.env.DETOX_APP_BINARY_PATH
+        ?? './builds/ios-preview/YourApp.app',
+      // No `build` command — binary is produced by EAS separately
+    },
+    'android.eas': {
+      type: 'android.apk',
+      binaryPath: process.env.DETOX_APP_BINARY_PATH
+        ?? './builds/android-preview/YourApp.apk',
+    },
+  },
+  configurations: {
+    'ios.eas.preview': {
+      device: { type: 'simulator', device: { type: 'iPhone 16' } },
+      app: 'ios.eas',
+    },
+    'android.eas.preview': {
+      device: { type: 'emulator', device: { avdName: 'Pixel_9_API_35' } },
+      app: 'android.eas',
+    },
+  },
+};
+```
+
+**GitHub Actions workflow — EAS local build + Detox:**
+
+```yaml
+# .github/workflows/detox-eas.yml
+name: Detox E2E — EAS Local Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test-ios:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Cache Expo build tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.fastlane
+            ~/Library/Developer/Xcode/DerivedData
+          key: expo-tools-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Build iOS preview binary (EAS local)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          mkdir -p builds/ios-preview
+          eas build --platform ios --profile preview --local \
+            --output ./builds/app-preview.tar.gz \
+            --non-interactive
+          tar -xzf ./builds/app-preview.tar.gz -C ./builds/ios-preview
+
+      - name: Run Detox tests
+        env:
+          DETOX_APP_BINARY_PATH: ./builds/ios-preview/YourApp.app
+        run: |
+          npx detox test -c ios.eas.preview \
+            --loglevel warn \
+            --record-logs failing \
+            --take-screenshots failing
+
+      - name: Upload Detox artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detox-artifacts-ios
+          path: artifacts/
+          retention-days: 7
+```
+
+**[community] note**: EAS Build `--local` respects your `eas.json` build profiles, including `env` variables and plugin configurations. A common pitfall is that developers test against `npm run ios` debug builds locally but CI runs against EAS `preview` profile release builds — these have different Metro bundling, Hermes settings, and native module linking. The `preview` profile typically uses a production JS bundle but a simulator-compatible native build. Always specify `"distribution": "internal"` and `"simulator": true` in your `eas.json` preview profile to get a `.app` (not `.ipa`) output.
+
+---
+
+## Gotcha 103 — `element.getAttributes()` returns different key casing on iOS vs Android for `accessibilityState` [community]
+
+**Root cause**: On iOS, `element.getAttributes()` returns accessibility state data under the `accessibilityState` key (camelCase, mirroring the React Native prop). On Android with React Native 0.73+, some builds return the same field as `accessibility-state` (kebab-case) due to a bridge serialization difference. This causes `attrs.accessibilityState?.disabled` to silently return `undefined` on Android while working correctly on iOS.
+
+**Symptom**: An accessibility state assertion that passes all iOS CI jobs fails on Android CI jobs. The failure message is typically: `expected undefined to be true` rather than a meaningful assertion error.
+
+```typescript
+// FRAGILE: assumes camelCase key on both platforms
+const attrs = await element(by.id('submit-button')).getAttributes() as any;
+const isDisabled = attrs.accessibilityState?.disabled;  // undefined on some Android builds
+```
+
+```typescript
+// ROBUST: normalize the key before accessing
+function getA11yState(attrs: any): Record<string, boolean | string | undefined> {
+  return attrs.accessibilityState ?? attrs['accessibility-state'] ?? {};
+}
+
+const attrs = await element(by.id('submit-button')).getAttributes() as any;
+const a11yState = getA11yState(attrs);
+jestExpect(a11yState.disabled).toBe(true);
+```
+
+**Also affects**: `accessibilityValue`, `accessibilityHint`. Apply the same normalization helper for any accessibility attribute read from `getAttributes()` in cross-platform tests.
+
+---
+
+## Gotcha 104 — Expo Router 4 `+not-found.tsx` silently swallows mistyped deep link test URLs [community]
+
+**Root cause**: Expo Router 4 introduced `+not-found.tsx` as the mandatory catch-all route for unmatched URLs (replacing the old `_error.tsx` convention). When `device.openURL()` or `launchApp({ url: ... })` targets a URL that doesn't match any defined route (e.g., due to a typo or a renamed route in a recent refactor), Expo Router renders `+not-found.tsx` instead of throwing — and the app stays in a "running" state.
+
+**Symptom**: A Detox test that navigates to `myapp://prodcut/42` (typo: "prodcut") does not fail at the navigation call. It fails later — or worse, passes if the not-found screen happens to share a `testID` with the intended screen (e.g., both have a `testID="back-button"`).
+
+```typescript
+// DANGEROUS: will silently land on +not-found.tsx with no error
+await device.launchApp({
+  newInstance: true,
+  url: 'myapp://prodcut/42',  // typo — but no error thrown
+});
+
+// This assertion may PASS if the not-found screen also shows a "back-button"
+await expect(element(by.id('back-button'))).toBeVisible(); // passes! wrong screen
+```
+
+```typescript
+// SAFE: always assert on a screen-specific testID that is unique to the target route
+await device.launchApp({
+  newInstance: true,
+  url: 'myapp://product/42',
+});
+
+// Assert on a testID that ONLY exists on the product detail screen
+await waitFor(element(by.id('product-detail-header')))
+  .toBeVisible()
+  .withTimeout(5000);
+
+// Also assert that the not-found screen is NOT showing
+await expect(element(by.id('not-found-screen'))).not.toBeVisible();
+```
+
+**Prevention**: Add `testID="not-found-screen"` to your `app/+not-found.tsx` root element, then include a `not.toBeVisible()` assertion in every deep-link test to catch URL typos and route renames at the test level rather than in production.
+
+---
+
+## Gotcha 105 — `perPlatform()` / `onPlatform()` helpers must be called after `device.launchApp()` — `device.getPlatform()` throws before device is initialized [community]
+
+**Root cause**: The `device` global in Detox is initialized lazily — it is only available after the first `device.launchApp()` (or `device.selectApp()`) call in a test suite. Calling `device.getPlatform()` before the device is initialized throws: `Error: No device available. Did you forget to call device.launchApp()?`.
+
+This commonly occurs when a developer calls `platformValue()` or `perPlatform()` at module scope (e.g., in a `const` declaration at the top of the test file) or inside `beforeAll` before the `launchApp()` call.
+
+```typescript
+// BROKEN: called at module scope — device is not yet initialized
+const expectedLabel = platformValue({ ios: 'Face ID', android: 'Fingerprint' });
+// ↑ Throws: "No device available" when the module is loaded
+
+describe('Biometrics', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+    // Too late — platformValue() already threw during module evaluation
+  });
+});
+```
+
+```typescript
+// FIXED: defer the platform check until inside a test or after launchApp
+describe('Biometrics', () => {
+  let expectedLabel: string;
+
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+    // Safe to call getPlatform() only after launchApp()
+    expectedLabel = platformValue({ ios: 'Face ID', android: 'Fingerprint' });
+  });
+
+  it('shows the correct biometric prompt label', async () => {
+    await expect(element(by.label(expectedLabel))).toBeVisible();
+  });
+});
+```
+
+**Also applies to**: `device.getPlatform()`, `device.getAPILevel()`, and any other `device.*` property access — all require an active device session. The only safe module-scope access is importing from `'detox'` itself (e.g., `import { element, by } from 'detox'`).
+
+---
+
+## Gotcha 106 — `eas build --local` on macOS GitHub Actions `macos-15` requires Xcode 16+ to be selected via `xcode-select` before building [community]
+
+**Root cause**: GitHub Actions `macos-15` runners ship with both Xcode 15 and Xcode 16 installed, but Xcode 15 is the default `xcode-select` path. EAS Build local reads the active Xcode path to determine the toolchain — if Xcode 15 is active and your `eas.json` specifies `"image": "macos-sonoma-14.4-xcode-16.0-latest"`, the build silently uses Xcode 15 locally while the cloud build would use Xcode 16. This causes binary incompatibilities (module maps, Swift runtime version) that cause Detox tests to crash at launch on CI.
+
+```yaml
+# BROKEN: relies on default Xcode version (may be 15 on macos-15 runners)
+- name: Build iOS binary
+  run: eas build --platform ios --profile preview --local --non-interactive
+```
+
+```yaml
+# FIXED: explicitly select Xcode 16 before running EAS local build
+- name: Select Xcode 16
+  run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+- name: Verify Xcode version
+  run: xcodebuild -version  # Should print "Xcode 16.x"
+
+- name: Build iOS binary
+  run: eas build --platform ios --profile preview --local --non-interactive
+```
+
+**Cross-check**: Your `eas.json` `image` field and the locally selected Xcode must match. Run `eas build:list` to see what image the cloud used for a passing build, then mirror it in CI with `xcode-select`.
+
+---
+
+## Updated Anti-Patterns Checklist (iteration 56 additions)
+
+| Anti-Pattern | Fix |
+|---|---|
+| Asserting `attrs.accessibilityState?.disabled` without platform normalization | Use a `getA11yState()` helper that falls back to `attrs['accessibility-state']` for Android builds (Gotcha 103) |
+| Using only `toBeVisible()` after a deep link in Expo Router 4 projects | Always assert on a screen-unique `testID` AND check `not.toBeVisible()` of the `+not-found` screen to catch URL typos (Gotcha 104) |
+| Calling `device.getPlatform()` or `platformValue()` at module scope | Defer all `device.*` calls to after `launchApp()` — the device object is not initialized until the first launch (Gotcha 105) |
+| Using `eas build --local` on `macos-15` without selecting Xcode version | Add `sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer` before the build step to match the EAS cloud toolchain (Gotcha 106) |
+| Writing iOS-only accessibility state assertions in cross-platform tests | Use `perPlatform()` helper to provide platform-specific assertion paths in one co-located block (Pattern 69) |
+| Testing Expo Router deep links only in warm-start mode | Always add a cold-start deep link test (`launchApp({ url })`) — cold and warm start use different router initialization paths (Pattern 68) |
 | `element.swipe('up', 'fast', 0.7)` on an element near the bottom of the screen on iOS 26 | Start the swipe above `startNormalizedY = 0.3` or provide a tap-based trigger; iOS 26 extended the system home-indicator gesture zone to ~34pt from bottom (Gotcha 98) |

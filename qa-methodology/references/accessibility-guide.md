@@ -9698,3 +9698,607 @@ test('homepage full-page axe scan — attach results to report', async ({ page }
 
 95. **[community] `color-contrast` is the single most common axe violation category (WebAIM Million 2025: 80.8% of home pages) yet it is also the one most likely to be suppressed with `axe.configure({ rules: [{ id: 'color-contrast', enabled: false }] })` under pressure to ship**: If your accessibility CI gate suppresses `color-contrast`, the rule disable must be documented in a tracked decision record (ADR or issue) with a remediation deadline. Suppressing it permanently makes the gate meaningless for the most common real-world accessibility failure. WHY: each suppressed rule narrows the axe gate to a smaller and smaller subset of WCAG 2.x — if enough rules are disabled, the gate no longer correlates with actual WCAG 2.1 AA compliance and gives legal and compliance teams a false assurance of coverage.
 
+---
+
+### ARIA Grid Pattern — Keyboard Navigation Testing
+
+The ARIA `role="grid"` pattern is used for data grids and spreadsheet-like UIs where cells are individually focusable and navigable with arrow keys. Unlike `role="table"` (read-only), `role="grid"` implies interactivity: cells can be focused, edited, and selected. This is one of the most complex ARIA patterns in the APG and one of the most commonly implemented incorrectly.
+
+**ARIA grid keyboard contract (WCAG 2.1.1 + APG):**
+- Arrow keys navigate between cells (up/down/left/right)
+- `Tab` moves focus to the next widget outside the grid (not the next cell)
+- `Enter` / `F2` activates a cell for editing
+- `Escape` exits edit mode
+- `Home` / `End` moves to first/last cell in the current row
+- `Ctrl+Home` / `Ctrl+End` moves to first/last cell in the grid
+
+**Why grids fail so often:** Teams use `role="grid"` to get table-like ARIA semantics but do not implement the full keyboard contract. Screen reader users with NVDA enter Application Mode when they focus a `role="grid"` — their arrow key navigation is forwarded to the grid's keyboard handler. If no handler exists, arrow keys do nothing and the user is stranded.
+
+```typescript
+// File: src/components/DataGrid/DataGrid.tsx
+// Accessible ARIA grid: roving tabindex + arrow key navigation + edit mode.
+// Satisfies WCAG 2.1.1 (Keyboard), 4.1.2 (Name Role Value), ARIA APG grid pattern.
+import React, { useState, useRef, KeyboardEvent, useCallback } from 'react';
+
+interface GridCell {
+  value: string;
+  editable?: boolean;
+}
+
+interface DataGridProps {
+  caption: string;
+  columnHeaders: string[];
+  rows: GridCell[][];
+  onCellChange?: (row: number, col: number, value: string) => void;
+}
+
+export const DataGrid: React.FC<DataGridProps> = ({
+  caption,
+  columnHeaders,
+  rows,
+  onCellChange,
+}) => {
+  // [rowIndex, colIndex] of the currently active cell
+  const [activeCell, setActiveCell] = useState<[number, number]>([0, 0]);
+  // Which cell is in edit mode (null = none)
+  const [editingCell, setEditingCell] = useState<[number, number] | null>(null);
+  const gridRef = useRef<HTMLTableElement>(null);
+
+  const totalRows = rows.length;
+  const totalCols = columnHeaders.length;
+
+  const moveTo = useCallback(
+    (row: number, col: number) => {
+      const r = Math.max(0, Math.min(totalRows - 1, row));
+      const c = Math.max(0, Math.min(totalCols - 1, col));
+      setActiveCell([r, c]);
+      setEditingCell(null);
+      // Focus the cell element — required for roving tabindex
+      const cell = gridRef.current?.querySelector<HTMLElement>(
+        `[data-row="${r}"][data-col="${c}"]`
+      );
+      cell?.focus();
+    },
+    [totalRows, totalCols]
+  );
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTableElement>) => {
+      const [row, col] = activeCell;
+
+      if (editingCell) {
+        // In edit mode: only Escape exits; all other keys go to the input
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setEditingCell(null);
+          const cell = gridRef.current?.querySelector<HTMLElement>(
+            `[data-row="${row}"][data-col="${col}"]`
+          );
+          cell?.focus();
+        }
+        return;
+      }
+
+      switch (e.key) {
+        case 'ArrowRight': e.preventDefault(); moveTo(row, col + 1); break;
+        case 'ArrowLeft':  e.preventDefault(); moveTo(row, col - 1); break;
+        case 'ArrowDown':  e.preventDefault(); moveTo(row + 1, col); break;
+        case 'ArrowUp':    e.preventDefault(); moveTo(row - 1, col); break;
+        case 'Home':       e.preventDefault(); moveTo(row, e.ctrlKey ? 0 : 0); break;
+        case 'End':        e.preventDefault(); moveTo(row, e.ctrlKey ? totalRows - 1 : totalCols - 1); break;
+        case 'Enter':
+        case 'F2':
+          if (rows[row]?.[col]?.editable) {
+            e.preventDefault();
+            setEditingCell([row, col]);
+          }
+          break;
+        default: break;
+      }
+    },
+    [activeCell, editingCell, moveTo, rows, totalRows, totalCols]
+  );
+
+  return (
+    <table
+      ref={gridRef}
+      role="grid"
+      aria-label={caption}
+      onKeyDown={handleKeyDown}
+      style={{ borderCollapse: 'collapse' }}
+    >
+      <caption className="sr-only">{caption}</caption>
+      <thead>
+        <tr>
+          {columnHeaders.map((header, colIndex) => (
+            <th key={colIndex} scope="col" role="columnheader">
+              {header}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, rowIndex) => (
+          <tr key={rowIndex} role="row">
+            {row.map((cell, colIndex) => {
+              const isActive = activeCell[0] === rowIndex && activeCell[1] === colIndex;
+              const isEditing =
+                editingCell !== null &&
+                editingCell[0] === rowIndex &&
+                editingCell[1] === colIndex;
+
+              return (
+                <td
+                  key={colIndex}
+                  role="gridcell"
+                  // Roving tabindex: only the active cell has tabIndex=0
+                  tabIndex={isActive ? 0 : -1}
+                  data-row={rowIndex}
+                  data-col={colIndex}
+                  aria-selected={isActive}
+                  aria-readonly={!cell.editable}
+                  onClick={() => moveTo(rowIndex, colIndex)}
+                  style={{ border: '1px solid #ccc', padding: '4px 8px', minWidth: '80px' }}
+                >
+                  {isEditing ? (
+                    <input
+                      // eslint-disable-next-line jsx-a11y/no-autofocus
+                      autoFocus
+                      defaultValue={cell.value}
+                      onBlur={(e) => {
+                        onCellChange?.(rowIndex, colIndex, e.target.value);
+                        setEditingCell(null);
+                      }}
+                      style={{ width: '100%', border: 'none', padding: 0 }}
+                      aria-label={`Edit ${columnHeaders[colIndex]}, row ${rowIndex + 1}`}
+                    />
+                  ) : (
+                    cell.value
+                  )}
+                </td>
+              );
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
+```
+
+```typescript
+// File: src/components/DataGrid/DataGrid.a11y.test.tsx
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import userEvent from '@testing-library/user-event';
+import { DataGrid } from './DataGrid';
+
+expect.extend(toHaveNoViolations);
+
+const columns = ['Name', 'Department', 'Status'];
+const testRows = [
+  [{ value: 'Alice Chen' }, { value: 'Engineering' }, { value: 'Active', editable: true }],
+  [{ value: 'Bob Smith' }, { value: 'Design' },      { value: 'Active', editable: true }],
+];
+
+describe('DataGrid accessibility', () => {
+  it('has no axe violations in initial state', async () => {
+    const { container } = render(
+      <DataGrid caption="Team members" columnHeaders={columns} rows={testRows} />
+    );
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  it('exposes role="grid" on the table element', () => {
+    render(<DataGrid caption="Team members" columnHeaders={columns} rows={testRows} />);
+    expect(screen.getByRole('grid', { name: 'Team members' })).toBeInTheDocument();
+  });
+
+  it('only the first cell in the first row has tabIndex=0 initially', () => {
+    const { container } = render(
+      <DataGrid caption="Team members" columnHeaders={columns} rows={testRows} />
+    );
+    const cells = container.querySelectorAll('[role="gridcell"]');
+    // First cell: tabIndex=0; all others: tabIndex=-1
+    expect(cells[0]).toHaveAttribute('tabindex', '0');
+    cells.forEach((cell, i) => {
+      if (i > 0) expect(cell).toHaveAttribute('tabindex', '-1');
+    });
+  });
+
+  it('ArrowRight moves active cell and updates tabindex', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <DataGrid caption="Team members" columnHeaders={columns} rows={testRows} />
+    );
+    const firstCell = container.querySelector('[data-row="0"][data-col="0"]') as HTMLElement;
+    firstCell.focus();
+    await user.keyboard('{ArrowRight}');
+    // After ArrowRight, second cell in first row should be active
+    expect(container.querySelector('[data-row="0"][data-col="1"]')).toHaveAttribute('tabindex', '0');
+  });
+
+  it('cells with aria-readonly="true" cannot enter edit mode', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <DataGrid caption="Team members" columnHeaders={columns} rows={testRows} />
+    );
+    const readonlyCell = container.querySelector('[data-row="0"][data-col="0"]') as HTMLElement;
+    readonlyCell.focus();
+    await user.keyboard('{Enter}');
+    // No input should be rendered inside the non-editable cell
+    expect(readonlyCell.querySelector('input')).toBeNull();
+  });
+});
+```
+
+**Key testing callouts for ARIA grids:**
+- `axe-core` validates grid structure (`role="grid"` on table, `role="row"`, `role="gridcell"`) but does NOT test keyboard navigation — that requires the `userEvent` tests above
+- NVDA Application Mode is triggered by `role="grid"` — verify with real AT that arrow key events are forwarded to the grid's handler
+- `aria-readonly` on non-editable cells communicates to AT that editing is not available without relying on visual-only cues [community]
+
+---
+
+### Virtual Scroll / Infinite Scroll Accessibility Testing
+
+Virtual scrolling renders only a window of items from a larger dataset, removing off-screen items from the DOM to maintain performance. This breaks screen reader list navigation because the AT sees only the rendered subset. WCAG 1.3.1 (Info and Relationships) and the ARIA `aria-setsize` / `aria-posinset` attributes are the key remediation pattern.
+
+**Why this is hard to test:** The DOM state is dynamic — items added/removed as the user scrolls. Standard axe scans only see what is rendered at scan time. A full-coverage test must verify: (1) `aria-setsize` and `aria-posinset` communicate total collection size, (2) new items are announced via a live region when lazy-loaded, and (3) keyboard navigation (Tab, arrow keys) works across the scroll threshold.
+
+```typescript
+// File: src/components/VirtualList/VirtualList.tsx
+// Accessible virtual scroll list with aria-setsize/aria-posinset and live region.
+// Resolves WCAG 1.3.1: screen readers must be able to understand the full list size.
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+
+interface VirtualListItem {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+interface VirtualListProps {
+  items: VirtualListItem[];
+  pageSize?: number;            // Number of items rendered per load
+  label: string;                // aria-label for the list landmark
+}
+
+export const VirtualList: React.FC<VirtualListProps> = ({
+  items,
+  pageSize = 20,
+  label,
+}) => {
+  const [visibleCount, setVisibleCount] = useState(pageSize);
+  const [isLoading, setIsLoading] = useState(false);
+  const [announcement, setAnnouncement] = useState('');
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  const loadMore = useCallback(() => {
+    if (isLoading || visibleCount >= items.length) return;
+    setIsLoading(true);
+    // Simulate async load
+    setTimeout(() => {
+      const nextCount = Math.min(visibleCount + pageSize, items.length);
+      setVisibleCount(nextCount);
+      setIsLoading(false);
+      // Announce that new items are available — WCAG 4.1.3 Status Messages
+      setAnnouncement(
+        `Showing ${nextCount} of ${items.length} items. Scroll to load more.`
+      );
+    }, 100);
+  }, [isLoading, visibleCount, items.length, pageSize]);
+
+  // Intersection Observer triggers load when sentinel is visible
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) loadMore();
+      },
+      { threshold: 0.1 }
+    );
+    const sentinel = sentinelRef.current;
+    if (sentinel) observer.observe(sentinel);
+    return () => { if (sentinel) observer.unobserve(sentinel); };
+  }, [loadMore]);
+
+  const visibleItems = items.slice(0, visibleCount);
+
+  return (
+    <div>
+      {/* Screen reader live region: announces when new items load */}
+      {/* Must be in DOM on page load, not conditionally rendered */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {announcement}
+      </div>
+
+      <ul aria-label={label} role="list">
+        {visibleItems.map((item, index) => (
+          <li
+            key={item.id}
+            // aria-setsize: total collection size (not just rendered count)
+            aria-setsize={items.length}
+            // aria-posinset: position in the full collection (1-based)
+            aria-posinset={index + 1}
+          >
+            <span>{item.label}</span>
+            {item.description && (
+              <span style={{ color: '#666' }}> — {item.description}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {/* Sentinel div triggers IntersectionObserver when scrolled into view */}
+      {visibleCount < items.length && (
+        <div ref={sentinelRef} aria-hidden="true" style={{ height: '1px' }} />
+      )}
+
+      {isLoading && (
+        // role="status" announces loading state without interrupting speech
+        <div role="status" aria-live="polite">
+          Loading more items…
+        </div>
+      )}
+
+      {visibleCount >= items.length && (
+        <div role="status" aria-live="polite">
+          All {items.length} items shown.
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+```typescript
+// File: e2e/accessibility/virtual-scroll.spec.ts
+// Tests for virtual scroll list: aria-setsize, aria-posinset, live region, keyboard.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Virtual scroll / infinite scroll accessibility', () => {
+
+  test('list items expose aria-setsize and aria-posinset for total collection', async ({ page }) => {
+    await page.goto('/contacts'); // Page with virtual scroll list
+    await page.waitForLoadState('networkidle');
+
+    const firstItem = page.locator('[role="list"] > li').first();
+    await expect(firstItem).toBeVisible();
+
+    // aria-setsize must reflect the TOTAL number of items, not just rendered ones
+    const setsize = await firstItem.getAttribute('aria-setsize');
+    expect(setsize).not.toBeNull();
+    // The value should be a positive integer (or -1 if total is unknown)
+    expect(parseInt(setsize!, 10)).toBeGreaterThan(0);
+
+    // aria-posinset of the first item must be 1
+    const posinset = await firstItem.getAttribute('aria-posinset');
+    expect(posinset).toBe('1');
+  });
+
+  test('no axe violations in the initially rendered window', async ({ page }) => {
+    await page.goto('/contacts');
+    await page.waitForLoadState('networkidle');
+
+    const results = await new AxeBuilder({ page })
+      .include('[role="list"]')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('live region announces newly loaded items', async ({ page }) => {
+    await page.goto('/contacts');
+    await page.waitForLoadState('networkidle');
+
+    // Count initial items
+    const initialCount = await page.locator('[role="list"] > li').count();
+
+    // Scroll to bottom to trigger IntersectionObserver load
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(500); // Allow IntersectionObserver + async load
+
+    // Check that more items were rendered
+    const newCount = await page.locator('[role="list"] > li').count();
+    const moreItemsLoaded = newCount > initialCount;
+
+    if (moreItemsLoaded) {
+      // Verify live region was updated with the announcement
+      const liveRegion = page.locator('[aria-live="polite"]').first();
+      const announcement = await liveRegion.textContent();
+      // Announcement should mention the new item count or "loaded"
+      expect(announcement?.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('loaded item at position N has correct aria-posinset=N', async ({ page }) => {
+    await page.goto('/contacts');
+    await page.waitForLoadState('networkidle');
+
+    // Scroll to load more
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(500);
+
+    const items = page.locator('[role="list"] > li');
+    const count = await items.count();
+
+    if (count > 0) {
+      // Verify last rendered item has the correct position
+      const lastItem = items.last();
+      const posinset = await lastItem.getAttribute('aria-posinset');
+      expect(posinset).toBe(String(count));
+    }
+  });
+});
+```
+
+96. **[community] Virtual scroll lists that remove DOM nodes on scroll-out cause screen reader users to lose their position**: When a virtual scroller removes a list item from the DOM as the user scrolls past it, screen readers that are positioned at that item lose focus — jumping to an unpredictable location. NVDA's virtual buffer is rebuilt, often moving the reading cursor to the document start. WHY: screen readers maintain a virtual buffer of the document; DOM mutations that remove currently-focused or recently-read elements force a buffer refresh. For AT-accessible virtual scrolling, use `display: none` or `visibility: hidden` to hide off-screen items rather than removing them from the DOM — the DOM node count increases but the AT experience is stable. If true DOM removal is required for performance, use `aria-setsize`/`aria-posinset` AND ensure keyboard focus management explicitly moves focus to a visible item when the focused item is virtualized out.
+
+---
+
+### `testInfo.attach()` — Axe Scan Results as CI Report Artifacts (Playwright)
+
+Playwright's `testInfo.attach()` API embeds artifacts (screenshots, JSON data, HTML) directly into the HTML test report. For accessibility testing, attaching the full axe scan JSON — including passes, violations, and incomplete results — makes CI accessibility failures immediately debuggable without a local re-run.
+
+**Why this matters in practice:** A CI run failing with "3 axe violations" but no attachment forces developers to re-run the test locally to see which elements are affected. With an attached JSON artifact, the violation details (element HTML, failure reason, WCAG criterion, help URL) are visible in the Playwright HTML report within the CI dashboard, reducing the fix cycle from hours to minutes.
+
+```typescript
+// File: e2e/fixtures/axe-attach-fixture.ts
+// Playwright fixture: runs axe scan and attaches full results to the test report.
+// Works with Playwright HTML reporter — violations are visible in test detail view.
+import { test as base, TestInfo } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import type { AxeResults, Result } from 'axe-core';
+
+type A11yFixtureOptions = {
+  tags?: string[];
+  excludes?: string[];
+};
+
+export const test = base.extend<{
+  checkA11yWithAttachment: (options?: A11yFixtureOptions) => Promise<AxeResults>;
+}>({
+  checkA11yWithAttachment: async ({ page }, use, testInfo) => {
+    const checkA11yWithAttachment = async (
+      options: A11yFixtureOptions = {}
+    ): Promise<AxeResults> => {
+      const { tags = ['wcag2a', 'wcag2aa', 'wcag21aa'], excludes = [] } = options;
+
+      let builder = new AxeBuilder({ page }).withTags(tags);
+      for (const selector of excludes) {
+        builder = builder.exclude(selector);
+      }
+
+      const results = await builder.analyze();
+
+      // Attach full results — always, not just on failure
+      // This enables trend analysis across CI runs in the Playwright HTML report
+      const attachment = {
+        url: page.url(),
+        timestamp: new Date().toISOString(),
+        tags,
+        summary: {
+          violations: results.violations.length,
+          passes: results.passes.length,
+          incomplete: results.incomplete.length,
+          inapplicable: results.inapplicable.length,
+        },
+        violations: results.violations.map((v: Result) => ({
+          id: v.id,
+          impact: v.impact,
+          description: v.description,
+          helpUrl: v.helpUrl,
+          wcagCriteria: v.tags.filter((t) => t.startsWith('wcag')),
+          nodes: v.nodes.slice(0, 5).map((n) => ({
+            html: n.html.slice(0, 200),
+            target: n.target,
+            failureSummary: n.failureSummary,
+          })),
+        })),
+        incomplete: results.incomplete.map((i: Result) => ({
+          id: i.id,
+          description: i.description,
+          nodeCount: i.nodes.length,
+        })),
+      };
+
+      await testInfo.attach('axe-scan-results', {
+        body: JSON.stringify(attachment, null, 2),
+        contentType: 'application/json',
+      });
+
+      // Also attach a human-readable summary as plain text for quick scanning
+      if (results.violations.length > 0) {
+        const summary = results.violations
+          .map((v: Result) =>
+            `[${v.impact?.toUpperCase()}] ${v.id}: ${v.description}\n` +
+            `  Help: ${v.helpUrl}\n` +
+            `  Nodes: ${v.nodes.length}\n` +
+            v.nodes.slice(0, 2).map((n) => `  - ${n.html.slice(0, 100)}`).join('\n')
+          )
+          .join('\n\n');
+
+        await testInfo.attach('axe-violations-summary', {
+          body: summary,
+          contentType: 'text/plain',
+        });
+      }
+
+      return results;
+    };
+
+    await use(checkA11yWithAttachment);
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+```typescript
+// File: e2e/accessibility/pages-with-attachments.spec.ts
+// Uses the axe-attach-fixture to scan critical pages and attach results to CI report.
+import { test, expect } from '../fixtures/axe-attach-fixture';
+
+const CRITICAL_PAGES = [
+  { url: '/', name: 'Homepage' },
+  { url: '/login', name: 'Login' },
+  { url: '/dashboard', name: 'Dashboard' },
+  { url: '/checkout', name: 'Checkout' },
+];
+
+const THIRD_PARTY_EXCLUSIONS = [
+  '#intercom-container',
+  '#cookie-consent-banner',
+];
+
+for (const { url, name } of CRITICAL_PAGES) {
+  test(`${name} (${url}) — axe WCAG 2.2 AA scan with CI attachment`, async ({
+    page,
+    checkA11yWithAttachment,
+  }) => {
+    await page.goto(url);
+    await page.waitForLoadState('networkidle');
+
+    const results = await checkA11yWithAttachment({
+      tags: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'],
+      excludes: THIRD_PARTY_EXCLUSIONS,
+    });
+
+    // Provide clear failure message referencing the attachment
+    expect(
+      results.violations,
+      `${results.violations.length} axe violation(s) on ${name} — ` +
+      `see "axe-scan-results" and "axe-violations-summary" attachments in the test report`
+    ).toHaveLength(0);
+  });
+}
+```
+
+**Playwright HTML report attachment behavior:**
+- Attachments appear in the test detail view under "Attachments" — both passing and failing tests show them
+- JSON attachments are downloadable; plain-text summaries are rendered inline
+- In GitHub Actions, Playwright artifacts are uploaded via `actions/upload-artifact@v4` — the entire `playwright-report/` directory includes all attachment data
+- Combining `testInfo.attach()` with `testInfo.annotations.push({ type: 'a11y', description })` enables filtering tests by accessibility annotation in the HTML report
+
+97. **[community] `testInfo.attach()` for axe results is a zero-overhead addition to existing Playwright tests — the JSON body is typically 20–100 KB and does not slow down test execution measurably**: Teams that worry about CI artifact storage costs can use the `summary`-only attachment format (violations array only, no passes/incomplete) to keep artifact size under 10 KB per test. The full results format (passes + incomplete + violations) is recommended for audit trails but can be gated behind a `FULL_A11Y_REPORT=true` env var for scheduled audit runs vs daily PR runs. WHY: accessibility audit evidence often needs to be retained for legal compliance documentation — attaching results to Playwright tests ties the evidence to the specific code commit that was tested, making it far more useful than standalone scan reports.
+
+98. **[community] The ARIA grid pattern (`role="grid"`) must be tested with NVDA + Firefox in Application Mode — axe passes, keyboard unit tests pass, but NVDA users still cannot navigate because the grid's `keydown` handler only fires in Application Mode**: When NVDA encounters `role="grid"`, it switches to Application Mode and forwards all keyboard events to the DOM element. Teams test the grid in Chrome DevTools (no screen reader) and confirm arrow keys work. But NVDA's Application Mode forwards keydown events differently from direct browser keyboard handling — specifically, NVDA suppresses some default browser key behaviors before forwarding. If the `keydown` handler uses `e.preventDefault()` for keys that NVDA has already handled, the event never reaches the grid. Always test composite widget keyboard contracts with NVDA + Firefox in addition to browser-only keyboard testing. [community]
+
+---
+
+### `testInfo.attach()` — Accessibility Report Entry in Key Resources
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright testInfo.attach() | Official | https://playwright.dev/docs/api/class-testinfo#test-info-attach | Attach axe JSON + violation summaries to Playwright HTML report — enables CI-integrated accessibility audit trails |
+| ARIA Grid Pattern (APG) | Official | https://www.w3.org/WAI/ARIA/apg/patterns/grid/ | Keyboard navigation contract for role="grid": arrow keys, Home/End, Enter/F2 edit mode, roving tabindex |
+| ARIA Listbox Pattern (APG) | Official | https://www.w3.org/WAI/ARIA/apg/patterns/listbox/ | Keyboard contract for role="listbox": arrow keys, Type-ahead selection, aria-selected state |
+| MDN aria-setsize | Reference | https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-setsize | aria-setsize and aria-posinset for communicating total collection size in virtual scroll lists |
+

@@ -1,5 +1,5 @@
 # Contract Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: contract-testing | iteration: 32 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: contract-testing | iteration: 33 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training knowledge | official: docs.pact.io, pact-foundation/pact-js, docs.pact.io/pact_nirvana, docs.pact.io/plugins (WebFetch 2026-05-07), github.com/pactflow/pact-protobuf-plugin (WebFetch 2026-05-07), github.com/pact-foundation/pact-plugins (WebFetch 2026-05-07), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/blob/master/docs/migrations/16.md (WebFetch 2026-05-12), docs.pact.io/pact_broker/webhooks (WebFetch 2026-05-12), pactflow.io/blog (WebFetch 2026-05-12), github.com/pact-foundation/pact-js CHANGELOG.md (WebFetch 2026-05-12), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1713 (WebFetch 2026-05-12), github.com/pact-foundation/pact-js/issues/1748 (WebFetch 2026-05-12), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 23), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 23), pactflow.io/blog (WebFetch 2026-05-12 iteration 23), docs.pact.io/implementation_guides/javascript/docs/matching (WebFetch 2026-05-12 iteration 24), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 24), docs.pact.io (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer (WebFetch 2026-05-12 iteration 25), docs.pact.io/consumer/contract_tests_not_functional_tests (WebFetch 2026-05-12 iteration 25), pactflow.io/blog (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues/1600 (WebFetch 2026-05-12 iteration 25), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 25), docs.pact.io/implementation_guides/javascript/docs/consumer (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1568 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/issues/1438 (WebFetch 2026-05-12 iteration 26), github.com/pact-foundation/pact-js/releases/tag/v16.4.0 (WebFetch 2026-05-12 iteration 27), github.com/pact-foundation/pact-js/issues/1762 (WebFetch 2026-05-12 iteration 27), docs.pact.io/pact_broker/advanced_topics/consumer_version_selectors (WebFetch 2026-05-12 iteration 28), pactflow.io/blog (WebFetch 2026-05-12 iteration 28), github.com/pactflow/pact-protobuf-plugin/releases (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 28), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1585 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/pull/1634 (WebFetch 2026-05-12 iteration 29), github.com/pact-foundation/pact-js/issues/1696 (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/pull/1767 (WebFetch 2026-05-12 iteration 30), pactflow.io/blog (WebFetch 2026-05-12 iteration 30), github.com/pact-foundation/pact-js/releases (WebFetch 2026-05-12 iteration 31), github.com/pact-foundation/pact-js/issues (WebFetch 2026-05-12 iteration 31), pactflow.io/blog (WebFetch 2026-05-12 iteration 31), docs.pact.io/implementation_guides/javascript/docs/graphql (WebFetch 2026-05-12 iteration 31) | community: production lessons -->
 <!-- new in iteration 24: extended MatchersV3 quick reference (atMostLike, constrainedArrayLike, includes, nullValue, equal, eachKeyMatches, eachValueMatches), InterfaceToTemplate<T> TypeScript utility, constrainedArrayLike bounded-array pattern, community lessons 47-49 (executeTest single-interaction-per-call constraint, constrainedArrayLike for bounded APIs, InterfaceToTemplate drift) -->
 <!-- new in iteration 26: Multipart form data / file upload contract testing pattern (multipartBody/binaryFile V4 DSL, official docs May 2026), SpecificationVersion enum for explicit spec version control, community lessons 54-57 (EADDRINUSE with provider.setup() missing finalize, Jest --watch tracing subscriber warning, multipart form data over-specification anti-pattern, SpecificationVersion enum usage) -->
@@ -2674,6 +2674,451 @@ describe('NotificationService consumes OrderCreated events (V4 async, pact-js v1
 | PactFlow AI Code Review | Product | https://pactflow.io/blog/ | AI-powered analysis of existing pact files; identifies over-specification, missing interactions, best practice violations (August 2025 beta, PactFlow only) |
 | PactFlow AI Test Templates | Product | https://pactflow.io/blog/ | AI test generation with team-defined style templates; supports TypeScript, Java, Python, Kotlin, .NET, Go, PHP, Swift; produces scaffolding matching existing test conventions (May 2025, PactFlow only) |
 | pact-protobuf-plugin | Releases | https://github.com/pactflow/pact-protobuf-plugin/releases | v0.7.0 (Oct 2025): proto descriptor caching + nested message lookup fix |
+| @kafkajs/confluent-schema-registry | npm | https://www.npmjs.com/package/@kafkajs/confluent-schema-registry | TypeScript Confluent Schema Registry client for kafkajs — schema encode/decode, compatibility checks |
+| Confluent Schema Registry Docs | Official | https://docs.confluent.io/platform/current/schema-registry/index.html | Compatibility levels (BACKWARD/FORWARD/FULL/TRANSITIVE), schema evolution rules |
+
+---
+
+<!-- new in iteration 33: Schema Registry as contract mechanism (Confluent Schema Registry + Avro compatibility levels, TypeScript kafkajs + @kafkajs/confluent-schema-registry consumer pattern, Pact vs Schema Registry decision matrix), MessageProviderPact provider-side verification pattern (TypeScript, pact-js v16), advanced provider state teardown patterns (TypeScript — per-state transaction rollback, state parameter destructuring, async cleanup queue), community lessons 68-72 -->
+
+---
+
+### Schema Registry as a Contract Mechanism (TypeScript — Kafka + Confluent Schema Registry)
+
+A **schema registry** is an alternative (or complement) to Pact message pacts for event-driven systems. Instead of recording expected message shapes in a pact file, both producer and consumer register and validate schemas centrally. Confluent Schema Registry supports three compatibility levels that map directly to CDC concerns.
+
+#### Schema Registry vs Pact Message Pacts — Decision Matrix
+
+| Dimension | Pact `MessageConsumerPact` / `addAsynchronousInteraction` | Schema Registry (Confluent / Glue / Karapace) |
+|---|---|---|
+| **What it tests** | Consumer's ability to parse a specific message shape; producer's ability to generate it | Schema compatibility between versions at publish time |
+| **Consumer specificity** | Consumer-driven — only fields the consumer uses are tested | Schema-driven — all fields in the schema are validated regardless of who uses them |
+| **Breaking change detection** | Caught when consumer pact fails against new producer version | Caught when a schema version is rejected by the registry's compatibility check |
+| **Cross-language support** | Native per-language Pact client (JS, Java, Python, Rust…) | Schema registry clients exist for all major languages |
+| **State handling** | Requires provider state handlers (database seeders) | No state needed — schema compatibility is stateless |
+| **Tooling overhead** | Pact Broker (OSS or PactFlow) | Registry server (Confluent Platform, AWS Glue, Karapace) |
+| **Best fit** | Teams needing consumer-specific contract verification per service | Teams using Avro/Protobuf schemas as the authoritative data contract |
+
+**When to choose Schema Registry over Pact:** your team already uses Avro or Protobuf as the canonical schema format, you need `BACKWARD`/`FORWARD`/`FULL` compatibility enforcement at the schema level, and consumers are uniform enough that consumer-specific contracts add little value.
+
+**When to use both:** use Schema Registry to enforce wire format compatibility (Avro/Protobuf evolution rules) and Pact to test that the consumer's handler actually processes the fields it depends on. These are complementary, not mutually exclusive.
+
+#### Confluent Schema Registry Compatibility Levels
+
+| Compatibility Mode | Rule | Use when |
+|---|---|---|
+| `BACKWARD` | New schema can read data written with the previous schema | Consumers upgrade before producers |
+| `FORWARD` | Previous schema can read data written with the new schema | Producers upgrade before consumers |
+| `FULL` | Both backward and forward | Both directions must remain compatible |
+| `BACKWARD_TRANSITIVE` | Backward compatible with ALL previous versions | Long history of consumers on older versions |
+| `NONE` | No compatibility check | Development/experimental topics |
+
+#### TypeScript Consumer: Schema-Validated Kafka Consumer
+
+```typescript
+// order-event-consumer.ts
+// Kafka consumer that validates messages against Confluent Schema Registry.
+// Uses kafkajs + @kafkajs/confluent-schema-registry.
+// npm install kafkajs @kafkajs/confluent-schema-registry
+
+import { Kafka } from 'kafkajs';
+import { SchemaRegistry } from '@kafkajs/confluent-schema-registry';
+
+interface OrderCreatedEvent {
+  orderId: string;
+  customerId: string;
+  totalAmount: number;
+  currency: string;
+  createdAt: string;
+}
+
+const registry = new SchemaRegistry({
+  host: process.env.SCHEMA_REGISTRY_URL ?? 'http://localhost:8081',
+  auth: {
+    username: process.env.SCHEMA_REGISTRY_KEY ?? '',
+    password: process.env.SCHEMA_REGISTRY_SECRET ?? '',
+  },
+});
+
+const kafka = new Kafka({
+  clientId: 'notification-service',
+  brokers: (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(','),
+});
+
+export async function startOrderCreatedConsumer(
+  handler: (event: OrderCreatedEvent) => Promise<void>
+): Promise<() => Promise<void>> {
+  const consumer = kafka.consumer({ groupId: 'notification-service-group' });
+  await consumer.connect();
+  await consumer.subscribe({ topic: 'order.created', fromBeginning: false });
+
+  await consumer.run({
+    eachMessage: async ({ message }) => {
+      if (!message.value) return;
+      // Registry decodes the Avro/Protobuf payload using the schema ID
+      // embedded in the first 5 bytes of the message value (magic byte + schema ID).
+      const decoded = await registry.decode(message.value) as OrderCreatedEvent;
+      await handler(decoded);
+    },
+  });
+
+  return () => consumer.disconnect();
+}
+```
+
+#### TypeScript: Message Pact Consumer Test (hexagonal pattern — port only)
+
+The key insight for testability: separate the **adapter** (Kafka consumer setup + `registry.decode()`) from the **port** (message handler). Test only the port with Pact. The `registry.decode()` call is the schema-contract boundary enforced by the Schema Registry; the Pact test covers the consumer's parsing and handling logic on top of that decoded payload.
+
+```typescript
+// order-event-consumer.contract.spec.ts
+// Tests the message handler (port) in isolation from the Kafka adapter.
+// No Kafka broker or Schema Registry server needed — hexagonal architecture pattern.
+import path from 'path';
+import { Pact, Matchers } from '@pact-foundation/pact';
+
+const { like, string, timestamp } = Matchers;
+
+interface OrderCreatedEvent {
+  orderId: string;
+  customerId: string;
+  totalAmount: number;
+  currency: string;
+  createdAt: string;
+}
+
+// Production handler — the "port" — tested in isolation from Kafka adapter
+async function handleOrderCreated(event: OrderCreatedEvent): Promise<{ notified: boolean }> {
+  if (!event.orderId) throw new Error('orderId is required');
+  if (!event.customerId) throw new Error('customerId is required');
+  if (typeof event.totalAmount !== 'number') throw new Error('totalAmount must be a number');
+  // ... send notification
+  return { notified: true };
+}
+
+const messagePact = new Pact({
+  consumer: 'NotificationService',
+  provider: 'OrderService',
+  dir: path.resolve(process.cwd(), 'pacts'),
+  logLevel: 'warn',
+});
+
+describe('NotificationService — OrderCreated event contract (hexagonal pattern)', () => {
+  it('processes a valid OrderCreated event', async () => {
+    await messagePact
+      .addAsynchronousInteraction()
+      .given('a new order has been placed by CUST-001')
+      .uponReceiving('an OrderCreated event with required fields')
+      .withContent({
+        orderId: string('ORD-9876'),
+        customerId: like('CUST-001'),
+        totalAmount: like(149.99),
+        currency: string('USD'),
+        createdAt: timestamp("yyyy-MM-dd'T'HH:mm:ssXXX", '2025-01-15T10:00:00+00:00'),
+      })
+      .withMetadata({ contentType: 'application/json', topic: 'order.created' })
+      .executeTest(async (body: OrderCreatedEvent) => {
+        const result = await handleOrderCreated(body);
+        expect(result.notified).toBe(true);
+      });
+  });
+
+  it('rejects an OrderCreated event missing orderId', async () => {
+    await messagePact
+      .addAsynchronousInteraction()
+      .given('a malformed order event exists')
+      .uponReceiving('an OrderCreated event missing orderId')
+      .withContent({
+        // orderId deliberately absent to test handler defensive validation
+        customerId: like('CUST-001'),
+        totalAmount: like(149.99),
+        currency: string('USD'),
+        createdAt: timestamp("yyyy-MM-dd'T'HH:mm:ssXXX", '2025-01-15T10:00:00+00:00'),
+      })
+      .withMetadata({ contentType: 'application/json' })
+      .executeTest(async (body: OrderCreatedEvent) => {
+        await expect(handleOrderCreated(body)).rejects.toThrow('orderId is required');
+      });
+  });
+});
+```
+
+**Key points:**
+- Test only the **port** (handler function), not the **adapter** (Kafka consumer setup + `registry.decode()`) — the port function is pure business logic that can be tested with any test runner
+- `withMetadata({ topic: 'order.created' })` records the expected Kafka topic in the pact file for documentation; Pact does not validate the topic name during provider verification
+- The Schema Registry's `registry.decode()` enforces schema compatibility at runtime; the Pact test covers the consumer's parsing and handling logic on top of that decoded payload
+- A second interaction for the error case (`missing orderId`) tests defensive validation — documents consumer behaviour for known bad payloads
+
+---
+
+### MessageProviderPact — Provider-Side Async Verification (TypeScript, pact-js v16)
+
+The consumer-side `addAsynchronousInteraction()` test generates a pact file. The provider must verify it using `MessageProviderPact`. This pattern completes the CDC loop for event-driven systems.
+
+```typescript
+// order-service.message.provider.pact.spec.ts
+// Provider-side message pact verification for OrderService.
+// OrderService proves it can publish an OrderCreated event matching the consumer pact.
+import path from 'path';
+import { MessageProviderPact } from '@pact-foundation/pact';
+import { VerifierOptions } from '@pact-foundation/pact';
+import { OrderService } from '../src/order-service';
+import { db } from '../src/db';
+
+// The provider's message production function — the "port" on the provider side.
+// Returns the raw message payload without involving the Kafka adapter.
+async function produceOrderCreatedEvent(
+  params?: Record<string, unknown>
+): Promise<unknown> {
+  const orderId = (params?.orderId as string) ?? 'ORD-TEST-001';
+  const order = await db.findOrder(orderId);
+  if (!order) throw new Error(`Order ${orderId} not found in state`);
+  // Call the real serialization logic — avoid building test-specific payloads
+  return OrderService.buildOrderCreatedEvent(order);
+}
+
+type StateHandlers = NonNullable<VerifierOptions['stateHandlers']>;
+
+describe('OrderService message provider verification', () => {
+  afterAll(async () => {
+    await db.disconnect();
+  });
+
+  it('satisfies NotificationService OrderCreated message contract', async () => {
+    const stateHandlers: StateHandlers = {
+      'a new order has been placed by CUST-001': async (params): Promise<void> => {
+        const orderId = (params?.orderId as string) ?? 'ORD-TEST-001';
+        await db.seed({
+          id: orderId,
+          customerId: 'CUST-001',
+          totalAmount: 149.99,
+          currency: 'USD',
+        });
+      },
+      'a malformed order event exists': async (): Promise<void> => {
+        // No seeding needed — provider returns static malformed payload directly
+      },
+    };
+
+    const provider = new MessageProviderPact({
+      provider: 'OrderService',
+      logLevel: 'warn',
+
+      // In CI, pull from Broker. In local dev, load the pact file directly.
+      pactUrls: process.env.PACT_BROKER_URL
+        ? undefined
+        : [path.resolve(process.cwd(), 'pacts', 'NotificationService-OrderService.json')],
+      pactBrokerUrl: process.env.PACT_BROKER_URL,
+      pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+      consumerVersionSelectors: process.env.PACT_BROKER_URL
+        ? [{ mainBranch: true }, { deployedOrReleased: true }]
+        : undefined,
+
+      // messageProviders keys MUST exactly match the `uponReceiving` strings in consumer tests
+      messageProviders: {
+        'an OrderCreated event with required fields': async (params) =>
+          produceOrderCreatedEvent(params as Record<string, unknown> | undefined),
+        'an OrderCreated event missing orderId': async () => ({
+          customerId: 'CUST-001',
+          totalAmount: 149.99,
+          currency: 'USD',
+          createdAt: '2025-01-15T10:00:00+00:00',
+          // orderId intentionally absent
+        }),
+      },
+
+      stateHandlers,
+
+      publishVerificationResult: process.env.PUBLISH_VERIFICATION_RESULTS === 'true',
+      providerVersion: process.env.GIT_COMMIT,
+      providerVersionBranch: process.env.GIT_BRANCH,
+    });
+
+    await provider.verify();
+  });
+});
+```
+
+**Key points:**
+- `messageProviders` keys must match `uponReceiving` strings character-for-character — export these as constants from `pact-states.ts` to prevent silent mismatches (see community lesson 74)
+- `params` in `messageProviders` functions receives provider state parameters from `.given('state', { orderId: 'X' })` in the consumer test — same mechanism as HTTP provider state handlers
+- When `pactUrls` is provided (local dev), `consumerVersionSelectors` should be `undefined` — the two options are mutually exclusive in `MessageProviderPact`
+- `publishVerificationResult: true` should only be set in CI (guard with env var) — publishing verification results from local dev corrupts the Broker's compatibility matrix
+- For pact-js v16+ with V4 pact files, `MessageProviderPact` still works. If a single provider serves both HTTP and async message consumers, use `VerifierV3` with `transports` configuration instead (requires pact-js v16.0.4+ per PR #1634)
+
+---
+
+### Advanced Provider State Patterns (TypeScript — Teardown, Transactions, and Type Safety)
+
+Provider state handlers become the operational bottleneck at scale. Three patterns address the most common advanced scenarios.
+
+#### Pattern 1 — Transaction Rollback for Database-Backed States
+
+Wrapping each state's database operations in a savepoint that rolls back after verification prevents test data leakage and eliminates explicit teardown handlers.
+
+```typescript
+// provider-state-transactional.ts
+// Per-state savepoint rollback utility for PostgreSQL (pg driver).
+// Keeps each state handler's database changes isolated without a separate teardown.
+import { Pool } from 'pg';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+/**
+ * Runs `fn` inside a PostgreSQL savepoint that rolls back after execution.
+ * Use in provider state handlers to prevent test data accumulation across CI runs.
+ */
+export async function withSavepoint<T>(
+  savepointName: string,
+  fn: (pool: Pool) => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SAVEPOINT ${savepointName}`);
+    // Replace pool with a client-scoped proxy so fn's queries use the same connection
+    const result = await fn(pool);
+    await client.query(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Example usage in a provider pact spec:
+//
+// import { withSavepoint } from './provider-state-transactional';
+//
+// const stateHandlers: StateHandlerMap = {
+//   'SKU ABC-123 exists with 10 units in stock': async (): Promise<void> => {
+//     await withSavepoint('sku_seed', async () => {
+//       await pool.query(
+//         'INSERT INTO inventory (sku, available) VALUES ($1, $2) ON CONFLICT (sku) DO UPDATE SET available = $2',
+//         ['ABC-123', 10]
+//       );
+//     });
+//   },
+// };
+```
+
+#### Pattern 2 — Async Cleanup Queue for External Resource States
+
+When state handlers allocate external resources (S3 objects, feature flag overrides, external stubs), a cleanup queue ensures teardown runs even if verification fails mid-suite.
+
+```typescript
+// state-cleanup-queue.ts
+// Cleanup queue for provider state handlers that allocate external resources.
+// Register cleanup callbacks during state setup; flush them in afterAll.
+
+type CleanupFn = () => Promise<void>;
+
+export class StateCleanupQueue {
+  private readonly queue: CleanupFn[] = [];
+
+  /** Register a cleanup callback to run after verification completes. */
+  register(fn: CleanupFn): void {
+    this.queue.push(fn);
+  }
+
+  /** Run all registered cleanups. Collects failures rather than stopping at the first. */
+  async flush(): Promise<void> {
+    const errors: Error[] = [];
+    for (const fn of this.queue.splice(0)) {
+      try {
+        await fn();
+      } catch (err) {
+        errors.push(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `State cleanup failed for ${errors.length} handler(s)`);
+    }
+  }
+}
+
+// Usage in provider pact spec:
+// const cleanup = new StateCleanupQueue();
+//
+// const stateHandlers = {
+//   'feature flag X is enabled': async (): Promise<void> => {
+//     await featureFlags.enable('feature-x');
+//     cleanup.register(() => featureFlags.reset('feature-x'));
+//   },
+// };
+//
+// afterAll(async () => {
+//   await stopServer();
+//   await cleanup.flush();
+// });
+```
+
+#### Pattern 3 — Type-Safe State Parameter Helpers
+
+Provider state parameters arrive as `Record<string, unknown>`. A small helpers module eliminates scattered `as string` casts and surfaces parameter bugs at test runtime rather than silently passing wrong values.
+
+```typescript
+// pact-state-params.ts
+// Type-safe helpers for extracting typed values from Pact provider state parameters.
+// Prevents scattered 'as string' casts and makes parameter contract violations explicit.
+
+type StateParams = Record<string, unknown> | undefined;
+
+/** Extract a required string — throws TypeError if absent or wrong type. */
+export function requireString(params: StateParams, key: string): string {
+  const value = params?.[key];
+  if (typeof value !== 'string') {
+    throw new TypeError(
+      `Provider state param '${key}' expected string, got ${value === undefined ? 'undefined' : typeof value}`
+    );
+  }
+  return value;
+}
+
+/** Extract a required number — throws TypeError if absent or wrong type. */
+export function requireNumber(params: StateParams, key: string): number {
+  const value = params?.[key];
+  if (typeof value !== 'number') {
+    throw new TypeError(
+      `Provider state param '${key}' expected number, got ${value === undefined ? 'undefined' : typeof value}`
+    );
+  }
+  return value;
+}
+
+/** Extract an optional string with a fallback value. */
+export function optionalString(params: StateParams, key: string, fallback: string): string {
+  const value = params?.[key];
+  return typeof value === 'string' ? value : fallback;
+}
+
+// Usage:
+// import { requireString, requireNumber, optionalString } from './pact-state-params';
+//
+// 'SKU N exists with Q units in stock': async (params): Promise<void> => {
+//   const sku = requireString(params, 'sku');
+//   const qty = requireNumber(params, 'qty');
+//   const wh  = optionalString(params, 'warehouseId', 'WH-001');
+//   await db.seed({ sku, available: qty, warehouseId: wh });
+// },
+```
+
+---
+
+### Additional Community Production Lessons (iteration 33) [community]
+
+73. **[community] Schema Registry and Pact fill different gaps — don't conflate them.** Schema Registry (Confluent, AWS Glue, Karapace) enforces Avro/Protobuf schema evolution compatibility at the schema level. Pact message pacts test that the consumer's handler correctly processes the specific fields it uses. A schema can pass `BACKWARD` compatibility in the registry and still break a consumer that accesses a renamed field. Use both: registry for wire format safety, Pact for consumer-specific behavior verification. [community]
+
+74. **[community] `MessageProviderPact.messageProviders` descriptions must match `uponReceiving` strings exactly — including punctuation and case.** Teams frequently introduce subtle drift between the consumer test's `uponReceiving('an OrderCreated event with required fields')` and the provider's `messageProviders` key. Unlike HTTP provider verification where the verifier fetches the pact and reads descriptions, message provider verification requires the key to match character-for-character. **Fix:** export message description constants from the same `pact-states.ts` constants file used for HTTP provider state strings. [community]
+
+75. **[community] Provider state handlers that call the database directly without a transaction cause test data to accumulate across CI runs.** After 50+ CI runs, state-dependent responses produce incorrect results due to duplicate rows, `ON CONFLICT` collisions, or inflated `COUNT(*)` values. **Fix:** use the savepoint rollback pattern (Pattern 1 in the Advanced Provider State Patterns section above) or add explicit `TRUNCATE`/`DELETE` teardown statements to `afterAll` in the provider verification spec. [community]
+
+76. **[community] Hexagonal architecture is not optional for message pact testing — it's a prerequisite.** Teams that write Kafka consumer code that mixes queue polling (`consumer.run()`) with business logic in the same function have no testable port to pass to Pact's message handler. Refactoring to separate the adapter (Kafka polling, `registry.decode()`) from the port (domain handler) is required before message pacts are viable. Budget 1–2 days for this refactoring before starting message pact adoption. [community]
+
+77. **[community] Schema Registry `BACKWARD_TRANSITIVE` mode is the safest Kafka contract policy but the most expensive to maintain.** `BACKWARD_TRANSITIVE` checks new schemas against ALL previously registered versions, not just the latest. This prevents schema evolution from silently breaking consumers still running old versions — common during rolling deployments. The downside: as schema history grows, compatibility checks slow down and accumulated field renames can make new fields impossible to add without a version bump. **Policy recommendation:** use `BACKWARD_TRANSITIVE` on production topics and `BACKWARD` on development topics; document a schema deprecation process that removes old versions after all consumers confirm they have upgraded. [community]
 
 ---
 

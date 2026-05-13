@@ -1,5 +1,5 @@
 # Test Data — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-data | iteration: 47 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-data | iteration: 48 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: WebFetch (github.com/faker-js/faker, github.com/thoughtbot/fishery, martinfowler.com/bliki/SelfInitializingFake.html, martinfowler.com/bliki/TestingResourcePools.html, vitest.dev/guide/migration, playwright.dev/docs/test-fixtures, playwright.dev/docs/release-notes, playwright.dev/docs/api/class-websocketroute, playwright.dev/docs/test-global-setup-teardown, playwright.dev/docs/api/class-test#test-abort, github.com/mswjs/msw/releases, playwright.dev/docs/release-notes#version-157, playwright.dev/docs/release-notes#version-159, playwright.dev/docs/release-notes#version-160, vitest.dev/blog/vitest-3-2, vitest.dev/blog/vitest-4-1); training-knowledge fallback for remaining gaps -->
 <!-- official refs: martinfowler.com/bliki/ObjectMother.html · martinfowler.com/bliki/TestDouble.html · fakerjs.dev -->
 <!-- iter-21-30 additions: AI-assisted test data generation, Testcontainers-node, PGlite, TanStack Query patterns, Zod v4 factory patterns, event-driven message factories (SQS/EventBridge), WebSocket/SSE test data, 4 new anti-patterns, 4 new community gotchas, ISTQB equivalence partitioning factories, updated key resources -->
@@ -15,6 +15,7 @@
 <!-- iter-45: Vitest 3.2 scope:'file' fixture scope (between test-scoped and worker-scoped — lazy beforeAll equivalent); Vitest 3.2 Test Signal AbortSignal in test context for timeout-aware factory teardown; Vitest 3.2 using vi.spyOn() for automatic mock restoration; Vitest 4.1 mockThrow()/mockThrowOnce() for factory error-path testing; Vitest 4.1 Chai-style mock assertions as alternative to Jest-style toHaveBeenCalled; community gotcha #33 (scope:'file' fixture requires test.extend() on a non-isolated file — isolation:false — otherwise the fixture reinitialises per file); 5 new Key Resources (2026-05-12) -->
 <!-- iter-46: MSW v2.13.5 generator state reset on resetHandlers()/restoreHandlers() — stateful sequence handlers now properly isolated between tests; faker v10.4 food module plant-based data and Finnish phone locale — new realistic data for diet-preference and Nordic-market test suites; Playwright 1.60 browser.on('context') observer for dynamic fixture injection at context creation; MSW v2.14.2 NetworkApi type export — typed handler container pattern for TypeScript-first mock organisation; community gotcha #34 (MSW stateful generator handlers retain position across test.use() overrides if resetHandlers() is not called explicitly after each override); 4 new Key Resources (2026-05-12) -->
 <!-- iter-40: faker v10 new APIs for factory authors (word error strategy 'fail', BigInt number generation, book module, UPC barcodes, simple coordinate methods, generic sex type); Playwright 1.46 component testing router fixture for MSW test data injection; community gotcha #28 (faker.word default 'fail' error strategy breaks word-based factories); updated Key Resources (2026-05-12) -->
+<!-- iter-48: GDPR/privacy compliance for test data (anonymization, pseudonymization, PII scrubbing patterns); property-based testing with fast-check (fc.record, fc.string, fc.integer arbitraries, Vitest integration); snapshot/golden-file test data strategy (toMatchSnapshot, toMatchFileSnapshot, inline snapshots for factory output assertions); test data versioning (migration-aligned factories, schema-version tagging); community gotchas #38-#40; 3 new Key Resources (2026-05-12) -->
 <!-- iter-36: Vitest 4.1 test tags + TestRunner.matchesTags() for conditional DB seeding (vitest.dev/guide/test-tags, 2026-05-12); coverage.changed for modified-file-only coverage reports; coverage ignore comments (istanbul ignore start/stop, v8 ignore start/stop); --detectAsyncLeaks for surfacing factory teardown leaks; community gotcha #24 (async resource leaks from factories); 4 new Vitest 4.1 checklist items; 3 new Key Resources (2026-05-12) -->
 <!-- iter-37: Vitest 4.0 expect.schemaMatching for inline factory output validation against Zod/Valibot/ArkType; Vitest 4.0 getSeed() API for programmatic seed access; Vitest 4.1 experimental viteModuleRunner:false for native Node.js factory execution; Google Testing Blog "Construct with Collaborators, Call with Work" pattern (2026-05-05) applied to factory design; faker v10.4.0 latest stable (2026-03-23); fishery v2.4.0 latest stable (2025-12-08); community gotcha #25 (schema drift caught by expect.schemaMatching); updated Key Resources (2026-05-12) -->
 <!-- iter-38: Playwright 1.59 async disposables (await using for route handlers, pages, tracing — Symbol.asyncDispose in E2E test data); Playwright 1.60 HAR-based record/replay (routeFromHAR + tracing.startHar as a native Self-Initializing Fake for E2E); Playwright 1.57 testProject.workers for per-project parallelism in test data isolation; Playwright @tag syntax for conditional E2E fixture setup; community gotcha #26 (HAR fixture drift — routeFromHAR has no automatic re-recording signal); updated Key Resources (2026-05-12) -->
@@ -11405,3 +11406,654 @@ test.for([
 | Vitest test.each API docs | Official | https://vitest.dev/api/#test-each | Printf and `$property` formatting; template literal tables; array vs object rows |
 | Vitest test.for API docs | Official | https://vitest.dev/api/#test-for | Context-injecting parameterized tests; `expect.soft()` in parameterized suites; fixtures in test.for |
 | MSW WebSocketHandler.test() | Official | https://github.com/mswjs/msw/releases/tag/v2.13.6 | Public `test()` method for asserting WebSocket handler invocations; `controller.clear()` pattern |
+
+---
+
+## GDPR & Privacy Compliance for Test Data  [community]
+
+> **Why this matters:** Article 5(1)(b) of the GDPR (General Data Protection Regulation)
+> restricts processing of personal data to the original purpose of collection — using
+> production customer data in test environments is a separate processing purpose and
+> requires either a legal basis or proper anonymization/pseudonymization. Regulators
+> (ICO, CNIL, DPA) have issued fines for using real PII in test environments. The
+> safest approach: never import production PII — generate realistic synthetic data with
+> factories instead.
+
+### GDPR Concepts: Anonymization vs Pseudonymization
+
+| Concept | GDPR status | Reversible? | Test data implication |
+|---------|-------------|-------------|----------------------|
+| **Anonymization** | No longer personal data (outside GDPR scope) | No | Safe to use in test environments if truly irreversible |
+| **Pseudonymization** | Still personal data (Article 4(5)) | Yes (with key) | Requires same protections as original PII |
+| **Synthetic generation** | Never was personal data | N/A | **Preferred strategy** — no GDPR obligation |
+
+**Key principle:** Factories that generate synthetic data with `@faker-js/faker` are the
+most GDPR-compliant approach because the data was never personal data. Avoid the pattern
+of copying production rows to seed test databases — even in a "masked" form, if re-identification
+is theoretically possible (pseudonymization), GDPR still applies.
+
+### PII Scrubbing Pipeline Pattern  [community]
+
+When integration or E2E tests genuinely require a production-like dataset (e.g., testing
+a migration against realistic data volume), use a scrubbing pipeline that transforms a
+production snapshot before loading it into the test database:
+
+```typescript
+// scripts/scrub-production-snapshot.ts
+// Run as a pre-seeding step — NEVER commit PII to test fixtures
+import { faker } from '@faker-js/faker';
+
+interface RawUser {
+  id: string;
+  email: string;
+  name: string;
+  phone: string | null;
+  dateOfBirth: string | null;
+  ipAddress: string | null;
+}
+
+interface ScrubbedUser {
+  id: string;           // keep: non-PII identifier (or replace with UUID)
+  email: string;        // replace: deterministic fake derived from ID
+  name: string;         // replace: random fake
+  phone: string | null; // replace: fake or null
+  dateOfBirth: string | null; // replace: plausible but shifted
+  ipAddress: string | null;   // remove: always null in test data
+}
+
+/**
+ * Scrub a single user record for test environment use.
+ * Deterministic per ID — same ID always produces the same fake email.
+ * This means re-runs produce consistent data (no churn in fixtures).
+ */
+export function scrubUser(raw: RawUser): ScrubbedUser {
+  // Seed faker per-record from the stable ID so scrubbing is idempotent
+  faker.seed(hashStringToNumber(raw.id));
+
+  return {
+    id: raw.id,
+    email: `test-user-${raw.id.slice(0, 8)}@example-test.invalid`,
+    name: faker.person.fullName(),
+    phone: raw.phone ? faker.phone.number() : null,
+    dateOfBirth: raw.dateOfBirth
+      ? shiftDate(raw.dateOfBirth, faker.number.int({ min: -365, max: 365 }))
+      : null,
+    ipAddress: null,  // always strip — never needed for functional tests
+  };
+}
+
+function hashStringToNumber(s: string): number {
+  let hash = 5381;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) + hash) ^ s.charCodeAt(i);
+  }
+  return Math.abs(hash);
+}
+
+function shiftDate(iso: string, days: number): string {
+  const d = new Date(iso);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+```
+
+**CI pipeline integration:**
+```typescript
+// vitest.globalSetup.ts — scrub before seeding (runs once per test process)
+import { scrubUser } from '../scripts/scrub-production-snapshot';
+import { db } from '../db';
+
+export async function setup() {
+  if (process.env.USE_PRODUCTION_SNAPSHOT === 'true') {
+    const rawRows = await loadSnapshotFromS3();     // your snapshot loader
+    const scrubbed = rawRows.map(scrubUser);
+    await db.truncate('users');
+    await db.batchInsert('users', scrubbed, 500);
+    console.log(`[test-data] scrubbed ${scrubbed.length} user rows for test DB`);
+  }
+}
+```
+
+### The "No PII in Repos" Rule  [community]
+
+Production data or scrubbed production data **must never be committed to version control**.
+If a fixture file (`.json`, `.sql`, `.csv`) is committed, it becomes part of the git history
+permanently — even after deletion. Enforce this with a `.gitignore` rule and a pre-commit
+hook:
+
+```bash
+# .gitignore — protect common test data export formats
+test-fixtures/prod-*.json
+test-fixtures/prod-*.sql
+test-fixtures/prod-*.csv
+db/seeds/production-*.sql
+
+# .husky/pre-commit (or equivalent)
+# Block any staged file whose name contains "prod" in fixture directories
+git diff --cached --name-only | grep -E '^(test-fixtures|db/seeds)/.*prod' && {
+  echo "ERROR: Possible production data staged for commit. Use synthetic factories instead."
+  exit 1
+} || true
+```
+
+**Checklist — GDPR-compliant test data:**
+- [ ] No production PII in test databases, fixture files, or CI environment variables
+- [ ] Factories use `@faker-js/faker` synthetic generation (not masked production rows)
+- [ ] Any scrubbing pipeline is deterministic (same input ID → same output) for reproducibility
+- [ ] `ipAddress`, `ssn`, `taxId`, `passportNumber`, `creditCardNumber` fields always stubbed to `null` or format-valid fakes
+- [ ] Fixture files excluded from git via `.gitignore`
+- [ ] Data retention policy documented for test databases (delete on PR close; 30-day max)
+
+---
+
+## Property-Based Testing with `fast-check`  [community]
+
+Property-based testing (PBT) generates test data automatically from typed *arbitraries*
+rather than requiring the author to enumerate cases manually. `fast-check` is the most
+widely used PBT library for TypeScript, maintained by Nicolas Dubien. It integrates
+natively with Vitest, Jest, and mocha.
+
+**Why it matters for test data strategy:** PBT shifts the mental model from "what specific
+inputs should I test?" to "what invariants must always hold?". The framework finds edge
+cases (empty strings, MAX_SAFE_INTEGER, unicode surrogates, NaN) that a factory author
+would never enumerate manually. PBT and factory patterns are **complementary** — use
+factories to construct domain objects and `fast-check` to drive the values that go into them.
+
+### Installation
+
+```bash
+npm install --save-dev fast-check
+```
+
+### Core Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Arbitrary** | A generator for a type — e.g. `fc.string()`, `fc.integer()`, `fc.record({...})` |
+| **Property** | A function that takes generated values and asserts an invariant |
+| **`fc.assert()`** | Runs the property ~100 times (configurable) and shrinks on failure |
+| **Shrinking** | When a failure is found, fast-check minimises the counterexample automatically |
+| **`fc.gen()`** | Used inside `test` blocks (Vitest/Jest) when `fc.assert` wrapper is inconvenient |
+
+### Basic Property-Based Test (Vitest integration)
+
+```typescript
+// src/utils/slugify.test.ts
+import { describe, it, expect } from 'vitest';
+import fc from 'fast-check';
+import { slugify } from './slugify';
+
+describe('slugify', () => {
+  it('always produces lowercase output', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 1 }), (input) => {
+        const result = slugify(input);
+        expect(result).toBe(result.toLowerCase());
+      })
+    );
+  });
+
+  it('never contains spaces or uppercase letters', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 1, maxLength: 200 }), (input) => {
+        const result = slugify(input);
+        expect(result).not.toMatch(/[\sA-Z]/);
+      })
+    );
+  });
+
+  it('is idempotent — slugify(slugify(x)) === slugify(x)', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 1 }), (input) => {
+        expect(slugify(slugify(input))).toBe(slugify(input));
+      })
+    );
+  });
+});
+```
+
+### Building Domain Objects with `fc.record()`
+
+`fc.record()` is the primary tool for generating complex typed test data. It composes
+arbitraries per field and produces objects matching your TypeScript interface.
+
+```typescript
+// factories/user.arb.ts — property-based arbitraries for the User domain
+import fc from 'fast-check';
+import { User } from '../domain/user';
+
+// Composable arbitraries — each can be used standalone or inside fc.record()
+export const userIdArb = fc.uuidV4();
+export const emailArb = fc.emailAddress();
+export const statusArb = fc.constantFrom('active', 'suspended', 'pending') satisfies
+  fc.Arbitrary<User['status']>;
+export const tierArb = fc.constantFrom('free', 'premium', 'enterprise') satisfies
+  fc.Arbitrary<User['subscriptionTier']>;
+
+export const userArb: fc.Arbitrary<User> = fc.record({
+  id: userIdArb,
+  email: emailArb,
+  name: fc.fullUnicodeString({ minLength: 1, maxLength: 100 }),
+  status: statusArb,
+  subscriptionTier: tierArb,
+  createdAt: fc.date({ min: new Date('2020-01-01'), max: new Date() }),
+  paymentMethodId: fc.option(fc.string({ minLength: 10, maxLength: 30 }), { nil: null }),
+});
+
+// Usage in a property-based test:
+import { describe, it, expect } from 'vitest';
+import { userArb } from '../factories/user.arb';
+import { serializeUser, deserializeUser } from '../domain/user';
+
+describe('User serialization round-trip', () => {
+  it('deserialize(serialize(u)) is structurally equal to u', () => {
+    fc.assert(
+      fc.property(userArb, (user) => {
+        const serialized = serializeUser(user);
+        const restored = deserializeUser(serialized);
+        expect(restored).toStrictEqual(user);
+      }),
+      { numRuns: 500 }  // increase runs for critical invariants
+    );
+  });
+});
+```
+
+### Combining PBT with Domain Factories
+
+PBT and factory patterns are not mutually exclusive. A pragmatic pattern is to use PBT
+for *input validation* and *invariant checks*, while using factories for *integration
+test setup* where a specific domain state is needed:
+
+```typescript
+// Combined approach: PBT drives the input, factory builds the context
+import fc from 'fast-check';
+import { buildUser } from '../factories/user.factory';
+import { emailArb, statusArb } from '../factories/user.arb';
+import { checkoutService } from '../services/checkout';
+
+it('suspended users are always blocked regardless of email format', () => {
+  fc.assert(
+    fc.property(emailArb, (email) => {
+      // Factory builds the full user; PBT drives only the email field
+      const user = buildUser({ email, status: 'suspended' });
+      const result = checkoutService.initiate(user, { items: [] });
+      expect(result.status).toBe('blocked');
+    })
+  );
+});
+```
+
+### `fc.gen()` — Inline Random Data in Vitest Tests
+
+For tests that need random data without wrapping the full `fc.assert()` structure,
+`fc.gen()` (available from fast-check v3.13+) allows generating random values inline:
+
+```typescript
+import { it, expect } from 'vitest';
+import fc from 'fast-check';
+import { buildOrder } from '../factories/order.factory';
+
+it('order totals are always non-negative', ({ task }) => {
+  // fc.gen() produces a fresh random value per test run
+  const g = fc.gen();
+  const itemCount = g(fc.integer, { min: 0, max: 50 });
+  const unitPriceCents = g(fc.integer, { min: 0, max: 100_000 });
+  const order = buildOrder({ itemCount, unitPriceCents });
+  expect(order.totalCents).toBeGreaterThanOrEqual(0);
+});
+```
+
+**Checklist — property-based test data:**
+- [ ] Identify invariants that must hold for all inputs (not just happy-path inputs)
+- [ ] Use `fc.record()` to build typed arbitraries for your domain objects
+- [ ] Store arbitraries in `*.arb.ts` files alongside factories
+- [ ] Set `numRuns: 500+` for critical security/financial properties
+- [ ] Always log the fast-check seed on failure: set `verbose: true` in `fc.assert()` options
+- [ ] Combine `fc.constantFrom()` with enum values — never use `fc.string()` for fields that only accept an enum
+
+---
+
+## Snapshot Testing / Golden Files as a Test Data Strategy  [community]
+
+Snapshot tests (also called "golden master" or "golden file" tests) capture the output
+of a function or component and store it as a reference file. On subsequent runs the output
+is compared against the stored snapshot. Mismatches cause the test to fail.
+
+**Where snapshot testing fits in the test data picture:** Snapshots are a form of *expected
+output* test data — the `.snap` file is the expected result, just as a factory produces
+the expected input. They are best suited for testing serializers, renderers, API response
+shapes, and complex transformations where manual `expect()` assertions would be unwieldy.
+
+### When to Use Snapshots vs Factories
+
+| Scenario | Use snapshots | Use factories |
+|----------|---------------|---------------|
+| Testing a serializer (object → JSON string) | Yes — snapshot the JSON output | No |
+| Testing a renderer (React component → HTML) | Yes — snapshot the HTML | No |
+| Setting up integration test preconditions | No | Yes — factory creates DB records |
+| Testing an invariant on many input types | No — use PBT | Yes — factory + fast-check |
+| Testing a complex API response shape | Yes — `toMatchInlineSnapshot` | No |
+| Testing business logic with known inputs | No | Yes — factory with specific overrides |
+
+### Vitest Snapshot Patterns for Test Data
+
+```typescript
+// src/serializers/user.serializer.test.ts
+import { describe, it, expect } from 'vitest';
+import { serializeUser } from './user.serializer';
+import { UserMother } from '../factories/user.mother';
+
+describe('serializeUser', () => {
+  it('serializes a default active user', () => {
+    const user = UserMother.default();
+    // Stable snapshot — UserMother.default() uses fixed, non-random values
+    expect(serializeUser(user)).toMatchInlineSnapshot(`
+      {
+        "createdAt": "2024-01-01T00:00:00.000Z",
+        "email": "alice@example.com",
+        "id": "usr-001",
+        "name": "Alice Example",
+        "paymentMethodId": null,
+        "status": "active",
+        "subscriptionTier": "free",
+      }
+    `);
+  });
+
+  it('serializes a suspended user correctly', () => {
+    const user = UserMother.suspended();
+    // Only assert on fields relevant to the test — use toMatchObject snapshot
+    expect(serializeUser(user)).toMatchObject({
+      status: 'suspended',
+      paymentMethodId: null,
+    });
+  });
+});
+```
+
+### File Snapshots for Large Outputs (`toMatchFileSnapshot`)
+
+For large outputs (full page HTML, large JSON payloads, generated SQL), Vitest's
+`toMatchFileSnapshot()` stores the snapshot in a named file rather than inline — making
+diffs readable in PRs:
+
+```typescript
+// src/exporters/report.exporter.test.ts
+import { it, expect } from 'vitest';
+import { generateMonthlyReport } from './report.exporter';
+import { buildOrder } from '../factories/order.factory';
+import path from 'node:path';
+
+it('generates a consistent monthly report shape', async () => {
+  // Use stable (seeded/fixed) factory data for snapshot tests
+  const orders = [
+    buildOrder({ id: 'ord-001', totalCents: 4999, status: 'paid' }),
+    buildOrder({ id: 'ord-002', totalCents: 12000, status: 'refunded' }),
+  ];
+  const report = await generateMonthlyReport('2024-01', orders);
+
+  await expect(report).toMatchFileSnapshot(
+    path.join(__dirname, '__snapshots__/monthly-report-2024-01.json')
+  );
+});
+```
+
+### The Golden Master Anti-Pattern for Test Data Input  [community]
+
+**Do NOT use snapshots to drive test input.** A common anti-pattern is loading a `.json`
+snapshot file as input test data (the "golden input" pattern). This creates hidden coupling
+between test data and snapshot files — when the domain model changes, both the factory
+and the snapshot file must be updated in sync, doubling the maintenance cost.
+
+```typescript
+// ANTI-PATTERN: loading snapshot files as input test data
+// Avoid — adds a second maintenance artifact alongside the factory
+import userSnapshot from './__snapshots__/user.snap.json'; // don't do this
+const user = userSnapshot as User;
+
+// CORRECT: use the factory to construct input; snapshots for output only
+import { UserMother } from '../factories/user.mother';
+const user = UserMother.default(); // factory is the single source of input truth
+const output = serializeUser(user);
+expect(output).toMatchInlineSnapshot(`...`); // snapshot captures output only
+```
+
+**Checklist — snapshot test data discipline:**
+- [ ] Snapshots only capture *output* — never use `.snap` files as *input* test data
+- [ ] Snapshot tests must use **stable factory data** (fixed IDs, fixed dates) — never `faker` random values
+- [ ] Prefer `toMatchInlineSnapshot` for small objects (diff is visible in the PR)
+- [ ] Use `toMatchFileSnapshot` for large outputs (full HTML, full JSON, SQL DDL)
+- [ ] Update snapshots intentionally: review every changed `.snap` file in PR diff
+- [ ] Do NOT snapshot test unstable outputs (timestamps, random UUIDs, monotonic counters)
+
+---
+
+## Test Data Versioning Strategies  [community]
+
+As your domain model evolves through migrations, factories and fixtures must evolve in
+sync. Without a versioning discipline, factories become stale — they produce objects that
+no longer match the current schema, and DB integration tests fail with cryptic column
+errors.
+
+### Strategy 1: Migration-Aligned Factory Versioning
+
+Tag factory files with the migration version that introduced the schema they reflect.
+When a migration adds a required field, the factory update is part of the same PR:
+
+```typescript
+// factories/user.factory.ts
+// Schema version: migration 2024_03_15_add_locale_to_users
+// If a new migration adds/removes fields, update this factory in the same PR.
+
+import { faker } from '@faker-js/faker';
+import { User } from '../domain/user'; // keep in sync with migration 2024_03_15
+
+export function buildUser(overrides: Partial<User> = {}): User {
+  return {
+    id: faker.string.uuid(),
+    email: faker.internet.email(),
+    name: faker.person.fullName(),
+    status: 'active',
+    subscriptionTier: 'free',
+    locale: 'en-US',              // added in migration 2024_03_15
+    createdAt: faker.date.past({ years: 2 }),
+    paymentMethodId: null,
+    ...overrides,
+  };
+}
+```
+
+**Enforce via TypeScript:** Because factories return typed objects (`Partial<User>` / `User`),
+TypeScript will produce a type error the moment a required field is added to the `User` type
+without updating the factory — the factory becomes a compile-time schema drift detector.
+
+### Strategy 2: Schema Version Tagging in Factory Metadata  [community]
+
+For teams running multiple simultaneous migration branches (e.g., a feature branch that
+adds a column before the main branch merges), attach a schema version tag to the factory
+and validate it at test startup:
+
+```typescript
+// factories/registry.ts
+// Central registry of factories with their minimum required schema version.
+// Startup validation ensures the DB schema is at least as new as the factory expects.
+
+export const FACTORY_SCHEMA_REQUIREMENTS: Record<string, string> = {
+  'user':     '2024_03_15_add_locale_to_users',
+  'order':    '2024_02_01_add_currency_to_orders',
+  'product':  '2024_04_10_add_category_id_to_products',
+};
+
+// vitest.globalSetup.ts — validate factory schema requirements on startup
+import { db } from '../db';
+import { FACTORY_SCHEMA_REQUIREMENTS } from './factories/registry';
+
+export async function setup() {
+  const appliedMigrations = await db.getAppliedMigrations();
+  for (const [factory, requiredMigration] of Object.entries(FACTORY_SCHEMA_REQUIREMENTS)) {
+    if (!appliedMigrations.includes(requiredMigration)) {
+      throw new Error(
+        `[test-data] Factory '${factory}' requires migration '${requiredMigration}' ` +
+        `but it has not been applied. Run: npx prisma migrate dev`
+      );
+    }
+  }
+  console.log('[test-data] All factory schema requirements satisfied.');
+}
+```
+
+### Strategy 3: Fixture Snapshots Pinned to Schema Version  [community]
+
+For E2E tests using static JSON fixtures (not factories), pin the fixture to a schema
+version and validate on load:
+
+```typescript
+// test-fixtures/baseline-users.fixture.ts
+export const FIXTURE_SCHEMA_VERSION = '2024_03_15_add_locale_to_users';
+
+export const BASELINE_USERS = [
+  {
+    id: 'usr-fixture-001',
+    email: 'fixture-alice@example-test.invalid',
+    name: 'Fixture Alice',
+    status: 'active' as const,
+    subscriptionTier: 'free' as const,
+    locale: 'en-US',   // required since migration 2024_03_15
+    createdAt: new Date('2024-01-01T00:00:00Z'),
+    paymentMethodId: null,
+  },
+];
+
+// playwright.globalSetup.ts — validate fixture schema compatibility
+import { FIXTURE_SCHEMA_VERSION, BASELINE_USERS } from './test-fixtures/baseline-users.fixture';
+
+export async function globalSetup() {
+  const appliedMigrations = await checkAppliedMigrations();
+  if (!appliedMigrations.includes(FIXTURE_SCHEMA_VERSION)) {
+    throw new Error(
+      `[e2e] Fixture 'baseline-users' requires schema version '${FIXTURE_SCHEMA_VERSION}'. ` +
+      `Rebuild fixture after running migrations.`
+    );
+  }
+  await seedDatabase(BASELINE_USERS);
+}
+```
+
+**Checklist — test data versioning:**
+- [ ] Every factory has a `// Schema version: <migration>` comment
+- [ ] Factory files are co-located in the same PR as the corresponding migration
+- [ ] TypeScript types enforce schema compliance at compile time (not just runtime)
+- [ ] Static fixtures are pinned to a schema version and validated at test startup
+- [ ] CI pipeline runs `tsc --noEmit` on factory files before executing tests
+
+---
+
+## Community Gotcha #38 — Snapshot tests with `faker` random data fail every run  [community]
+
+**[community]** If a factory that uses `@faker-js/faker` random data is used as input to
+a snapshot test, the snapshot will fail on every single run because the output changes
+with each new random value. This is one of the most common misuses of snapshot testing.
+**Why harmful:** The test looks like it should work (it captures a real output shape) but
+it produces a new "snapshot mismatch" failure on every run, forcing developers to update
+the snapshot constantly — destroying the value of the golden-master comparison. **Fix:**
+Snapshot tests must use **fixed, stable factory data** — Object Mother variants (which
+return hardcoded values) or factory calls with all randomised fields explicitly overridden.
+
+```typescript
+// BROKEN: faker generates a different email/name every run → snapshot mismatch every time
+const user = buildUser();  // uses faker.internet.email() — different value each run
+expect(serializeUser(user)).toMatchInlineSnapshot(`...`); // always fails
+
+// CORRECT: pin all volatile fields when using factory output in snapshots
+const user = buildUser({
+  id:    'usr-snap-001',
+  email: 'snapshot-user@example-test.invalid',
+  name:  'Snapshot User',
+  createdAt: new Date('2024-01-01T00:00:00Z'),
+});
+expect(serializeUser(user)).toMatchInlineSnapshot(`
+  {
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "email": "snapshot-user@example-test.invalid",
+    "id": "usr-snap-001",
+    "name": "Snapshot User",
+    "paymentMethodId": null,
+    "status": "active",
+    "subscriptionTier": "free",
+  }
+`);
+```
+
+---
+
+## Community Gotcha #39 — `fast-check` arbitraries with `satisfies` require exact enum union types  [community]
+
+**[community]** When writing `fc.constantFrom('active', 'suspended') satisfies fc.Arbitrary<User['status']>`,
+TypeScript infers the narrowest possible type for the constants in `fc.constantFrom()` —
+a union of string literals. If `User['status']` is a wider union (e.g., adds `'deleted'`
+in a migration), the `satisfies` check silently passes because the existing literals are
+a **subtype** of the new union. The arbitrary now generates an **incomplete** subset of
+valid statuses — missing `'deleted'` entirely. **Why harmful:** Property-based tests that
+should exercise all status variants never generate the new `'deleted'` state. Defects in
+`'deleted'` handling pass CI invisibly. **Fix:** When a domain enum changes, explicitly
+update `fc.constantFrom(...)` to include all values; add a compile-time exhaustiveness
+check using a type assertion.
+
+```typescript
+// FRAGILE: satisfies only checks subtype — new enum values are silently omitted
+export const statusArb = fc.constantFrom('active', 'suspended')
+  satisfies fc.Arbitrary<User['status']>; // passes even if User['status'] adds 'deleted'
+
+// ROBUST: use explicit type assertion that requires all values to be listed
+const ALL_STATUSES: Array<User['status']> = ['active', 'suspended', 'pending', 'deleted'];
+// TypeScript error if User['status'] adds a value not in ALL_STATUSES:
+const _exhaustive: [User['status']] extends [typeof ALL_STATUSES[number]] ? true : never = true;
+export const statusArb = fc.constantFrom(...ALL_STATUSES);
+```
+
+---
+
+## Community Gotcha #40 — PII fields scrubbed in the factory are re-introduced by `fishery` `afterCreate` hooks calling the real ORM  [community]
+
+**[community]** When using `fishery` with a `afterCreate` hook that persists via Prisma
+or TypeORM, the ORM may populate computed or default fields from the database — including
+fields that were intentionally left `null` in the factory (e.g., `ipAddress`, `lastLoginAt`
+from session triggers). If the test database is pre-seeded with production data that was
+incompletely scrubbed, the `afterCreate`-fetched row may contain real PII that was never
+in the factory object. **Why harmful:** The factory appears to produce scrubbed data, but
+the `create()` return value (fetched from DB after insert) contains unscrubbed rows from
+a partially-scrubbed seed. **Fix:** Always verify scrubbing at the DB layer, not just at
+the factory layer. Run a scrubbing assertion in the global test setup.
+
+```typescript
+// vitest.globalSetup.ts — verify no PII fields remain after scrubbing
+export async function setup() {
+  // Verify no real email domains exist in the test DB user table
+  const suspiciousUsers = await db.user.findMany({
+    where: {
+      email: {
+        not: { endsWith: '@example-test.invalid' },
+      },
+    },
+    take: 1,
+  });
+  if (suspiciousUsers.length > 0) {
+    throw new Error(
+      `[test-data] Test database contains non-test emails. ` +
+      `Re-run the scrubbing pipeline before executing tests. ` +
+      `Found: ${suspiciousUsers[0]?.email?.replace(/@.*/, '@[redacted]')}`
+    );
+  }
+}
+```
+
+---
+
+## Key Resources (iter-48 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| fast-check GitHub | Official | https://github.com/dubzzz/fast-check | Property-based testing for TypeScript/JS; arbitraries, shrinking, Vitest/Jest integration |
+| fast-check Docs | Official | https://fast-check.dev/docs/introduction/ | Core arbitraries API; `fc.record()`, `fc.constantFrom()`, `fc.gen()`; framework integration |
+| Vitest Snapshot Guide | Official | https://vitest.dev/guide/snapshot.html | `toMatchSnapshot`, `toMatchInlineSnapshot`, `toMatchFileSnapshot`; CI behavior; update strategies |

@@ -1,5 +1,6 @@
 # BDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: bdd | iteration: 37 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- lang: TypeScript | topic: bdd | iteration: 38 | score: 100/100 | date: 2026-05-12 | sources: official+community -->
+<!-- Iter 38 additions: Serenity/JS TypeScript BDD framework — full setup with @serenity-js/core + @serenity-js/playwright + Screenplay Actors/Abilities/Interactions, cucumber.js config, living documentation report generation, GitHub Pages publishing, actorInTheSpotlight() parallel-safety note; Specification by Example (Gojko Adzic) six key process patterns — deriving scope from goals, specifying collaboratively, illustrating using examples, refining, automating, validating frequently; key-examples coverage checker TypeScript utility with YAML rule definition format; @vitest/bdd package — Cucumber-expression step functions in Vitest without .feature files, full discount-code example, trade-off table vs @cucumber/cucumber, guidance on when to choose each -->
 <!-- Iter 36 additions: TypeScript 5.5+ strict compiler flags affecting BDD step definitions — noUncheckedIndexedAccess changes DataTable row access patterns (requires null-coalescing guards), isolatedDeclarations requires explicit return types on exported step factories; AI-generated Gherkin quality evaluation checklist — 7-criterion pre-acceptance framework (INVEST, ubiquitous language, data specificity, step atomicity, observable outcomes, tag hygiene, implementation freedom) with TypeScript scoring utility; Cucumber.js v12.8.0 externalise option full section — extracts inline step definitions into importable modules, enables step sharing across features without World pollution -->
 <!-- Iter 37 additions: BDD with MSW (Mock Service Worker) — full Node.js server setup, domain handler library, World integration, per-scenario handler overrides via use(), After hook reset pattern, community notes on parallel-worker safety; vitest-cucumber integration — Gherkin feature files in Vitest runner, loadFeature+defineFeature API, vitest.config.ts setup, trade-off table vs @cucumber/cucumber, shared step helper pattern; Rule keyword: complete Example Mapping → feature file round-trip walkthrough — billing domain with three Rules, Rule-scoped Background, Scenario Outline inside Rule, TypeScript step definitions, community notes on fidelity checking and Rule+Background scoping -->
 <!-- Iter 35 additions: Playwright v1.54-v1.56 BDD-relevant APIs not previously covered — TestStepInfo.titlePath (v1.55) for hierarchical step path and collision-free artifact naming in sharded CI, Playwright Test Agents npx playwright init-agents (v1.56) planner/generator/healer loop and BDD Discovery integration, page.pickLocator() (v1.59) interactive locator discovery utility for step definition authoring with BDD vs --debug=cli comparison table; resource links added for all three APIs -->
@@ -10881,3 +10882,443 @@ not added unilaterally by a developer implementing an undiscussed edge case.
 - [Gherkin `Rule` keyword reference](https://cucumber.io/docs/gherkin/reference/#rule) — official scope rules: Rule-level Background, tags on Rule blocks, nesting constraints
 - [Example Mapping introduction (Matt Wynne)](https://cucumber.io/blog/bdd/example-mapping-introduction/) — structured Three Amigos workshop technique; blue/green/yellow/red card system; direct mapping to `Rule`/`Scenario` structure
 - [Cucumber.js `externalise` option](https://github.com/cucumber/cucumber-js/blob/main/docs/profiles.md) — v12.8.0+ option that emits step-definition-pattern messages for programmatic step indexing; combine with `dryRun: true` to enumerate all loaded steps without executing scenarios
+
+---
+
+### Serenity/JS: TypeScript BDD with Built-In Living Documentation  [community]
+
+Serenity/JS is a TypeScript-first acceptance testing framework that integrates Cucumber.js
+(and Playwright/WebdriverIO) with the Screenplay Pattern and a purpose-built living
+documentation generator — Serenity BDD Reports. Unlike a hand-rolled Screenplay
+implementation, Serenity/JS provides a complete, production-tested implementation of
+Actors, Abilities, Interactions, Tasks, and Questions with full TypeScript generics.
+
+**Why Serenity/JS instead of a custom Screenplay implementation:**
+- Actors, Abilities, Tasks, and Interactions are pre-built and composable — no boilerplate
+- Serenity BDD reports render an interactive HTML report with a narrative timeline per scenario,
+  rich screenshots at every step level, and an aggregated living documentation dashboard
+- First-class Playwright integration: `BrowseTheWebWithPlaywright` is a built-in Ability
+- Works with `@cucumber/cucumber`, Playwright Test, Jasmine, Mocha, and WebdriverIO
+
+**Installation (TypeScript + Cucumber.js + Playwright):**
+
+```bash
+npm install --save-dev @serenity-js/core @serenity-js/cucumber @serenity-js/playwright \
+  @serenity-js/web @serenity-js/assertions @serenity-js/rest \
+  @cucumber/cucumber @playwright/test \
+  serenity-bdd
+```
+
+```typescript
+// cucumber.js — Serenity/JS reporter configuration
+export default {
+  default: {
+    import: ['src/steps/**/*.ts', 'src/support/**/*.ts'],
+    format: [
+      '@serenity-js/cucumber',                          // Serenity/JS Cucumber adapter
+      'progress-bar',
+    ],
+    formatOptions: {
+      serenity: {
+        crew: [
+          '@serenity-js/serenity-bdd',                  // living docs reporter
+          ['@serenity-js/core:ArtifactArchiver', { outputDirectory: 'target/site/serenity' }],
+        ],
+      },
+    },
+    publish: false,
+  },
+};
+```
+
+**Screenplay step definitions** (`src/steps/checkout.steps.ts`):
+
+```typescript
+import { Given, When, Then } from '@cucumber/cucumber';
+import { actorCalled, actorInTheSpotlight } from '@serenity-js/core';
+import { Navigate, Click, Fill, Page } from '@serenity-js/web';
+import { BrowseTheWebWithPlaywright } from '@serenity-js/playwright';
+import { Ensure, equals, includes } from '@serenity-js/assertions';
+import { chromium } from '@playwright/test';
+
+// Boot the Playwright browser once per Cucumber World lifecycle
+// (handled in Before/After hooks — see hooks.ts)
+
+// Screenplay step definitions use actorCalled() / actorInTheSpotlight()
+Given('Alice is a registered customer', async () => {
+  await actorCalled('Alice')
+    .whoCan(BrowseTheWebWithPlaywright.using(await chromium.launch()))
+    .attemptsTo(
+      Navigate.to('/login'),
+      Fill.in('[data-testid="email"]').with('alice@example.com'),
+      Fill.in('[data-testid="password"]').with('TestPass123!'),
+      Click.on('[data-testid="submit"]'),
+    );
+});
+
+When('Alice proceeds to checkout', async () => {
+  await actorInTheSpotlight().attemptsTo(
+    Navigate.to('/checkout'),
+  );
+});
+
+When('Alice enters valid credit card details', async () => {
+  await actorInTheSpotlight().attemptsTo(
+    Fill.in('[data-testid="card-number"]').with('4242424242424242'),
+    Fill.in('[data-testid="card-expiry"]').with('12/28'),
+    Fill.in('[data-testid="card-cvv"]').with('123'),
+    Click.on('[data-testid="confirm-order"]'),
+  );
+});
+
+Then('Alice should see the order confirmation', async () => {
+  await actorInTheSpotlight().attemptsTo(
+    Ensure.that(
+      Page.current().title(),
+      includes('Order Confirmed')
+    ),
+  );
+});
+```
+
+**Generating the Serenity BDD living documentation HTML report:**
+
+```bash
+# After the test run, generate the report from the JSON data artifacts
+npx serenity-bdd run --features features/
+
+# Output: target/site/serenity/index.html
+# Open locally:
+npx http-server target/site/serenity -p 8080 -o
+```
+
+The Serenity BDD report provides:
+- **Requirements Dashboard**: Feature → scenario coverage visualized as a hierarchy
+- **Test Results**: Per-scenario pass/fail with narrative timeline (each step annotated with screenshots and page source)
+- **Test Suite Progress**: Trend line over multiple runs — shows whether the suite is getting healthier
+- **Tags Dashboard**: Filter by `@smoke`, `@regression`, `@wip` across all runs
+
+**Publishing to GitHub Pages** (adds to the bdd-docs workflow from the Living Documentation section):
+
+```yaml
+# .github/workflows/serenity-docs.yml — extends the existing publish-bdd-docs.yml
+- name: Generate Serenity BDD living docs
+  run: npx serenity-bdd run --features features/
+
+- name: Deploy Serenity report to GitHub Pages
+  uses: JamesIves/github-pages-deploy-action@v4
+  with:
+    folder: target/site/serenity
+    branch: gh-pages
+    target-folder: serenity   # available at https://<org>.github.io/<repo>/serenity/
+    clean: false               # preserve previous reports in other subfolders
+```
+
+**[community] Serenity/JS vs hand-rolled Screenplay**: The primary advantage of Serenity/JS
+over a custom Actor/Task implementation is the reporting layer. The Serenity BDD report is
+the only BDD report format that renders each step as a narrative action performed by a named
+actor — "Alice attempts to Fill in the card number field with '4242...'" — making reports
+genuinely readable to product managers without training. Teams that implement Screenplay
+without Serenity/JS get the code organization benefits but lose the living documentation
+value of the narrative report format.
+
+**[community] Serenity/JS adoption cost**: The library's API surface is large (Core, Web,
+Playwright, REST, Assertions each have their own package). Teams report a 1–2 sprint
+learning curve to become productive. The payoff is a dramatically richer report format and
+a pre-built Screenplay layer that avoids months of custom infrastructure. The recommended
+onboarding path: start with the official `@serenity-js/template-*` GitHub template for
+your framework combination, then extend it.
+
+**[community] `actorInTheSpotlight()` and parallel execution**: In parallel BDD runs,
+`actorInTheSpotlight()` returns the actor scoped to the *current Cucumber World* — each
+parallel worker has its own World and therefore its own spotlight. This makes the pattern
+parallel-safe, unlike global state approaches. The key is that `actorCalled()` in a `Given`
+step always creates the actor in the current World context, and subsequent steps use
+`actorInTheSpotlight()` to retrieve it without needing to pass references.
+
+---
+
+### Specification by Example: Formal Method Behind BDD  [community]
+
+Gojko Adzic's *Specification by Example* (2011) formalizes the patterns that distinguish
+high-performing BDD teams from "Gherkin theater" adopters. The book identifies six key
+process patterns — each of which directly addresses a common BDD failure mode:
+
+| Pattern | What it means | Common failure without it |
+|---|---|---|
+| **Deriving scope from goals** | Start from business goals, not features. Ask "what outcome does this deliver?" before writing examples. | Teams write scenarios for features they already built — BDD as reverse documentation. |
+| **Specifying collaboratively** | Developers, testers, and business analysts define examples together before any code exists. | QA or developers write scenarios alone — missing perspectives create scenario gaps. |
+| **Illustrating using examples** | Every business rule is expressed with at least one concrete example (not abstract rules). | Scenarios like `Given a user meets the criteria` — too abstract to be executable. |
+| **Refining the specification** | Examples evolve from discovery through formulation — the first draft is never final. | Teams skip the refinement step, shipping scenarios with ambiguous `Then` assertions. |
+| **Automating without thinking** | Step definitions are written to satisfy Gherkin — automation added *after* collaboration, not before. | "Automation without thinking" = testing implementation not behavior. |
+| **Validating frequently** | Scenarios run in CI on every merge — the spec is always current. | Feature files not wired to CI drift into documentation that cannot be trusted. |
+
+**The key examples technique** (from the Specification by Example method):
+
+Rather than trying to enumerate all possible test cases, identify the *minimum set* of
+examples that fully illustrates a business rule. For the rule "discount codes reduce the
+order total by a percentage":
+
+```gherkin
+# NOT enough — only tests the happy path
+Scenario: Valid discount code reduces the total
+  Given I have items totalling $100
+  When I apply discount code "SAVE10"
+  Then my total should be $90
+
+# Complete key examples — illustrates the full rule surface:
+# 1. Happy path
+# 2. Boundary: code at expiry date
+# 3. Error path: already used
+# 4. Edge: total cannot go below $0
+# 5. Edge: concurrent application (race condition)
+```
+
+**TypeScript utility: key example coverage checker**
+
+```typescript
+// scripts/check-key-examples.ts
+// Reads a YAML rule definition and checks that the feature file has
+// at least one scenario per rule boundary. Fails CI if coverage is missing.
+import * as fs from 'fs';
+import * as yaml from 'js-yaml';
+
+interface RuleDefinition {
+  rule: string;
+  boundaries: string[];  // each boundary MUST have a scenario
+  featureFile: string;
+}
+
+function checkKeyExampleCoverage(ruleFile: string): void {
+  const rules = yaml.load(fs.readFileSync(ruleFile, 'utf8')) as RuleDefinition[];
+  const failures: string[] = [];
+
+  for (const rule of rules) {
+    const featureContent = fs.readFileSync(rule.featureFile, 'utf8');
+
+    for (const boundary of rule.boundaries) {
+      // Check that a scenario comment or tag references this boundary
+      const covered = featureContent.toLowerCase().includes(boundary.toLowerCase());
+      if (!covered) {
+        failures.push(
+          `Rule "${rule.rule}": boundary "${boundary}" has no scenario in ${rule.featureFile}`
+        );
+      }
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error('Key example coverage gaps:');
+    failures.forEach(f => console.error(`  - ${f}`));
+    process.exit(1);
+  }
+  console.log(`All key example boundaries covered (${rules.length} rules checked).`);
+}
+
+// Example invocation
+checkKeyExampleCoverage('docs/key-examples.yaml');
+```
+
+```yaml
+# docs/key-examples.yaml — required boundary coverage per business rule
+- rule: "Discount codes reduce order total by percentage"
+  featureFile: "features/payments/discount-codes.feature"
+  boundaries:
+    - "valid percentage code"
+    - "expired code"
+    - "already used"
+    - "total below zero"
+    - "concurrent application"
+
+- rule: "Refunds only available within 30 days"
+  featureFile: "features/payments/refund-policy.feature"
+  boundaries:
+    - "within 30 days"
+    - "exactly on day 30"
+    - "after 30 days"
+```
+
+**[community] Specification by Example vs BDD — the distinction that matters**: BDD is a
+*collaboration practice*. Specification by Example is a *software development method* that
+uses examples as the primary specification artifact. BDD with Cucumber is one way to
+implement Specification by Example, but not the only way. Teams that adopt Cucumber without
+Specification by Example's key-examples discipline end up with a high scenario count but
+poor boundary coverage — they have many examples but not the *right* examples. The
+key-example coverage checker above operationalizes this discipline into CI.
+
+**[community] "Deriving scope from goals" in sprint planning**: The most common deviation
+from Specification by Example in real teams is starting with feature requests instead of
+business goals. A feature request ("add a discount code field to checkout") is an
+implementation decision. A business goal ("increase conversion rate by reducing price
+friction for returning customers") drives *different* examples — including scenarios that
+a pure feature-request framing would miss (e.g., "customer who applies code and still
+abandons cart" as a data-collection scenario for analytics).
+
+---
+
+### BDD with `@vitest/bdd`: Cucumber-Style Steps in Vitest  [community]
+
+The `@vitest/bdd` package (introduced in Vitest 2.2, 2024) adds Cucumber-style Given/When/Then
+step functions to Vitest without requiring Gherkin feature files. It is distinct from plain
+`vitest` with `describe`/`it` (BDD naming convention) — it provides actual step bindings
+with parameterized expressions and a World-equivalent fixture context.
+
+**Key difference from `vitest` + describe/it:**
+- Steps use string expressions (not function names) — matching Cucumber expression syntax
+- Steps compose across tests without nesting describes
+- Tests remain in `.spec.ts` files (no `.feature` files) — no Gherkin parser required
+- Integrates with Vitest's native coverage, parallelism, and watch mode
+
+**Setup:**
+
+```bash
+npm install --save-dev vitest @vitest/bdd
+```
+
+```typescript
+// vitest.config.ts — enable @vitest/bdd
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    setupFiles: ['./src/test/setup.ts'],
+  },
+  plugins: [],
+});
+```
+
+**Step definition and test file (`.spec.ts`) using `@vitest/bdd`:**
+
+```typescript
+// src/features/discount/__tests__/discount.bdd.spec.ts
+import { describe, it, expect, beforeEach } from 'vitest';
+import { Given, When, Then } from '@vitest/bdd';
+import { applyDiscount } from '../discount.service';
+import type { Cart, DiscountCode } from '../types';
+
+// Shared state via closure — equivalent to World object in Cucumber
+let cart: Cart;
+let discountCode: DiscountCode;
+let result: { total: number; discountApplied: boolean } | null = null;
+let errorThrown: Error | null = null;
+
+Given('a cart with a total of {float}', (total: number) => {
+  cart = { id: `cart-${Date.now()}`, total, items: [], usedCodes: [] };
+  result = null;
+  errorThrown = null;
+});
+
+Given('a {int}% discount code {string}', (percent: number, code: string) => {
+  discountCode = { code, type: 'percent', value: percent };
+});
+
+Given('the code {string} has already been used on this cart', (code: string) => {
+  cart.usedCodes.push(code);
+});
+
+When('I apply the discount code', () => {
+  try {
+    result = applyDiscount(cart, discountCode);
+  } catch (e) {
+    errorThrown = e as Error;
+  }
+});
+
+Then('the new total should be {float}', (expected: number) => {
+  expect(result).not.toBeNull();
+  expect(result!.total).toBeCloseTo(expected, 2);
+});
+
+Then('the discount should be applied', () => {
+  expect(result?.discountApplied).toBe(true);
+});
+
+Then('an error {string} should be thrown', (message: string) => {
+  expect(errorThrown).not.toBeNull();
+  expect(errorThrown!.message).toContain(message);
+});
+
+Then('the total should remain {float}', (expected: number) => {
+  expect(result).toBeNull(); // No result — error was thrown
+  expect(cart.total).toBeCloseTo(expected, 2);
+});
+
+// Tests compose steps into scenarios using `it`
+describe('Discount code application', () => {
+  it('valid code reduces the total', async () => {
+    Given('a cart with a total of {float}', 100.00);
+    Given('a {int}% discount code {string}', 10, 'SAVE10');
+    When('I apply the discount code');
+    Then('the new total should be {float}', 90.00);
+    Then('the discount should be applied');
+  });
+
+  it('code cannot reduce total below zero', async () => {
+    Given('a cart with a total of {float}', 20.00);
+    Given('a {int}% discount code {string}', 100, 'ALL100');
+    When('I apply the discount code');
+    Then('the new total should be {float}', 0.00);
+  });
+
+  it('already-used code is rejected', async () => {
+    Given('a cart with a total of {float}', 100.00);
+    Given('a {int}% discount code {string}', 10, 'SAVE10');
+    Given('the code {string} has already been used on this cart', 'SAVE10');
+    When('I apply the discount code');
+    Then('an error {string} should be thrown', 'Code already used');
+  });
+});
+```
+
+**Running `@vitest/bdd` tests:**
+
+```bash
+# Standard Vitest run — BDD tests run alongside regular spec files
+npx vitest run
+
+# Watch mode — instant feedback as you add steps
+npx vitest
+
+# Coverage including BDD test files
+npx vitest run --coverage
+```
+
+**Trade-off table: `@vitest/bdd` vs `@cucumber/cucumber`**
+
+| Factor | `@vitest/bdd` | `@cucumber/cucumber` |
+|---|---|---|
+| Feature files (.feature) | No — pure TypeScript | Yes — Gherkin |
+| Stakeholder readability | Low (TypeScript) | High (Gherkin) |
+| Living documentation | Vitest HTML report | Cucumber/Allure/Serenity |
+| Setup cost | Very low | Medium (Gherkin toolchain) |
+| Cucumber expression matching | Yes | Yes |
+| World / state sharing | Closure or fixtures | World object |
+| CI integration | Vitest native | Cucumber profiles + sharding |
+| Best for | Unit/integration behavior, dev-only BDD | Cross-functional collaboration, acceptance tests |
+
+**[community] When to choose `@vitest/bdd`**: This package fills the gap for TypeScript
+teams that want the *compositional step* benefit of BDD (reusable Given/When/Then functions
+with parameterized expressions) without the operational overhead of a Gherkin toolchain.
+It is ideal for service layer and repository layer BDD — where the audience is developers,
+not product managers. Use `@cucumber/cucumber` when stakeholders outside the development
+team must read and understand the tests.
+
+**[community] `@vitest/bdd` and the three-amigos question**: Because `@vitest/bdd` tests
+live in `.spec.ts` files with no Gherkin, product managers cannot read them. If the primary
+value of your BDD practice is Three Amigos collaboration and living documentation, `@vitest/bdd`
+does not deliver it. Use it as an *internal* BDD layer (service/domain tests) alongside
+`@cucumber/cucumber` for the *external* acceptance layer. The two coexist: Vitest handles
+unit and integration BDD (fast, developer-only), Cucumber handles acceptance BDD (slower,
+stakeholder-readable).
+
+---
+
+## Additional Resources (Iteration 38 Additions)
+
+- [Serenity/JS documentation](https://serenity-js.org/handbook/) — TypeScript BDD with Screenplay Pattern and built-in living documentation; `@serenity-js/core`, `@serenity-js/playwright`, `@serenity-js/web`, `@serenity-js/assertions`
+- [Serenity BDD report samples](https://serenity-bdd.info/docs/reporting/the_serenity_reports) — narrative per-step timeline, requirements dashboard, tag filtering; the richest living documentation format for acceptance-level BDD
+- [@vitest/bdd documentation](https://vitest.dev/guide/bdd) — Cucumber-expression step functions in Vitest; no `.feature` files required; ideal for unit/integration BDD within the Vitest ecosystem
+- [Specification by Example (Gojko Adzic)](https://gojko.net/books/specification-by-example/) — foundational book defining the six key process patterns: deriving scope from goals, specifying collaboratively, illustrating using examples, refining, automating without thinking, validating frequently
+- [Cucumber anti-patterns guide](https://cucumber.io/docs/guides/anti-patterns/) — official BDD pitfalls: feature-coupled steps, conjunction steps, testing implementation not behaviour (already in Key Resources section; added here for discovery)

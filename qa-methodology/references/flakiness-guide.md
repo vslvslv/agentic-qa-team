@@ -1,5 +1,5 @@
 # Flaky Tests — QA Methodology Guide
-<!-- lang: TypeScript | topic: flakiness | iteration: 60 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: flakiness | iteration: 61 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 | new: playwright-testresult-annotations-reporter, vitest-context-annotate, playwright-testproject-workers-v152, github-actions-dorny-test-reporter -->
 <!-- Iteration 60: Pattern 102 (EventEmitter maxListeners warning as flakiness signal — detect listener leaks before they cascade); Pattern 103 (jest.doMock() + resetModules for dynamic per-test mocking without hoisting surprises); Pattern 104 (global unhandledRejection handler in test setup — surface swallowed async errors as test failures); Gotcha 50 (EventEmitter listener leak in parallel workers); Gotcha 51 (jest.mock hoisting order breaks dynamic mock tests); AP50 (process.on unhandledRejection not set up in test harness); Quick Reference additions (iteration 60) -->
 <!-- Iteration 59: Pattern 100 (Playwright v1.52 testResult.annotations per-retry custom reporter for structured flakiness tracking); Pattern 101 (Vitest 3.2 context.annotate() API for attaching structured metadata visible in all reporters); Gotcha 49 (dorny/test-reporter GitHub Action for PR-level flakiness annotations from JUnit XML); AP49 (calling getSeed() inside test bodies instead of setup — returns undefined at test-time) -->
@@ -10987,4 +10987,704 @@ where execution order relative to other code matters.
 | Node.js `EventEmitter.defaultMaxListeners` | Official | https://nodejs.org/api/events.html#emittersetmaxlistenersn | API for setting max listener threshold — lower in tests for early leak detection |
 | Node.js `process: unhandledRejection` | Official | https://nodejs.org/api/process.html#event-unhandledrejection | Event fired for unhandled Promise rejections — harness integration point |
 | `@typescript-eslint/no-floating-promises` | Official | https://typescript-eslint.io/rules/no-floating-promises | Static analysis rule that catches missing await — pair with unhandledRejection guard |
+
+---
+
+<!-- Iteration 61: Pattern 105 (Playwright expect.soft() for non-blocking multi-assertion flakiness diagnosis); Pattern 106 (expect.poll() and expect.toPass() for custom retry polling); Pattern 107 (Test reliability MTBF scorecard — mean-time-between-failures metric per test case); Pattern 108 (LLM-assisted flakiness root-cause classification from JUnit XML); AP52 (expect.soft() without checking test.info().errors — silent failures); AP53 (expect.poll() without explicit timeout — hangs indefinitely); Gotcha 52 (expect.toPass() default timeout is 0 — must always set timeout); Gotcha 53 (MTBF resets silently after test rename — track by stable ID not name); sources: WebFetch playwright.dev/docs/test-assertions, trunk.io/flaky-tests, FlakyDoctor ISSTA 2024 -->
+
+## Pattern 105 — Playwright `expect.soft()` for Non-Blocking Multi-Assertion Flakiness Diagnosis  [official]
+
+Playwright's `expect.soft()` continues test execution after a failing assertion instead of
+aborting the test case immediately. This is valuable for flakiness diagnosis: when a test
+case has 10 assertions and only the 7th fails, hard assertions discard information about
+assertions 8–10. Soft assertions collect all failures in a single run, providing a complete
+picture of what was wrong — rather than forcing 10 separate debug reruns.
+
+**When to use `expect.soft()` for flakiness work:**
+- During flakiness investigation: replace hard assertions temporarily to see ALL deviations in one run
+- Multi-field form validation tests: one flaky field should not hide correct fields
+- API response shape tests: collect all mismatched fields rather than stopping at the first
+- Dashboard/report tests: gather the complete set of rendering discrepancies in one capture
+
+**When NOT to use `expect.soft()`:**
+- For any assertion whose failure makes subsequent assertions meaningless (e.g., `expect(element).toBeDefined()` before `element.click()`)
+- As a permanent test design — soft assertions should be used tactically, not as a way to tolerate flakiness
+
+```typescript
+// playwright/tests/checkout.spec.ts — soft assertions for multi-field validation
+import { test, expect } from '@playwright/test';
+
+test('checkout confirmation page shows correct order summary', async ({ page }) => {
+  // Navigate and complete checkout (setup steps — use hard assertions here)
+  await page.goto('/checkout');
+  await page.fill('[name="card-number"]', '4111111111111111');
+  await page.fill('[name="expiry"]', '12/28');
+  await page.fill('[name="cvv"]', '123');
+  await page.route('**/api/orders', route =>
+    route.fulfill({ status: 201, json: { orderId: 'ORD-TEST-001', total: 4999, items: 2 } })
+  );
+  await page.getByRole('button', { name: /place order/i }).click();
+
+  // Hard assertion: confirm we arrived at the right page before soft-checking details
+  await expect(page).toHaveURL(/\/order-confirmation/);
+
+  // Soft assertions: collect ALL mismatches in one run for flakiness investigation
+  // If orderId is flaky (race in server-side ID generation), we still see total and items
+  await expect.soft(page.getByTestId('order-id')).toHaveText('ORD-TEST-001');
+  await expect.soft(page.getByTestId('order-total')).toHaveText('$49.99');
+  await expect.soft(page.getByTestId('item-count')).toHaveText('2 items');
+  await expect.soft(page.getByTestId('confirmation-email-sent')).toBeVisible();
+
+  // Explicit check: fail now with ALL accumulated soft errors rather than continuing silently
+  // This is the mandatory pattern — never omit this or soft failures become invisible
+  expect(test.info().errors).toHaveLength(0);
+});
+```
+
+```typescript
+// playwright/tests/api.spec.ts — soft assertions for API response shape validation
+import { test, expect } from '@playwright/test';
+
+test('user profile API returns all expected fields', async ({ request }) => {
+  const response = await request.get('/api/users/1');
+
+  // Hard assertion: the request must succeed before checking fields
+  expect(response.ok()).toBe(true);
+
+  const body = await response.json() as Record<string, unknown>;
+
+  // Soft assertions: check every field independently
+  // A flaky test that fails on 'lastLoginAt' (timing-dependent) should not hide
+  // a genuine regression on 'email' or 'role'
+  expect.soft(body.id, 'user.id should be present').toBeTruthy();
+  expect.soft(body.email, 'user.email should be a string').toEqual(expect.any(String));
+  expect.soft(body.role, 'user.role should be admin or user').toMatch(/^(admin|user)$/);
+  expect.soft(body.createdAt, 'user.createdAt should be an ISO string').toMatch(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+  );
+
+  // Gather all soft failures at once — the test reports every field deviation, not just the first
+  if (test.info().errors.length > 0) {
+    // Annotate the test with all failures for the HTML report and retry trace
+    await test.info().attach('soft-assertion-failures', {
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify(
+        test.info().errors.map(e => e.message),
+        null, 2
+      )),
+    });
+  }
+  expect(test.info().errors).toHaveLength(0);
+});
+```
+
+```typescript
+// playwright/tests/configure-soft-globally.spec.ts — project-level soft assertion config
+// Use expect.configure() to create a soft-assertion instance reused across tests in a file
+import { test, expect } from '@playwright/test';
+
+// Create a pre-configured soft-expect instance — cleaner than expect.soft() call-site noise
+const softExpect = expect.configure({ soft: true });
+
+test('dashboard widgets all render correctly', async ({ page }) => {
+  await page.goto('/dashboard');
+  await page.waitForLoadState('networkidle');
+
+  // Use softExpect instead of expect — all assertions are soft
+  await softExpect(page.getByTestId('revenue-widget')).toBeVisible();
+  await softExpect(page.getByTestId('user-count-widget')).toBeVisible();
+  await softExpect(page.getByTestId('recent-orders-widget')).toBeVisible();
+  await softExpect(page.getByTestId('alert-banner')).toBeHidden(); // should not show by default
+
+  // Hard check at the end — required pattern
+  expect(test.info().errors).toHaveLength(0);
+});
+```
+
+---
+
+## Pattern 106 — `expect.poll()` and `expect.toPass()` for Custom Condition Polling  [official]
+
+Playwright's `expect.poll()` converts any synchronous expression into a retrying assertion by
+re-evaluating the function until the assertion passes or the timeout expires. `expect.toPass()`
+retries an entire block of code — including async operations — until the block completes without
+throwing. Both eliminate timing flakiness for scenarios where `toBeVisible()` and `toHaveText()`
+are not applicable (e.g., API responses, database-level state, external service status).
+
+**`expect.poll()` vs `expect.toPass()` choice guide:**
+- Use `expect.poll()` when you have a single value to poll (API status, queue depth, counter)
+- Use `expect.toPass()` when you need to re-run multiple assertions as a unit (fetch + assert)
+- Use auto-retrying locator assertions (`toBeVisible`, `toHaveText`) for all DOM-level checks — they are more efficient than manual polling
+
+```typescript
+// playwright/tests/async-state.spec.ts — expect.poll() for API-level condition polling
+import { test, expect } from '@playwright/test';
+
+test('background job completes within 30 seconds', async ({ request }) => {
+  // Trigger a slow background job
+  const startResp = await request.post('/api/jobs', { data: { type: 'report-generation' } });
+  const { jobId } = await startResp.json() as { jobId: string };
+
+  // expect.poll() re-evaluates the async function until the assertion passes
+  // or the timeout is reached (default: no timeout — ALWAYS specify one)
+  await expect.poll(
+    async () => {
+      const resp = await request.get(`/api/jobs/${jobId}`);
+      const body = await resp.json() as { status: string; result?: string };
+      return body.status;
+    },
+    {
+      message: `Job ${jobId} did not complete within 30s`,
+      timeout: 30_000,  // REQUIRED: always set — default is 0 (no timeout → hangs forever)
+      intervals: [1000, 2000, 5000], // custom polling schedule: 1s, 2s, then 5s intervals
+    }
+  ).toBe('completed');
+});
+
+test('database record appears after webhook delivery', async ({ request }) => {
+  // Trigger a webhook that will eventually write to the DB
+  await request.post('/api/webhooks/stripe', {
+    data: { type: 'payment_intent.succeeded', amount: 4999 },
+  });
+
+  // Poll the API until the record is visible — eliminates sleep() between webhook and query
+  await expect.poll(
+    async () => {
+      const resp = await request.get('/api/payments?status=succeeded&limit=1');
+      const body = await resp.json() as { data: Array<{ amount: number }> };
+      return body.data.length;
+    },
+    { timeout: 10_000, message: 'Payment record did not appear within 10s' }
+  ).toBeGreaterThan(0);
+});
+```
+
+```typescript
+// playwright/tests/expect-to-pass.spec.ts — expect.toPass() for multi-step retry blocks
+import { test, expect } from '@playwright/test';
+
+test('eventually consistent cache returns fresh data', async ({ request }) => {
+  // After writing to the primary DB, the read replica may lag by 1–3 seconds
+  // expect.toPass() retries the entire fetch+assert block until it succeeds or times out
+  await request.post('/api/users/1', { data: { name: 'Alice Updated' } });
+
+  await expect(async () => {
+    // This block is retried as a unit — both fetch and assertion are repeated together
+    const resp = await request.get('/api/users/1');
+    expect(resp.status()).toBe(200);
+    const user = await resp.json() as { name: string };
+    // This assertion may fail on the first attempt if the cache is stale —
+    // toPass() retries until the updated name appears or timeout expires
+    expect(user.name).toBe('Alice Updated');
+  }).toPass({
+    timeout: 15_000, // REQUIRED: always set — default is 0 (hangs forever without this)
+    intervals: [500, 1000, 2000, 3000], // escalating retry intervals
+  });
+});
+
+test('email delivery confirmed in outbox API', async ({ request }) => {
+  await request.post('/api/users', { data: { email: 'new-user@example.com' } });
+
+  // Retry the check block until the outbox shows the welcome email dispatched
+  await expect(async () => {
+    const resp = await request.get('/api/outbox?to=new-user@example.com&limit=1');
+    expect(resp.status()).toBe(200);
+    const body = await resp.json() as { messages: Array<{ subject: string }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0].subject).toContain('Welcome');
+  }).toPass({ timeout: 10_000 });
+});
+```
+
+---
+
+## Pattern 107 — Test Reliability MTBF Scorecard — Mean Time Between Failures  [community]
+
+The flakiness rate (Pattern 24 SLO) measures what fraction of runs are flaky. MTBF
+(Mean Time Between Failures) measures *how often* a specific test case fails — giving a
+per-test reliability score that identifies your worst offenders even when the suite-wide
+rate looks acceptable. A test with MTBF of 12 hours is far more disruptive than one with
+MTBF of 2 weeks, even if both appear as "1 flaky test" in the SLO report.
+
+**MTBF formula for a test case:**
+```
+MTBF = (total_run_time_hours) / (number_of_failures_in_period)
+```
+
+For CI pipelines, where run time is measured in pipeline invocations rather than wall-clock:
+```
+MTBF_runs = total_runs_in_period / failures_in_period
+```
+
+A test with `MTBF_runs = 5` fails in roughly 1 out of every 5 runs — extremely disruptive.
+A test with `MTBF_runs = 200` fails roughly once a week in a busy team — annoying but not blocking.
+
+```typescript
+// scripts/flakiness-scorecard.ts — compute per-test MTBF from CI run history (JSON format)
+// Input: array of JUnit XML results from the last N runs (collected by nightly detection workflow)
+// Output: ranked MTBF table + reliability score per test case
+
+import { readdirSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+
+interface TestRunRecord {
+  testName: string;
+  suiteName: string;
+  passed: boolean;
+  wasFlaky: boolean; // passed on retry
+  runId: string;
+  timestamp: string;
+}
+
+interface TestReliabilityScore {
+  testName: string;
+  suiteName: string;
+  totalRuns: number;
+  failures: number;
+  flakyRuns: number;      // passed on retry (flaky, not hard-failed)
+  mtbf: number;           // mean runs between any failure (flaky or hard)
+  reliabilityPct: number; // (1 - failure_rate) * 100
+  riskLevel: 'critical' | 'high' | 'medium' | 'low';
+}
+
+function classifyRisk(mtbf: number): TestReliabilityScore['riskLevel'] {
+  if (mtbf < 10)  return 'critical'; // fails > 10% of runs
+  if (mtbf < 30)  return 'high';     // fails 3–10% of runs
+  if (mtbf < 100) return 'medium';   // fails 1–3% of runs
+  return 'low';                       // fails < 1% of runs
+}
+
+function parseJUnitFile(filePath: string, runId: string): TestRunRecord[] {
+  const xml = readFileSync(filePath, 'utf-8');
+  const records: TestRunRecord[] = [];
+
+  // Match testcase elements — capture name, classname, failure/flaky status
+  const testcasePattern = /<testcase[^>]+name="([^"]+)"[^>]+classname="([^"]+)"([^>]*)(\/?>)([\s\S]*?)(?:<\/testcase>|(?=<testcase))/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = testcasePattern.exec(xml)) !== null) {
+    const attrs = match[3];
+    const body = match[5] ?? '';
+    const isFlaky = attrs.includes('flaky="true"') || body.includes('<flaky');
+    const hasFailed = body.includes('<failure') || body.includes('<error');
+
+    records.push({
+      testName: match[1],
+      suiteName: match[2],
+      passed: !hasFailed || isFlaky,
+      wasFlaky: isFlaky,
+      runId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return records;
+}
+
+// Load all JUnit XML files from the results directory
+const resultsDir = process.argv[2] ?? 'ci-run-history';
+const allRecords: TestRunRecord[] = [];
+
+for (const file of readdirSync(resultsDir).filter(f => f.endsWith('.xml'))) {
+  const runId = file.replace('.xml', '');
+  allRecords.push(...parseJUnitFile(join(resultsDir, file), runId));
+}
+
+// Aggregate by test identity (name + suite)
+const testMap = new Map<string, TestRunRecord[]>();
+for (const record of allRecords) {
+  const key = `${record.suiteName}::${record.testName}`;
+  if (!testMap.has(key)) testMap.set(key, []);
+  testMap.get(key)!.push(record);
+}
+
+// Compute reliability scores
+const scores: TestReliabilityScore[] = [];
+for (const [, records] of testMap) {
+  const totalRuns = records.length;
+  const failures = records.filter(r => !r.passed).length;
+  const flakyRuns = records.filter(r => r.wasFlaky).length;
+  const anyFailure = failures + flakyRuns;
+  const mtbf = anyFailure === 0 ? Infinity : totalRuns / anyFailure;
+  const reliabilityPct = ((totalRuns - anyFailure) / totalRuns) * 100;
+
+  if (anyFailure > 0) { // only report tests with at least one failure
+    scores.push({
+      testName: records[0].testName,
+      suiteName: records[0].suiteName,
+      totalRuns,
+      failures,
+      flakyRuns,
+      mtbf: Math.round(mtbf * 10) / 10,
+      reliabilityPct: Math.round(reliabilityPct * 10) / 10,
+      riskLevel: classifyRisk(mtbf),
+    });
+  }
+}
+
+// Sort by MTBF ascending (worst offenders first)
+scores.sort((a, b) => a.mtbf - b.mtbf);
+
+// Print ranked table
+console.log('\n=== Test Reliability Scorecard (MTBF ranked) ===\n');
+console.log('Risk       | MTBF  | Reliability | Test');
+console.log('-----------|-------|-------------|-----');
+for (const s of scores.slice(0, 20)) { // top 20 worst
+  const risk = s.riskLevel.padEnd(9);
+  const mtbf = `1/${s.mtbf}`.padEnd(6);
+  const rel = `${s.reliabilityPct}%`.padEnd(11);
+  console.log(`${risk}  | ${mtbf}| ${rel} | ${s.suiteName} > ${s.testName}`);
+}
+
+// Write full report as JSON for dashboard ingestion
+const report = {
+  generatedAt: new Date().toISOString(),
+  totalTestsAnalyzed: testMap.size,
+  totalWithFailures: scores.length,
+  criticalCount: scores.filter(s => s.riskLevel === 'critical').length,
+  highCount: scores.filter(s => s.riskLevel === 'high').length,
+  scores,
+};
+
+writeFileSync('mtbf-report.json', JSON.stringify(report, null, 2));
+console.log(`\nFull report written to mtbf-report.json`);
+
+// Exit 1 if any critical-risk test exists (MTBF < 10 runs)
+if (report.criticalCount > 0) {
+  console.error(`\nFAIL: ${report.criticalCount} test(s) at CRITICAL risk (MTBF < 10 runs)`);
+  process.exitCode = 1;
+}
+```
+
+```yaml
+# .github/workflows/weekly-reliability-scorecard.yml
+# Runs every Monday against the last 30 days of JUnit artifacts and posts MTBF report
+name: Weekly Test Reliability Scorecard
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Every Monday at 8am UTC
+  workflow_dispatch:
+
+jobs:
+  reliability-scorecard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+
+      # Download the last 30 nightly JUnit artifacts into ci-run-history/
+      - name: Download CI run history
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ci-run-history
+          # Fetch the last 30 completed nightly-flakiness-detection workflow runs
+          gh run list --workflow=flakiness-detection.yml --limit=30 \
+            --json databaseId --jq '.[].databaseId' | while read run_id; do
+            gh run download "$run_id" --dir "ci-run-history/$run_id" 2>/dev/null || true
+            # Flatten nested JUnit files into ci-run-history/
+            find "ci-run-history/$run_id" -name '*.xml' -exec cp {} "ci-run-history/${run_id}.xml" \;
+            rm -rf "ci-run-history/$run_id"
+          done
+
+      - name: Generate MTBF scorecard
+        run: npx ts-node scripts/flakiness-scorecard.ts ci-run-history/
+
+      - name: Post scorecard to GitHub Step Summary
+        if: always()
+        run: |
+          echo "## Weekly Test Reliability Scorecard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          node -e "
+            const r = require('./mtbf-report.json');
+            let md = '| Risk | MTBF | Reliability | Test |\n|------|------|-------------|------|\n';
+            r.scores.slice(0,15).forEach(s => {
+              md += '| ' + s.riskLevel + ' | 1/' + s.mtbf + ' | ' + s.reliabilityPct + '% | ' + s.testName + ' |\n';
+            });
+            const fs = require('fs');
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
+          "
+```
+
+---
+
+## Pattern 108 — LLM-Assisted Flakiness Root-Cause Classification  [community]
+
+After collecting failure messages and context (Pattern 107, Pattern 19), the next
+bottleneck is classifying which root cause family each flaky test belongs to. Manual
+triage takes 5–20 minutes per test. Automated classification using an LLM can
+pre-categorize failures into the five root cause families (timing, shared state,
+external dependency, order-dependency, randomness/environment) in seconds,
+surfacing the likely fix strategy before a human looks at the trace.
+
+This pattern wraps the Anthropic Claude API to classify flaky test failures
+from their error messages and stack traces. The output feeds the quarantine workflow
+(Pattern 3) with a suggested `Root cause:` annotation.
+
+```typescript
+// scripts/classify-flaky-failures.ts — LLM-based root cause classification
+// Prerequisites: npm install @anthropic-ai/sdk
+// Usage: ANTHROPIC_API_KEY=... npx ts-node scripts/classify-flaky-failures.ts test-results/
+
+import Anthropic from '@anthropic-ai/sdk';
+import { readdirSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+
+const client = new Anthropic();
+
+interface FlakyFailure {
+  testName: string;
+  suiteName: string;
+  errorMessage: string;
+  stackTrace: string;
+}
+
+type RootCauseFamily =
+  | 'timing'
+  | 'shared-state'
+  | 'external-dependency'
+  | 'order-dependency'
+  | 'randomness-environment'
+  | 'unknown';
+
+interface ClassificationResult {
+  testName: string;
+  suiteName: string;
+  rootCauseFamily: RootCauseFamily;
+  confidence: 'high' | 'medium' | 'low';
+  suggestedFix: string;
+  quarantineAnnotation: string;
+}
+
+// --- XML parsing helpers ---
+
+function extractFlakyFailures(junitXml: string): FlakyFailure[] {
+  const results: FlakyFailure[] = [];
+  const testcaseRe = /<testcase[^>]+name="([^"]+)"[^>]+classname="([^"]+)"[^>]*(flaky="true"|retries="[1-9]\d*")[^>]*(\/?>)([\s\S]*?)(?=<testcase|<\/testsuite|$)/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = testcaseRe.exec(junitXml)) !== null) {
+    const body = m[5] ?? '';
+    const msgMatch = body.match(/<failure[^>]*message="([^"]*)"/) ??
+                     body.match(/<failure[^>]*>([\s\S]*?)<\/failure>/);
+    const msgText = msgMatch?.[1]?.slice(0, 500) ?? '(no error message)';
+    const stackMatch = body.match(/<failure[^>]*>([\s\S]*?)<\/failure>/);
+    const stackText = stackMatch?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, '')?.slice(0, 800) ?? '';
+
+    results.push({
+      testName: m[1],
+      suiteName: m[2],
+      errorMessage: msgText,
+      stackTrace: stackText,
+    });
+  }
+
+  return results;
+}
+
+// --- LLM classification ---
+
+const CLASSIFICATION_PROMPT = `You are a test reliability engineer. Classify the following
+flaky test failure into exactly one root cause family:
+
+- timing: Hard-coded sleeps, race between UI render and assertion, setTimeout/setInterval issues
+- shared-state: Mock not reset between tests, module-level singleton, DB rows shared between tests
+- external-dependency: Real network call, third-party API, real DB without isolation
+- order-dependency: Test passes only when preceded (or not preceded) by specific other tests
+- randomness-environment: Math.random, Date.now, crypto.randomUUID, locale, timezone, OS path separator
+- unknown: Cannot determine from the information provided
+
+Respond ONLY with a JSON object:
+{
+  "rootCauseFamily": "<one of the six values above>",
+  "confidence": "high|medium|low",
+  "suggestedFix": "<one sentence — what to do to fix it>",
+  "quarantineAnnotation": "<one line suitable for the // Root cause: field in the quarantine tag>"
+}`;
+
+async function classifyFailure(failure: FlakyFailure): Promise<ClassificationResult> {
+  const userContent = `Test: ${failure.suiteName} > ${failure.testName}
+Error: ${failure.errorMessage}
+Stack trace (truncated):
+${failure.stackTrace}`;
+
+  const message = await client.messages.create({
+    model: 'claude-3-5-haiku-20241022', // use Haiku for cost efficiency on bulk classification
+    max_tokens: 256,
+    messages: [
+      { role: 'user', content: `${CLASSIFICATION_PROMPT}\n\n${userContent}` },
+    ],
+  });
+
+  const responseText = (message.content[0] as { type: string; text: string }).text;
+  let parsed: Omit<ClassificationResult, 'testName' | 'suiteName'>;
+
+  try {
+    // Extract JSON from the response (model may include surrounding text)
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    parsed = JSON.parse(jsonMatch?.[0] ?? '{}') as typeof parsed;
+  } catch {
+    parsed = {
+      rootCauseFamily: 'unknown',
+      confidence: 'low',
+      suggestedFix: 'Manual investigation required',
+      quarantineAnnotation: 'unknown — review error message and stack trace',
+    };
+  }
+
+  return {
+    testName: failure.testName,
+    suiteName: failure.suiteName,
+    ...parsed,
+  };
+}
+
+// --- Main: classify all flaky failures from JUnit XML files ---
+
+async function main(): Promise<void> {
+  const resultsDir = process.argv[2] ?? 'test-results';
+  const allFailures: FlakyFailure[] = [];
+
+  for (const file of readdirSync(resultsDir).filter(f => f.endsWith('.xml'))) {
+    const xml = readFileSync(join(resultsDir, file), 'utf-8');
+    allFailures.push(...extractFlakyFailures(xml));
+  }
+
+  if (allFailures.length === 0) {
+    console.log('No flaky failures found in JUnit XML files.');
+    return;
+  }
+
+  console.log(`Classifying ${allFailures.length} flaky failure(s) using Claude...`);
+
+  // Classify in parallel (batch of 5 to avoid rate limits)
+  const results: ClassificationResult[] = [];
+  for (let i = 0; i < allFailures.length; i += 5) {
+    const batch = allFailures.slice(i, i + 5);
+    const batchResults = await Promise.all(batch.map(classifyFailure));
+    results.push(...batchResults);
+    console.log(`  Classified ${Math.min(i + 5, allFailures.length)}/${allFailures.length}`);
+  }
+
+  // Print summary
+  console.log('\n=== Flakiness Root Cause Classification ===\n');
+  for (const r of results) {
+    console.log(`${r.suiteName} > ${r.testName}`);
+    console.log(`  Family:    ${r.rootCauseFamily} (${r.confidence} confidence)`);
+    console.log(`  Fix:       ${r.suggestedFix}`);
+    console.log(`  Quarantine annotation: ${r.quarantineAnnotation}`);
+    console.log('');
+  }
+
+  // Write machine-readable report
+  writeFileSync('flakiness-classification.json', JSON.stringify(results, null, 2));
+  console.log('Classification saved to flakiness-classification.json');
+
+  // Suggest quarantine tags for all classified failures
+  const quarantineSnippets = results
+    .filter(r => r.rootCauseFamily !== 'unknown')
+    .map(r => `// [QUARANTINE] ${r.testName}
+// Root cause: ${r.quarantineAnnotation}
+// Fix: ${r.suggestedFix}
+// Opened: ${new Date().toISOString().slice(0, 10)} | Owner: @unassigned | SLA: TBD
+// Issue: <link>`)
+    .join('\n\n');
+
+  writeFileSync('quarantine-stubs.txt', quarantineSnippets);
+  console.log('Quarantine comment stubs written to quarantine-stubs.txt');
+}
+
+main().catch(err => { console.error(err); process.exitCode = 1; });
+```
+
+**Integration with the quarantine workflow:** Run this script as a post-failure CI step
+(after Pattern 19 step summary and Pattern 24 SLO check). The output JSON feeds the weekly
+quarantine review issue (Pattern 25) with pre-classified root cause families, reducing the
+manual triage burden from 20 minutes per test to under 2 minutes.
+
+**Cost estimate:** Claude 3.5 Haiku at roughly $0.001 per classification — classifying 50 flaky
+failures costs approximately $0.05. Run only when flaky tests are detected (exit 0 if none found).
+
+---
+
+## Anti-Patterns (iteration 61)
+
+### AP52 — `expect.soft()` Without Checking `test.info().errors`  [community]
+**What:** Using `expect.soft()` for multiple assertions but not calling
+`expect(test.info().errors).toHaveLength(0)` at the end of the test.
+**Why harmful:** `expect.soft()` marks the test internally as failed but does NOT abort the test
+and does NOT automatically fail the test case at the end of the `test()` body. A test that uses
+`expect.soft()` exclusively and never checks `test.info().errors` will PASS even if every soft
+assertion failed. The test appears green in the report, all the flakiness information is
+silently discarded, and the developer sees no indication of the problem. The mandatory close of
+every test using soft assertions is `expect(test.info().errors).toHaveLength(0)` — without
+it, soft assertions provide zero value.
+
+### AP53 — `expect.poll()` or `expect.toPass()` Without Explicit `timeout`  [community]
+**What:** Calling `expect.poll(fn).toBe(value)` or `expect(fn).toPass()` without setting
+the `timeout` option.
+**Why harmful:** Both `expect.poll()` and `expect.toPass()` default to a timeout of **0** (zero
+milliseconds) when the `timeout` option is omitted. A timeout of 0 means the assertion runs
+ONCE and does not retry — the entire point of these APIs is eliminated. Worse, `expect.poll()`
+with `timeout: 0` can produce confusing errors like "Expected: 'completed', received: 'pending'"
+with no indication that the function was only called once. Teams that add `expect.poll()` to
+eliminate flakiness but forget `timeout` often see WORSE flakiness because their fix doesn't
+retry at all. Always specify `{ timeout: <ms> }` explicitly.
+
+---
+
+## Real-World Gotchas (iteration 61)  [community]
+
+**Gotcha 52 — `expect.toPass()` Default Timeout Is 0 — Tests "Pass" Without Retrying**  [community]
+A team migrating from `page.waitForTimeout(3000)` to `expect.toPass()` found that their E2E
+flakiness rate *increased* after the migration. Root cause: every `expect.toPass()` call was
+missing the `{ timeout: 10_000 }` option. With `timeout: 0`, the block executed once, the
+assertion failed, and the test reported a hard failure — not a retry. The waitForTimeout had
+at least delayed the single assertion attempt by 3 seconds (masking the timing issue), while
+the `toPass()` with no timeout failed immediately. Fix: always pass `{ timeout: N }` — Playwright
+documentation does not prominently display the 0-default in the main API reference. The
+Playwright team notes this is a known footgun: the next major version may change the default
+to the global timeout, but as of v1.52, you must specify it explicitly.
+
+**Gotcha 53 — MTBF Scoring Resets Silently After Test Case Rename**  [community]
+Teams that track per-test MTBF (Pattern 107) using the test name as the identity key discover
+that renaming a test case during refactoring (e.g., "should create user" → "creates user correctly")
+silently resets that test's failure history to zero. The renamed test appears as a brand-new test
+case with no failure record — its accumulated MTBF data is orphaned under the old name. Teams at
+scale (Spotify, Canva) solve this by assigning a stable test ID via custom metadata (`test.info().annotations`
+in Playwright, `test.meta` in Vitest) and tracking MTBF by that ID rather than the display name.
+The ID is a short hash of the original test path + name, set at authoring time and preserved across
+renames. This is particularly important for regression detection: a test with a history of 30%
+flakiness that gets renamed looks "clean" to the scoring system, hiding that the root cause was
+never fixed.
+
+---
+
+## Quick Reference additions (iteration 61)
+
+| Symptom | Likely Root Cause | Pattern/Fix | Anti-Pattern to Avoid |
+|---------|-------------------|-------------|----------------------|
+| Test shows green despite assertion failures | `expect.soft()` without `test.info().errors` check | Pattern 105 (mandatory close: `expect(test.info().errors).toHaveLength(0)`) | AP52 (soft assertions without errors check) |
+| `expect.poll()` fails on first attempt — no retry | Missing `timeout` option (defaults to 0) | Pattern 106 (always specify `{ timeout: N }`) | AP53 (no timeout on poll/toPass) |
+| Background job test fails intermittently on status check | Polling with sleep() instead of condition poll | Pattern 106 (`expect.poll()` for API state polling) | `await new Promise(r => setTimeout(r, 5000))` before status check |
+| Flaky test classified wrong in quarantine — wrong fix applied | Manual root cause triage error | Pattern 108 (LLM classification from JUnit XML) | Manual reading of 20+ error messages |
+| MTBF score resets after rename — known-flaky test appears clean | Test tracked by name, not stable ID | Pattern 107 (stable ID via meta/annotations) | MTBF keyed on display name |
+| Worst-offending flaky tests not visible in suite-wide SLO | Suite SLO hides per-test distribution | Pattern 107 (MTBF scorecard per test) | Reporting only aggregate flakiness rate |
+
+---
+
+## Key Resources (iteration 61 additions)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Playwright `expect.soft()` | Official | https://playwright.dev/docs/test-assertions#expectsoft | Soft assertions — continue after failure, collect all errors |
+| Playwright `expect.poll()` | Official | https://playwright.dev/docs/test-assertions#expectpoll | Convert sync function into retrying assertion — API/DB polling |
+| Playwright `expect.toPass()` | Official | https://playwright.dev/docs/test-assertions#expecttopass | Retry entire async block — eventually-consistent state checks |
+| Playwright `expect.configure()` | Official | https://playwright.dev/docs/api/class-playwrightassertions#playwright-assertions-expect-configure | Create pre-configured assertion instance (e.g., soft:true) |
+| Anthropic Claude API — Messages | Official | https://docs.anthropic.com/en/api/messages | LLM classification API used in Pattern 108 |
+| @anthropic-ai/sdk npm | Official | https://www.npmjs.com/package/@anthropic-ai/sdk | TypeScript SDK for Claude API — used in Pattern 108 |
+| FlakyDoctor (ISSTA 2024) | Research | https://github.com/Intelligent-CAT-Lab/FlakyDoctor | Neuro-symbolic LLM repair for OD and ID flaky tests — GPT-4 + Magicoder; 19 PRs accepted to OSS projects |
 | `@typescript-eslint/no-misused-promises` | Official | https://typescript-eslint.io/rules/no-misused-promises | Catches Promise-returning functions in callback positions — companion rule |

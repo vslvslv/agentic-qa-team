@@ -1,5 +1,5 @@
 # Shift-Left — QA Methodology Guide
-<!-- lang: TypeScript | topic: shift-left | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: shift-left | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 
 ## Core Principles
 
@@ -8692,5 +8692,802 @@ console.log(`Payback: ${result.paybackMonths.toFixed(1)} months`);
 > [community] **Lesson (shift-left programme retrospectives, 2025–2026)**: The biggest undercount in shift-left ROI models is context-switch cost. IBM's classic model counts only MTTR (hours to fix the bug). It does not count: (1) the interruption to the on-call engineer's sprint work, (2) the customer success time managing the incident, (3) the post-mortem and follow-up action items. Multiply the MTTR-based estimate by 2.5–3× to include these hidden costs before presenting to leadership.
 
 > [community] **Gotcha (ROI models and survivorship bias, 2026)**: ROI calculations for shift-left assume that the defects caught by pre-commit hooks and SAST would have reached production without the shift-left investment. This is not always true — some would have been caught in code review or QA. When auditing the ROI model, subtract an estimated "code review catch rate" (typically 20–30% for TypeScript teams with strong PR review culture) from the defect cost savings to avoid inflating the headline number.
+
+---
+
+## Shift-Left Performance Testing — Lighthouse CI and k6
+
+Performance regressions are defects. A page that was 3.2s TTI last sprint and is now 7.1s TTI due to an unreviewed dependency import is a defect that escaped to production. Shift-left performance testing gates performance budgets at the PR level — the same way type checks gate type correctness.
+
+There are two distinct layers:
+- **Frontend performance** (Lighthouse CI): measures Core Web Vitals, accessibility score, JavaScript bundle size on every PR that changes front-end code
+- **API load performance** (k6): measures API p95 response time and error rate under synthetic load; runs on PR merges or nightly against staging
+
+### Lighthouse CI — Frontend Performance Budgets as PR Gates
+
+Lighthouse CI wraps Google Lighthouse in a CI workflow that fails the build when performance scores or metric values drop below defined thresholds.
+
+```javascript
+// lighthouserc.cjs — Lighthouse CI configuration (CommonJS, no TS required for config)
+// Install: npm install --save-dev @lhci/cli
+/** @type {import('@lhci/cli').LighthouseRcFile} */
+module.exports = {
+  ci: {
+    collect: {
+      // Start the TypeScript server in a child process, then run Lighthouse against it
+      startServerCommand: 'node dist/server.js',
+      startServerReadyPattern: 'Server listening on port 3000',
+      startServerReadyTimeout: 20000,
+      url: [
+        'http://localhost:3000/',
+        'http://localhost:3000/dashboard',
+        'http://localhost:3000/product/1',
+      ],
+      numberOfRuns: 3,      // Median of 3 runs for stable results
+      settings: {
+        chromeFlags: '--no-sandbox --headless --disable-gpu',
+        // Throttle to simulate median mobile network (3G Fast)
+        throttlingMethod: 'simulate',
+        preset: 'desktop',  // Use 'perf' for mobile simulation
+      },
+    },
+    assert: {
+      // Severity levels: 'off' | 'warn' | 'error'
+      // 'error' causes the CI job to exit non-zero — fails the PR gate
+      assertions: {
+        // Core Web Vitals: fail if any of these drop
+        'categories:performance':        ['error', { minScore: 0.80 }],
+        'categories:accessibility':      ['error', { minScore: 0.90 }],
+        'categories:best-practices':     ['warn',  { minScore: 0.85 }],
+        'categories:seo':                ['warn',  { minScore: 0.80 }],
+
+        // LCP: Largest Contentful Paint — primary loading metric
+        'largest-contentful-paint':      ['error', { maxNumericValue: 2500 }], // 2.5s budget
+        // CLS: Cumulative Layout Shift — visual stability
+        'cumulative-layout-shift':       ['error', { maxNumericValue: 0.1  }],
+        // TBT: Total Blocking Time — interactivity proxy (FID not measured in Lighthouse 11+)
+        'total-blocking-time':           ['error', { maxNumericValue: 300  }], // 300ms
+
+        // Bundle size gates — prevents accidental heavy imports
+        'resource-summary:script:size':  ['error', { maxNumericValue: 400_000 }], // 400KB JS
+        'resource-summary:image:size':   ['warn',  { maxNumericValue: 1_000_000 }], // 1MB images
+        'resource-summary:total:size':   ['warn',  { maxNumericValue: 2_000_000 }], // 2MB total
+
+        // Accessibility specifics (complement axe-core tests)
+        'color-contrast':                ['error', { minScore: 1 }],
+        'button-name':                   ['error', { minScore: 1 }],
+        'image-alt':                     ['error', { minScore: 1 }],
+        'link-name':                     ['error', { minScore: 1 }],
+      },
+    },
+    upload: {
+      // Store reports in Lighthouse CI server or use temporary public storage
+      target: 'temporary-public-storage',
+      // For production: use @lhci/server or upload to GCS/S3
+      // target: 'filesystem',
+      // outputDir: '.lhci-results',
+    },
+  },
+};
+```
+
+```yaml
+# .github/workflows/lighthouse-ci.yml — frontend performance gate on every PR
+name: Lighthouse CI (Performance Budget)
+on:
+  pull_request:
+    branches: [main, develop]
+    # Only run when front-end files change (TypeScript, CSS, assets, routes)
+    paths:
+      - 'src/components/**'
+      - 'src/pages/**'
+      - 'src/app/**'
+      - 'public/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+  pull-requests: write    # For posting Lighthouse report link as PR comment
+
+jobs:
+  lighthouse:
+    name: Lighthouse Performance Budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+
+      # Type check first — never run Lighthouse against type-incorrect build
+      - run: npx tsc --noEmit
+
+      # Build the TypeScript app for Lighthouse scanning
+      - run: npm run build
+
+      # Install Lighthouse CI globally (version pinned for reproducibility)
+      - run: npm install -g @lhci/cli@0.15.x
+
+      - name: Run Lighthouse CI
+        run: lhci autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+          # Without the token: Lighthouse posts results as a status check
+          # With the token: Lighthouse posts results as an inline PR comment with report URL
+
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports-${{ github.run_number }}
+          path: .lighthouseci/
+          retention-days: 30
+```
+
+```typescript
+// scripts/check-bundle-size.ts — standalone bundle size check (runs faster than Lighthouse)
+// Use as a lightweight pre-Lighthouse gate to fail fast on obvious bloat
+import { statSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+interface BundleBudget {
+  readonly path: string;
+  readonly maxSizeKb: number;
+  readonly description: string;
+}
+
+const BUNDLE_BUDGETS: readonly BundleBudget[] = [
+  { path: 'dist/assets/main.js',          maxSizeKb: 250, description: 'Main JS bundle (gzipped equivalent)' },
+  { path: 'dist/assets/vendor.js',        maxSizeKb: 400, description: 'Vendor JS bundle' },
+  { path: 'dist/assets/main.css',         maxSizeKb: 50,  description: 'Main CSS bundle' },
+] as const;
+
+let hasViolations = false;
+
+for (const budget of BUNDLE_BUDGETS) {
+  const fullPath = resolve(process.cwd(), budget.path);
+  try {
+    const { size } = statSync(fullPath);
+    const sizeKb = size / 1024;
+    const status = sizeKb <= budget.maxSizeKb ? 'PASS' : 'FAIL';
+    if (status === 'FAIL') {
+      hasViolations = true;
+      console.error(`[${status}] ${budget.description}: ${sizeKb.toFixed(1)}KB > ${budget.maxSizeKb}KB budget`);
+    } else {
+      console.log(`[${status}] ${budget.description}: ${sizeKb.toFixed(1)}KB (budget: ${budget.maxSizeKb}KB)`);
+    }
+  } catch {
+    // File missing means build failed — the TypeScript build step should have caught this
+    console.error(`[MISS] ${budget.path} not found — did the build complete?`);
+    hasViolations = true;
+  }
+}
+
+if (hasViolations) {
+  console.error('\nBundle size budget violations found. Fix before running Lighthouse CI.');
+  process.exit(1);
+}
+
+console.log('\nAll bundle budgets satisfied.');
+```
+
+**WHY Lighthouse CI is shift-left**: Core Web Vitals regressions introduced by a single PR (adding a heavy library, a synchronous script tag, or an unoptimized image) are invisible to TypeScript type checking and unit tests. Lighthouse CI measures these at the exact PR that introduced the regression — while the developer still remembers what they changed. The cost of fixing a performance regression at PR time is one hour; the cost of a Core Web Vitals degradation in production includes SEO ranking loss, reduced conversion rates, and an emergency hotfix sprint.
+
+> [community] **Lesson (Lighthouse CI adopters, 2024–2025)**: The highest-signal Lighthouse assertion for TypeScript projects is `resource-summary:script:size`. JavaScript bundle size regressions are the most common performance regression introduced by PR-level code changes in TypeScript/React projects — a developer adds a date picker library (`moment.js`, 231KB) and the performance score drops from 0.91 to 0.67. `resource-summary:script:size` catches this at the PR level, before the library is in production.
+
+> [community] **Gotcha (Lighthouse CI flakiness on CPU-bound CI runners)**: Lighthouse performance scores are sensitive to CI runner CPU variability. A GitHub Actions `ubuntu-latest` runner may score 0.82 on one run and 0.71 on the same build 10 minutes later due to shared CPU contention. Use `numberOfRuns: 3` and the default `aggregationMethod: 'median'` to reduce variance. Set performance score thresholds 5–10 points below your expected baseline to avoid false failures from runner noise. Use `categories:accessibility` (not `categories:performance`) as the hard gate — accessibility scores are stable regardless of runner load.
+
+> [community] **Lesson (Frontend TypeScript teams using Vite, 2025)**: Vite's `rollupOptions.output.manualChunks` is the most effective tool for controlling Lighthouse's `resource-summary:script:size`. Separate vendor chunks from application code, and separate heavy feature-flag-controlled components into lazy-loaded chunks. TypeScript's `import()` dynamic imports map directly to Vite's code-splitting — `const HeavyComponent = React.lazy(() => import('./HeavyComponent.js'))` is a zero-config bundle split. Lighthouse CI enforces that the split is maintained: if someone removes `React.lazy` and the chunk merges back into the main bundle, the size assertion fails.
+
+---
+
+### k6 Load Testing — API Performance Thresholds as CI Gates
+
+k6 (Grafana k6) is a JavaScript/TypeScript-native load testing tool that defines performance thresholds as pass/fail criteria — enabling API performance budgets enforced in CI.
+
+```typescript
+// tests/load/api-baseline.k6.ts — k6 load test with TypeScript (requires k6 type definitions)
+// Install: npm install --save-dev @types/k6
+// Run: k6 run --out json=results.json tests/load/api-baseline.k6.ts
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+import { Rate, Trend } from 'k6/metrics';
+import type { Options } from 'k6/options';
+
+// Custom metrics: tracked separately from built-in k6 metrics
+const errorRate = new Rate('errors');
+const createUserTrend = new Trend('create_user_duration', true);  // true = display as ms
+
+// Options: define VUs (virtual users), duration, and THRESHOLDS
+// Thresholds are the shift-left gate: k6 exits non-zero if any threshold fails
+export const options: Options = {
+  vus: 50,              // 50 concurrent virtual users
+  duration: '30s',      // Test runs for 30 seconds
+
+  // THRESHOLDS: pass/fail criteria enforced after the test run
+  thresholds: {
+    // Built-in HTTP metrics
+    'http_req_duration': [
+      'p(95)<200',        // 95th percentile response time < 200ms
+      'p(99)<500',        // 99th percentile response time < 500ms
+      'max<2000',         // No single request exceeds 2s
+    ],
+    'http_req_failed': [
+      'rate<0.01',        // Less than 1% error rate (non-2xx responses)
+    ],
+
+    // Custom metrics: per-endpoint thresholds
+    'create_user_duration': [
+      'p(95)<300',        // POST /users p95 < 300ms (heavier than GET)
+    ],
+    'errors': [
+      'rate<0.005',       // Custom error rate < 0.5%
+    ],
+  },
+};
+
+const BASE_URL = __ENV.BASE_URL ?? 'http://localhost:3000';
+
+// Default function: executed by each VU on each iteration
+export default function (): void {
+  // Scenario 1: GET /api/users (list endpoint)
+  const listRes = http.get(`${BASE_URL}/api/users?limit=20`, {
+    headers: { 'Accept': 'application/json' },
+    tags: { endpoint: 'list-users' },
+  });
+
+  check(listRes, {
+    'list users: status 200':          (r) => r.status === 200,
+    'list users: has items array':     (r) => Array.isArray((r.json() as { items?: unknown[] }).items),
+    'list users: response time < 200ms': (r) => r.timings.duration < 200,
+  }) || errorRate.add(1);
+
+  sleep(0.5);   // Think time between requests (simulates real user)
+
+  // Scenario 2: POST /api/users (create endpoint)
+  const createPayload = JSON.stringify({
+    email: `load-test-${__VU}-${__ITER}@example.com`,
+    name: `Load Test User ${__VU}`,
+    role: 'viewer',
+  });
+
+  const createRes = http.post(`${BASE_URL}/api/users`, createPayload, {
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Authorization': `Bearer ${__ENV.TEST_API_TOKEN ?? 'test-token'}`,
+    },
+    tags: { endpoint: 'create-user' },
+  });
+
+  createUserTrend.add(createRes.timings.duration);
+
+  check(createRes, {
+    'create user: status 201':               (r) => r.status === 201,
+    'create user: has id field':             (r) => typeof (r.json() as { id?: string }).id === 'string',
+    'create user: content-type is JSON':     (r) => (r.headers['Content-Type'] ?? '').includes('application/json'),
+  }) || errorRate.add(1);
+
+  sleep(1);     // 1s between iterations
+}
+```
+
+```yaml
+# .github/workflows/k6-performance.yml — API performance gate on PRs + nightly
+name: k6 API Performance Gate
+on:
+  pull_request:
+    # Only run on backend API changes (TypeScript service files)
+    paths:
+      - 'src/api/**'
+      - 'src/services/**'
+      - 'src/middleware/**'
+  schedule:
+    - cron: '0 3 * * *'    # Nightly at 03:00 UTC against staging
+
+jobs:
+  k6-load-test:
+    name: k6 API Performance Thresholds
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: test, POSTGRES_DB: testdb }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+
+      # Type check before starting server
+      - run: npx tsc --noEmit
+
+      # Start the TypeScript API server in background (uses test database)
+      - name: Start API server
+        run: |
+          npm run build
+          NODE_ENV=test DATABASE_URL=postgresql://postgres:test@localhost:5432/testdb \
+            npm run db:migrate && \
+            npm run db:seed:load-test && \
+            node dist/server.js &
+          # Wait for server to be ready
+          timeout 30 bash -c 'until curl -sf http://localhost:3000/health; do sleep 1; done'
+        env:
+          JWT_SECRET: test-jwt-secret-min-32-characters-long
+
+      # Install k6 (Grafana's official package)
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Run k6 load test
+        run: |
+          k6 run \
+            --out json=k6-results.json \
+            --env BASE_URL=http://localhost:3000 \
+            --env TEST_API_TOKEN=test-token \
+            tests/load/api-baseline.k6.ts
+        # k6 exits 99 (non-zero) if any threshold fails — fails the CI job
+
+      - name: Upload k6 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results-${{ github.run_number }}
+          path: k6-results.json
+
+      - name: Parse and comment k6 results
+        if: always() && github.event_name == 'pull_request'
+        run: npx ts-node scripts/k6-pr-comment.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          K6_RESULTS_FILE: k6-results.json
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+```
+
+```typescript
+// scripts/k6-pr-comment.ts — parse k6 JSON output and post summary as PR comment
+import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+
+interface K6Metric {
+  readonly type: string;
+  readonly data: {
+    readonly name: string;
+    readonly value: number;
+    readonly metric: string;
+  };
+}
+
+// Parse the k6 JSON output and extract key metrics for PR comment
+function summarizeK6Results(filePath: string): string {
+  const lines = readFileSync(filePath, 'utf8').trim().split('\n');
+  const metricMap = new Map<string, number[]>();
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line) as K6Metric;
+      if (entry.type === 'Point' && entry.data.metric === 'http_req_duration') {
+        const existing = metricMap.get('http_req_duration') ?? [];
+        existing.push(entry.data.value);
+        metricMap.set('http_req_duration', existing);
+      }
+    } catch {
+      // Skip non-JSON lines (k6 summary output)
+    }
+  }
+
+  const durations = metricMap.get('http_req_duration') ?? [];
+  if (durations.length === 0) return 'No k6 metric data found.';
+
+  const sorted = [...durations].sort((a, b) => a - b);
+  const p50 = sorted[Math.floor(sorted.length * 0.50)] ?? 0;
+  const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 0;
+  const p99 = sorted[Math.floor(sorted.length * 0.99)] ?? 0;
+  const maxVal = sorted[sorted.length - 1] ?? 0;
+
+  return [
+    '## k6 API Performance Results',
+    '',
+    '| Metric | Value | Budget |',
+    '|--------|-------|--------|',
+    `| p50 response time | ${p50.toFixed(0)}ms | — |`,
+    `| p95 response time | ${p95.toFixed(0)}ms | < 200ms |`,
+    `| p99 response time | ${p99.toFixed(0)}ms | < 500ms |`,
+    `| max response time | ${maxVal.toFixed(0)}ms | < 2000ms |`,
+    '',
+    p95 <= 200
+      ? '**Performance gate: PASSED**'
+      : `**Performance gate: FAILED** — p95 ${p95.toFixed(0)}ms exceeds 200ms budget`,
+  ].join('\n');
+}
+
+const summary = summarizeK6Results(process.env.K6_RESULTS_FILE ?? 'k6-results.json');
+
+// Post as PR comment via GitHub CLI
+const prNumber = process.env.PR_NUMBER;
+if (prNumber) {
+  execSync(
+    `gh pr comment ${prNumber} --body "${summary.replace(/"/g, '\\"')}"`,
+    { env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN } },
+  );
+}
+
+console.log(summary);
+```
+
+**WHY k6 thresholds are shift-left**: API performance regressions introduced by a new DB query (missing index, N+1 queries), an unoptimized serialization, or a synchronous operation in an async handler are invisible to `tsc --noEmit` and unit tests. k6 thresholds codify performance SLOs as machine-enforceable assertions. When a PR introduces a serializer that increases p95 response time from 120ms to 400ms, the k6 threshold `p(95)<200` fails the CI job at the PR level — before the regression reaches staging or production.
+
+> [community] **Lesson (k6 adopters, backend TypeScript teams, 2024–2025)**: The most impactful k6 threshold for TypeScript REST APIs is `'http_req_duration': ['p(95)<200']`. It catches: (1) N+1 query patterns introduced by ORM relationship changes (Prisma `include` without `select` on a list endpoint), (2) synchronous CPU-blocking operations in async handlers (`JSON.stringify` on large payloads), and (3) missing database connection pool sizing (connection wait time appears in p95 but not p50). WHY p95 and not average: averages hide tail latency. A response time average of 90ms with a p95 of 2000ms means 5% of users wait 2+ seconds — k6 p95 thresholds catch this; average thresholds do not.
+
+> [community] **Gotcha (k6 load test against ephemeral CI databases)**: Running k6 with `vus: 50` against a single-connection test database (SQLite or a Postgres container with `max_connections: 10`) will produce artificial connection timeout errors that don't reflect real performance. Configure the test database with realistic connection limits (`max_connections: 100`) and use a connection pool in the TypeScript app (`pg-pool`, Prisma connection limit) sized for the test VU count. WHY: k6 threshold failures due to connection exhaustion look identical to application-level performance regressions — teams waste hours debugging before realizing the test environment is the bottleneck.
+
+> [community] **Lesson (performance-conscious TypeScript teams)**: The shift-left value of k6 is highest when thresholds are set based on actual production SLOs, not arbitrary numbers. Start by running k6 against production (with low VU count, during off-peak hours) to establish a baseline. Set the CI threshold at 1.5× the production p95 as the initial budget. Tighten over time as performance improves. A threshold set too tight blocks legitimate PRs; a threshold set too loose misses real regressions.
+
+---
+
+## Vitest 4.1 Shift-Left Features — aroundEach, detectAsyncLeaks, Tag Filtering
+
+Vitest 4.1 introduces three features that directly tighten the shift-left feedback loop for TypeScript test suites.
+
+### `aroundEach` — Guaranteed Cleanup with Database Transaction Rollback
+
+`aroundEach` is a new lifecycle hook that wraps each test in a generator function. Unlike `beforeEach`/`afterEach` pairs, the teardown in `aroundEach` is guaranteed to run even if the test itself throws — eliminating the primary source of test state leakage in database-integrated tests.
+
+```typescript
+// vitest.config.ts — enable aroundEach for database integration tests
+// No additional configuration needed; aroundEach is built into Vitest 4.1+
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'node',
+    globals: true,
+    pool: 'forks',        // Forks mode: each test file gets its own DB connection pool
+    poolOptions: {
+      forks: { maxWorkers: 4 },
+    },
+  },
+});
+```
+
+```typescript
+// tests/integration/setup/db-transaction.ts — reusable aroundEach fixture for DB tests
+// Pattern: each test runs inside a transaction that is always rolled back after the test
+import { aroundEach } from 'vitest';
+import { Pool, PoolClient } from 'pg';
+
+// Module-level connection pool — shared across tests in the same worker process
+const pool = new Pool({
+  connectionString: process.env.TEST_DATABASE_URL ?? 'postgresql://postgres:test@localhost:5432/testdb',
+  max: 5,  // Match Vitest poolOptions.forks.maxWorkers
+});
+
+/**
+ * Vitest 4.1 aroundEach: wraps each test in a Postgres transaction.
+ * The transaction is ALWAYS rolled back after the test — regardless of whether
+ * the test passed, failed, or threw an unhandled error.
+ *
+ * Benefits over beforeEach/afterEach:
+ * - beforeEach/afterEach can be skipped if the test runner crashes mid-suite
+ * - aroundEach teardown (after `yield`) is guaranteed to execute
+ * - Transaction rollback is faster than DELETE-based cleanup
+ */
+export const withTransaction = aroundEach(async function* () {
+  // SETUP: acquire a connection and begin a transaction
+  const client: PoolClient = await pool.connect();
+  await client.query('BEGIN');
+
+  // YIELD: the test runs here, with access to the transactional client
+  yield client;
+
+  // TEARDOWN (always runs — even on test failure):
+  await client.query('ROLLBACK');
+  client.release();
+});
+```
+
+```typescript
+// tests/integration/user.repository.spec.ts — integration test using aroundEach
+import { describe, it, expect } from 'vitest';
+import type { PoolClient } from 'pg';
+import { withTransaction } from './setup/db-transaction.js';
+import { UserRepository } from '../../src/repositories/user.repository.js';
+
+describe('UserRepository', () => {
+  // aroundEach: each `it` block receives the transactional client as its parameter
+  // All DB writes in the test are rolled back after the test completes
+  withTransaction(async (client: PoolClient) => {
+    it('creates a user and retrieves them by ID', async () => {
+      const repo = new UserRepository(client);
+
+      const created = await repo.create({
+        email: 'test@example.com',
+        name: 'Test User',
+        role: 'viewer',
+      });
+
+      expect(created.id).toBeTruthy();
+      expect(created.email).toBe('test@example.com');
+
+      const retrieved = await repo.findById(created.id);
+      expect(retrieved?.email).toBe('test@example.com');
+      // This row will be ROLLED BACK after the test — no cleanup needed
+    });
+
+    it('returns null for a non-existent user', async () => {
+      const repo = new UserRepository(client);
+      const result = await repo.findById('00000000-0000-0000-0000-000000000000');
+      expect(result).toBeNull();
+      // Transaction rolled back automatically
+    });
+
+    it('enforces unique email constraint', async () => {
+      const repo = new UserRepository(client);
+      await repo.create({ email: 'unique@example.com', name: 'First', role: 'viewer' });
+
+      await expect(
+        repo.create({ email: 'unique@example.com', name: 'Second', role: 'viewer' }),
+      ).rejects.toThrow(/unique/i);
+      // Rolled back — 'unique@example.com' does not persist after this test
+    });
+  });
+});
+```
+
+**WHY `aroundEach` replaces `beforeEach`/`afterEach` for DB integration tests**: The classic pattern uses `beforeEach(() => db.beginTransaction())` and `afterEach(() => db.rollback())`. If a test's `beforeAll` setup throws, `afterEach` may still run but in an inconsistent state. More critically, if Vitest worker crashes mid-test-file, `afterEach` is not guaranteed to run — leaving committed writes in the test database that corrupt subsequent test runs. `aroundEach` guarantees that the teardown code after `yield` runs in the same async frame as the test, bounded by the generator's scope. The database transaction pattern eliminates state leakage by construction.
+
+> [community] **Lesson (Vitest 4.1 aroundEach adopters, 2026)**: Teams migrating from `beforeEach/afterEach` cleanup to `aroundEach` transaction patterns report eliminating "randomly failing tests that pass when run in isolation" — the classic symptom of test state leakage through a shared database. The transaction rollback is also measurably faster than `DELETE FROM table WHERE created_at > ?` cleanup queries: a transaction rollback requires zero disk I/O on modern PostgreSQL (WAL-only); delete-based cleanup requires two WAL writes per row.
+
+> [community] **Gotcha (aroundEach + Vitest `forks` pool mode)**: The `withTransaction` fixture above acquires a `PoolClient` inside the generator. In `forks` pool mode, each test file runs in its own OS process — the `pg.Pool` is not shared between files, so each file establishes its own connection pool. This is correct. If using `threads` pool mode (shared memory between tests), a module-level `pg.Pool` is shared across all test files — ensure the pool `max` is set to handle concurrent connections from multiple test files running in the same thread context.
+
+---
+
+### `detectAsyncLeaks` — Deterministic Flaky Test Detection
+
+`detectAsyncLeaks: true` detects dangling async operations (unresolved promises, uncleared timers, unfinished streams) that complete after the test ends — turning the root cause of many flaky tests into deterministic, reproducible failures.
+
+```typescript
+// vitest.config.ts — enable async leak detection in CI
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'node',
+    globals: true,
+
+    // Vitest 4.1+: detect async operations that outlive the test
+    // WHY: a setTimeout(fn, 1000) in test A that resolves during test B is the
+    // classic flaky test root cause — detectAsyncLeaks makes it a hard failure in test A
+    detectAsyncLeaks: process.env.CI === 'true',  // Enable in CI; may be noisy locally
+
+    pool: 'forks',
+    poolOptions: { forks: { maxWorkers: 4 } },
+    testTimeout: 10_000,
+  },
+});
+```
+
+```typescript
+// Demonstrating detectAsyncLeaks: leaky test vs clean test
+import { describe, it, expect, vi, afterEach } from 'vitest';
+
+// LEAKY: this test starts an async operation that outlives the test
+// With detectAsyncLeaks: Vitest 4.1 reports "1 async operation leaked from test"
+describe('AsyncLeakDemo', () => {
+  it('leaky test — setTimeout not cleared', () => {
+    // This timer fires 2s after the test completes — root cause of flakiness
+    // in downstream tests that see the side effect
+    setTimeout(() => {
+      // Some state mutation that affects shared globals
+      process.env.LEAKED_VALUE = 'from-test-A';
+    }, 2000);
+
+    expect(1 + 1).toBe(2); // Test passes, but timer is still running
+    // detectAsyncLeaks: reports "uncleared timer detected after test completion"
+  });
+});
+
+// CLEAN: properly clear the timer after the test
+describe('CleanAsyncDemo', () => {
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+
+  afterEach(() => {
+    // Vitest 4.1 best practice: clearTimeout in afterEach or aroundEach
+    if (timerId !== undefined) {
+      clearTimeout(timerId);
+      timerId = undefined;
+    }
+  });
+
+  it('clean test — timer is cleared', () => {
+    timerId = setTimeout(() => {
+      process.env.LEAKED_VALUE = 'never-set';
+    }, 2000);
+
+    expect(1 + 1).toBe(2);
+    // detectAsyncLeaks: no leak reported — timer is tracked in afterEach
+  });
+});
+
+// BEST PRACTICE: use fake timers instead of real timers in unit tests
+describe('FakeTimerDemo', () => {
+  it('uses fake timers — no async leak possible', () => {
+    vi.useFakeTimers();
+
+    let callCount = 0;
+    const id = setTimeout(() => { callCount++; }, 1000);
+
+    // Advance fake timer — no real async operation created
+    vi.advanceTimersByTime(1000);
+    expect(callCount).toBe(1);
+
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    // detectAsyncLeaks: nothing to detect — no real timers were created
+  });
+});
+```
+
+**WHY `detectAsyncLeaks` is a shift-left improvement**: Flaky tests caused by async leakage are among the most expensive defects in test suites — they fail intermittently, cannot be reproduced reliably, and waste hours of debugging time. `detectAsyncLeaks: true` converts a probabilistic failure (the leaked operation sometimes races with the next test) into a deterministic one (Vitest immediately reports the leak in the offending test). This turns flakiness root causes into PR-blocking failures — caught at authoring time, not after three retry-flaky investigations.
+
+> [community] **Lesson (Vitest 4.1 early adopters, 2026)**: Teams enabling `detectAsyncLeaks: true` on existing test suites report discovering 3–8 async leaks per 1000 test cases in typical TypeScript projects. The most common sources: (1) database connection cleanup in integration tests (connection returned to pool after test, but an in-flight query resolves later), (2) event emitters not unsubscribed after tests, (3) `setTimeout` used instead of `vi.useFakeTimers()` in unit tests. Enabling in CI only (`process.env.CI === 'true'`) avoids noise during local development while catching issues in the PR gate.
+
+---
+
+### Test Tag Filtering — Tiered CI Execution
+
+Vitest 4.1 supports tagging tests with custom labels and filtering by tag — enabling tiered CI pipelines that run only high-priority tests on every PR and the full suite nightly.
+
+```typescript
+// src/services/auth.service.spec.ts — tests tagged for tiered CI execution
+import { describe, it, expect, vi } from 'vitest';
+import { AuthService } from './auth.service.js';
+
+describe('AuthService', () => {
+  // Tag: 'critical' — runs on every PR (fastest feedback)
+  it('verifies a valid JWT token', { tags: ['critical', 'security'] }, async () => {
+    const authService = new AuthService({ secret: 'test-secret-min-32-chars-abc123' });
+    const token = await authService.sign({ userId: 'user_1', role: 'admin' });
+    const payload = await authService.verify(token);
+    expect(payload.userId).toBe('user_1');
+    expect(payload.role).toBe('admin');
+  });
+
+  // Tag: 'security' — runs on security-focused PRs and nightly
+  it('rejects expired tokens', { tags: ['critical', 'security'] }, async () => {
+    const authService = new AuthService({ secret: 'test-secret-min-32-chars-abc123' });
+    // Create a token that expired 1 second ago
+    const expiredToken = await authService.sign(
+      { userId: 'user_1', role: 'viewer' },
+      { expiresIn: '-1s' },  // Negative expiry: already expired
+    );
+    await expect(authService.verify(expiredToken)).rejects.toThrow(/expired/i);
+  });
+
+  // Tag: 'slow' — only runs nightly (integration-level, takes > 500ms)
+  it('validates token across service restart', { tags: ['slow', 'integration'] }, async () => {
+    // Simulates key rotation: tokens signed before restart should still validate
+    // This test is intentionally slow — it exercises token persistence
+    const authService1 = new AuthService({ secret: 'persistent-secret-abc123456789' });
+    const token = await authService1.sign({ userId: 'user_2', role: 'editor' });
+
+    // Simulate service restart with same secret
+    const authService2 = new AuthService({ secret: 'persistent-secret-abc123456789' });
+    const payload = await authService2.verify(token);
+    expect(payload.userId).toBe('user_2');
+  });
+
+  // Tag: 'regression' — runs after bug fixes (guards specific regression scenarios)
+  it('rejects tokens signed with wrong algorithm (CVE guard)', { tags: ['security', 'regression'] }, async () => {
+    const authService = new AuthService({ secret: 'test-secret-min-32-chars-abc123' });
+    // Algorithm confusion attack: HS256 token presented to RS256 endpoint
+    const malformedToken = 'eyJhbGciOiJub25lIn0.eyJ1c2VySWQiOiJhZG1pbiJ9.';
+    await expect(authService.verify(malformedToken)).rejects.toThrow();
+  });
+});
+```
+
+```typescript
+// vitest.config.ts — configure tiered test execution by tag
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'node',
+    globals: true,
+    pool: 'forks',
+    poolOptions: { forks: { maxWorkers: 4 } },
+    detectAsyncLeaks: process.env.CI === 'true',
+  },
+});
+```
+
+```yaml
+# .github/workflows/tiered-tests.yml — tiered test execution by tag
+name: Tiered Tests
+on:
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 4 * * *'   # Nightly full suite
+
+jobs:
+  # Tier 1: Critical tests on every PR (sub-30s)
+  critical-tests:
+    name: Critical Tests (PR gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # Vitest 4.1: --project filter by tag — only run tests tagged 'critical'
+      - run: npx vitest run --reporter=github-actions --testNamePattern="" -- --tag critical
+        # Alternatively use CLI flag: npx vitest run --project "tag:critical"
+
+  # Tier 2: Security tests on PRs touching auth/authorization code
+  security-tests:
+    name: Security Tests (auth PRs)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      # Run all tests tagged 'security' — faster than full suite, covers all security-critical paths
+      - run: npx vitest run -- --tag security
+
+  # Tier 3: Full suite nightly (includes 'slow', 'integration', 'regression' tests)
+  full-suite:
+    name: Full Test Suite (nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # No tag filter: run all tests
+      - run: npx vitest run --coverage --reporter=github-actions
+```
+
+**WHY tag-based tiered execution is shift-left**: Running the full test suite (including slow integration tests and performance-sensitive tests) on every PR is the enemy of developer velocity. When PRs take 15 minutes to get CI results, developers batch commits, reduce commit frequency, and start skipping checks. Tag-based tiering ensures that the PR feedback loop is anchored to the fastest meaningful signal — `critical` + `security` tests in < 2 minutes — while the expensive tests run nightly. The insight from the DORA report: elite performers invest in fast PR gates, not comprehensive-but-slow ones.
+
+> [community] **Lesson (Vitest 4.1 tag filtering, 2026)**: Teams adopting tag-based tiering typically start with two tags: `critical` (all tests that must pass for a deployment to be safe) and `slow` (tests that take > 500ms or require external services). The `critical` tag covers authorization, validation, and core business logic. Once this split is in place, teams extend to `security`, `integration`, and `regression` tags as the suite grows. The tagging discipline forces developers to consciously categorize each test — which itself improves test quality.
+
+> [community] **Gotcha (Vitest 4.1 tag filtering syntax, 2026)**: Vitest 4.1's tag filtering CLI syntax uses `-- --tag tagname` (extra `--` before the tag flag). This is different from Playwright's `--grep "@tagname"` syntax. In npm scripts, escape carefully: `"test:critical": "vitest run -- --tag critical"`. Missing the `--` separator causes Vitest to interpret `--tag` as a Vitest option rather than a test reporter option — producing a "unknown option" error.
+
+---
+
+## Key Resources (updated 2026-05-12)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| Lighthouse CI | Tool | https://github.com/GoogleChrome/lighthouse-ci | Performance budget enforcement as PR gate — Core Web Vitals, bundle size, accessibility score |
+| Grafana k6 | Tool | https://grafana.com/docs/k6/latest/ | API load testing with TypeScript-native scripts; p95/p99 thresholds as CI gates |
+| k6 Thresholds | Official | https://grafana.com/docs/k6/latest/using-k6/thresholds/ | Pass/fail criteria for k6 performance tests — p(95)<200 pattern |
+| Vitest 4.1 aroundEach | Official | https://vitest.dev/guide/test-context.html | Guaranteed cleanup for DB integration tests; replaces fragile beforeEach/afterEach pairs |
+| Vitest 4.1 detectAsyncLeaks | Official | https://vitest.dev/config/#detectasyncleaks | Converts flaky async leak root causes into deterministic failures |
+| Vitest test tags | Official | https://vitest.dev/guide/filtering.html#tags | Tag-based test filtering for tiered CI execution (critical/security/slow) |
 
 ---

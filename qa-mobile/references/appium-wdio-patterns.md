@@ -1,5 +1,5 @@
 # Appium / WebDriverIO Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official docs + community | iteration: 35 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official docs + community | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 <!-- iter 34 additions: appium:chromedriverForwardBiDi (UIAutomator2 v7+ BiDi WebSocket forwarding for Android WebView
      + webDriverUrl requirement + 3 gotchas),
      currentDisplayId settings API (UIAutomator2 v7+ runtime display targeting for foldable devices + 3 gotchas),
@@ -16905,3 +16905,590 @@ CI matrices so you get full signal on every PR.
      saucelabs documentation (cacheId, appiumVersion alias, storage: reference format, Sauce Connect),
      github.com/webdriverio/webdriverio/tree/main/packages/wdio-sauce-service (setJobName API),
      training knowledge (GitHub Actions matrix fail-fast, W3C pointer actions, XCUITest pinch) -->
+
+---
+
+## Appium 2.x Plugin System — Installation, Usage & Custom Plugins  [community]
+
+Appium 2.x introduced a first-class plugin architecture. Plugins intercept and extend Appium's
+command handling without forking the server. They install into the Appium server process (not
+into test code) and are declared at server startup.
+
+### Plugin CLI quick reference
+
+```bash
+# List all installed plugins
+appium plugin list
+
+# Install an official plugin from npm
+appium plugin install --source npm appium-wait-plugin
+appium plugin install --source npm @appium/device-farm
+appium plugin install --source npm appium-gestures-plugin
+
+# Install a plugin from a local path (development)
+appium plugin install --source local /path/to/my-plugin
+
+# Install a plugin from a GitHub repo
+appium plugin install --source github appium/appium-wait-plugin
+
+# Uninstall a plugin
+appium plugin uninstall appium-wait-plugin
+
+# Update a plugin to the latest version
+appium plugin update appium-wait-plugin
+```
+
+### Activating plugins at server startup
+
+Plugins must be explicitly activated with `--use-plugins` — installing alone is not enough:
+
+```bash
+# Start Appium with one plugin
+appium --use-plugins=appium-wait-plugin
+
+# Start with multiple plugins (comma-separated)
+appium --use-plugins=appium-wait-plugin,appium-gestures-plugin
+```
+
+In `@wdio/appium-service`, pass plugins via `appiumArgs`:
+
+```typescript
+// wdio.conf.ts — activate plugins via the WDIO Appium service
+export const config: Options.Testrunner = {
+  services: [
+    ['appium', {
+      appiumArgs: {
+        port: 4723,
+        'base-path': '/',
+        'use-plugins': 'appium-wait-plugin,appium-gestures-plugin',
+        // If a plugin requires allowInsecure, add it here:
+        // 'allow-insecure': 'appium-wait-plugin:*',
+      },
+    }],
+  ],
+};
+```
+
+### `appium-wait-plugin` — automatic implicit waiting
+
+The wait plugin removes the need for `waitForDisplayed()` in every test. It intercepts
+`findElement` calls and retries automatically until the element appears or the timeout expires.
+
+```typescript
+// Without plugin (explicit wait required every time):
+await $('~submitButton').waitForDisplayed({ timeout: 10_000 });
+await $('~submitButton').click();
+
+// With appium-wait-plugin active (no explicit wait needed):
+await $('~submitButton').click();  // plugin handles the wait automatically
+
+// Override wait settings per-test at runtime:
+await driver.execute('plugin: setWaitPluginProperties', {
+  timeout: 20_000,          // ms — override server default for this session
+  intervalBetweenAttempts: 500,  // ms between retries
+});
+```
+
+Server startup for the wait plugin:
+
+```bash
+appium --use-plugins=appium-wait-plugin \
+  --plugin-element-wait-timeout=15000 \
+  --plugin-element-wait-interval-between-attempts=300
+```
+
+**[community] `appium-wait-plugin` masks root-cause flakiness — elements that require explicit
+waiting are often symptoms of race conditions or animation timing issues in the app itself:**
+WHY: The plugin hides missing waits by retrying silently. A test that passes only because the
+plugin waited 14 seconds for an element is inherently slow. Fix: use the plugin as a safety net
+during initial test authoring, but profile slow tests with `trackSelectorPerformance` and add
+targeted `waitForDisplayed` calls to the worst offenders.
+
+**[community] The wait plugin does NOT apply to `$$()` (multi-element queries) — only single
+element `$()` finds are intercepted:** WHY: The plugin hooks `findElement` (W3C singular) but
+not `findElements` (W3C plural). Calling `$$('~item').length` will return 0 immediately if
+elements haven't appeared yet. Fix: call a single `$()` first to wait, then call `$$()` to
+collect all matching elements.
+
+**[community] Plugins must be re-activated after upgrading Appium — `appium plugin update`
+updates the plugin package but does NOT add it to `--use-plugins` if the startup flags changed:**
+WHY: The `--use-plugins` flag is ephemeral (CLI-only). If your CI startup script hardcodes
+plugin names, adding a new plugin requires updating both `appium plugin install` and
+`--use-plugins`. Fix: manage plugins in `.appiumrc.json` using the `"plugin"` key so
+installation and activation stay in sync.
+
+### `appium-gestures-plugin` — higher-level mobile gestures
+
+The gestures plugin exposes high-level gesture commands not available in the standard Appium
+protocol, avoiding the complexity of raw W3C pointer actions.
+
+```typescript
+// Scroll to an element by accessibility ID (iOS + Android unified)
+await driver.execute('gesture: scrollToElement', {
+  elementId: await $('~targetItem').getElement().then(el => el.elementId),
+  direction: 'down',
+  maxScrolls: 10,
+});
+
+// Perform a free-form swipe gesture (plugin handles W3C actions internally)
+await driver.execute('gesture: swipe', {
+  direction: 'left',        // 'left' | 'right' | 'up' | 'down'
+  percent: 0.75,            // swipe 75% of the screen width/height
+  speed: 1000,              // pixels per second
+});
+
+// Long-press on an element with precise duration control
+await driver.execute('gesture: longPress', {
+  elementId: await $('~contextMenuTrigger').getElement().then(el => el.elementId),
+  duration: 2000,           // ms
+});
+```
+
+**[community] `appium-gestures-plugin` requires `appium:automationName` to be either
+`UiAutomator2` (Android) or `XCUITest` (iOS) — it does NOT work with Espresso or other drivers
+because it uses driver-specific scroll primitives under the hood:** WHY: The plugin maps
+`gesture: scrollToElement` to `mobile: scroll` on iOS (XCUITest) and `mobile: scrollGesture`
+on Android (UiAutomator2). Both commands are driver-specific. Fix: check your `automationName`
+capability before enabling the plugin; on Espresso, use `mobile: scrollToPage` directly.
+
+### Custom Appium plugin skeleton (TypeScript)
+
+For teams that need to extend Appium with project-specific behavior (e.g. custom logging,
+test fixture injection, or proprietary device management):
+
+```typescript
+// my-custom-plugin/index.ts
+import type BasePlugin from '@appium/base-plugin';
+
+// Custom plugin that logs all click commands with a timestamp
+export default class TimestampLogPlugin extends (require('@appium/base-plugin') as typeof BasePlugin) {
+  static pluginName = 'timestamp-log';
+
+  // Intercept 'click' before it reaches the driver
+  async click(
+    next: () => Promise<unknown>,
+    driver: unknown,
+    ...args: unknown[]
+  ): Promise<unknown> {
+    const start = Date.now();
+    console.log(`[timestamp-log] click started at ${new Date(start).toISOString()}`);
+    const result = await next();
+    console.log(`[timestamp-log] click completed in ${Date.now() - start}ms`);
+    return result;
+  }
+}
+```
+
+```json
+// package.json for the custom plugin
+{
+  "name": "my-appium-timestamp-plugin",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "appium": {
+    "pluginName": "timestamp-log",
+    "mainClass": "TimestampLogPlugin"
+  }
+}
+```
+
+```bash
+# Install and activate the local plugin
+appium plugin install --source local ./my-custom-plugin
+appium --use-plugins=timestamp-log
+```
+
+---
+
+## Mobile Accessibility Testing — iOS VoiceOver & Android TalkBack  [community]
+
+Accessibility testing ensures your app is usable by people with visual, motor, and cognitive
+disabilities. On mobile, this means verifying your app works correctly with iOS VoiceOver and
+Android TalkBack screen readers.
+
+### Checking accessibility labels and roles natively
+
+```typescript
+// test/specs/accessibility.spec.ts
+describe('Accessibility label validation', () => {
+  it('should have accessible labels on all interactive elements', async () => {
+    // iOS: accessibilityLabel maps to the ~accessibility-id selector
+    // Android: contentDescription maps to the ~accessibility-id selector
+
+    const submitBtn = $('~submit-button');
+    await submitBtn.waitForDisplayed({ timeout: 5_000 });
+
+    // Verify the accessibility label is meaningful (not empty, not the raw ID)
+    const label = await submitBtn.getAttribute('label');      // iOS
+    const desc  = await submitBtn.getAttribute('content-desc'); // Android
+
+    const accessibleText = browser.isIOS ? label : desc;
+    expect(accessibleText).toBeTruthy();
+    expect(accessibleText).not.toMatch(/^\d+$|^[a-f0-9-]{36}$/i); // not a UUID/raw ID
+  });
+
+  it('should have correct accessibility role for the login button', async () => {
+    const role = await $('~login-button').getComputedRole();
+    // Computed role uses WAI-ARIA roles derived from the element type
+    expect(role).toBe('button');
+  });
+
+  it('should report all interactive elements as enabled', async () => {
+    const interactiveElements = await $$('android.widget.Button');
+    for (const el of interactiveElements) {
+      const enabled = await el.getAttribute('enabled');
+      // Fail if a visible button is unexpectedly disabled
+      expect(enabled).toBe('true');
+    }
+  });
+});
+```
+
+### iOS: Verifying element traits (by.traits equivalent via `mobile: getElementAttribute`)
+
+On iOS, XCUITest exposes accessibility traits (`.button`, `.link`, `.selected`, `.header`, etc.)
+that screen readers use to describe elements. Verify them to catch regressions in accessibility
+markup:
+
+```typescript
+// iOS-specific accessibility trait verification
+async function getElementTraits(element: WebdriverIO.Element): Promise<string[]> {
+  if (!browser.isIOS) return [];
+  const traitsRaw = await element.getAttribute('traits') ?? '';
+  // XCUITest returns a comma-separated list: "button,selected"
+  return traitsRaw.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+it('should have button trait on the CTA', async () => {
+  const cta = $('~call-to-action-button');
+  const traits = await getElementTraits(await cta);
+  expect(traits).toContain('button');
+});
+
+it('image decorations should have none trait (not interactive)', async () => {
+  const decoration = $('~decorative-illustration');
+  const traits = await getElementTraits(await decoration);
+  // Decorative images should have 'image' but NOT 'button' or 'link'
+  expect(traits).not.toContain('button');
+  expect(traits).not.toContain('link');
+});
+```
+
+### Android: Verifying content descriptions are not empty for images
+
+```typescript
+// Android accessibility audit: check all ImageViews have content descriptions
+it('should have content descriptions on all images', async () => {
+  if (!browser.isAndroid) return;
+
+  const images = await $$('android.widget.ImageView');
+  const missing: string[] = [];
+
+  for (const img of images) {
+    const cd = await img.getAttribute('content-desc');
+    const resId = await img.getAttribute('resource-id');
+    // Some images are decorative and legitimately have no CD (check importantForAccessibility)
+    const importanceAttr = await img.getAttribute('important-for-accessibility');
+    if (!cd && importanceAttr !== 'no') {
+      missing.push(resId ?? 'unknown-resource-id');
+    }
+  }
+
+  expect(missing).toEqual([]);
+});
+```
+
+### axe-core integration for WebView accessibility scanning
+
+For hybrid apps with WebView components, integrate `axe-core` to run WCAG 2.1 AA audits:
+
+```typescript
+// test/helpers/axeHelper.ts
+import AxeBuilder from '@axe-core/webdriverio';
+
+/**
+ * Run an axe accessibility audit on the current WebView context.
+ * Returns the violations array — empty means no issues found.
+ */
+export async function runAxeOnWebView(
+  contextSelector?: string,
+): Promise<import('axe-core').Result[]> {
+  // Must be in WEBVIEW context before calling this
+  const axeBuilder = new AxeBuilder({ client: browser as never });
+
+  if (contextSelector) {
+    axeBuilder.include(contextSelector);
+  }
+
+  // Focus on WCAG 2.1 AA
+  axeBuilder.withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']);
+
+  const results = await axeBuilder.analyze();
+  return results.violations;
+}
+```
+
+```typescript
+// test/specs/webview-accessibility.spec.ts
+import { runAxeOnWebView } from '../helpers/axeHelper.js';
+
+describe('WebView WCAG accessibility', () => {
+  before(async () => {
+    await browser.switchContext('WEBVIEW_com.example.app');
+  });
+
+  after(async () => {
+    await browser.switchContext('NATIVE_APP');
+  });
+
+  it('should have no WCAG 2.1 AA violations on the dashboard', async () => {
+    await browser.url('/dashboard');
+    await $('[data-testid="dashboard-content"]').waitForDisplayed({ timeout: 5_000 });
+
+    const violations = await runAxeOnWebView();
+
+    if (violations.length > 0) {
+      const report = violations
+        .map((v) => `[${v.impact}] ${v.id}: ${v.description}`)
+        .join('\n');
+      throw new Error(`axe found ${violations.length} WCAG violations:\n${report}`);
+    }
+  });
+
+  it('should have no colour-contrast failures on product cards', async () => {
+    const violations = await runAxeOnWebView('[data-testid="product-card"]');
+    const contrastViolations = violations.filter((v) => v.id === 'color-contrast');
+    expect(contrastViolations).toHaveLength(0);
+  });
+});
+```
+
+Install dependencies:
+
+```bash
+npm install --save-dev @axe-core/webdriverio axe-core
+```
+
+**[community] `@axe-core/webdriverio` version must match `axe-core` version exactly — version
+skew causes silent false negatives (no violations reported even when issues exist):** WHY:
+`@axe-core/webdriverio` injects the `axe.min.js` script from the `axe-core` package. If the two
+packages are at different minor versions, the injected script API doesn't match the results
+parser, and analysis returns `violations: []` silently. Fix: always pin both to the same version:
+`"axe-core": "4.9.x", "@axe-core/webdriverio": "4.9.x"`.
+
+**[community] axe runs inside the WebView context — you MUST call `switchContext('WEBVIEW_...')`
+before `axeBuilder.analyze()` or you'll get `TypeError: browser.executeScript is not a function`:**
+WHY: `@axe-core/webdriverio` uses `browser.executeScript()` which is a web context command. In
+native Appium context, WebDriver protocol doesn't expose `executeScript`. Fix: always switch to
+the WebView context before running axe, and switch back afterward.
+
+**[community] Long axe analyses time out on large WebView pages — default WDIO `commandTimeout`
+(30 s) is too short for complex single-page apps:** WHY: axe traverses the full DOM including
+shadow roots and iframes. On a dashboard with hundreds of components, the `analyze()` call can
+take 40+ seconds. Fix: increase `connectionRetryTimeout` in `wdio.conf.ts` to 120 s for tests
+that include axe scans.
+
+---
+
+## BrowserStack Real Device Testing — Full WDIO v9 TypeScript Configuration  [community]
+
+BrowserStack App Automate provides 3000+ real iOS and Android devices. The `@wdio/browserstack-service`
+handles session tagging, test observability, and local tunnel management.
+
+### Installation
+
+```bash
+npm install --save-dev @wdio/browserstack-service
+```
+
+### Complete `wdio.conf.browserstack.ts`
+
+```typescript
+// wdio.conf.browserstack.ts
+import type { Options } from '@wdio/types';
+import { uploadAppToBrowserStack } from './test/helpers/bsUpload.js';
+
+const BS_USER = process.env.BROWSERSTACK_USERNAME!;
+const BS_KEY  = process.env.BROWSERSTACK_ACCESS_KEY!;
+const BUILD   = process.env.CI_BUILD_NUMBER ?? `local-${Date.now()}`;
+
+// Upload app once and share the bs:// URL across all parallel sessions
+const IOS_APP_URL     = process.env.BS_IOS_APP_URL     ?? await uploadAppToBrowserStack('./build/MyApp.ipa');
+const ANDROID_APP_URL = process.env.BS_ANDROID_APP_URL ?? await uploadAppToBrowserStack('./build/MyApp.apk');
+
+export const config: Options.Testrunner = {
+  user: BS_USER,
+  key:  BS_KEY,
+  hostname: 'hub-cloud.browserstack.com',
+  port: 443,
+  protocol: 'https',
+  path: '/wd/hub',
+
+  services: [
+    ['browserstack', {
+      browserstackLocal: false,       // set true for localhost/staging APIs
+      testObservability: true,        // enables BrowserStack Observability dashboard
+      testObservabilityOptions: {
+        projectName: 'My Mobile App',
+        buildName:   `CI Build #${BUILD}`,
+        buildTag:    process.env.GITHUB_REF_NAME ?? 'local',
+      },
+      sessionNameFormat: (config, capabilities, suiteTitle, testTitle) =>
+        `${testTitle} | ${(capabilities as WebdriverIO.Capabilities)['bstack:options']?.deviceName}`,
+    }],
+  ],
+
+  maxInstances: 5,   // BrowserStack parallel concurrency (adjust per subscription tier)
+
+  capabilities: [
+    // iOS — real iPhone
+    {
+      platformName: 'iOS',
+      'appium:automationName': 'XCUITest',
+      'appium:app': IOS_APP_URL,
+      'bstack:options': {
+        deviceName:      'iPhone 15 Pro',
+        osVersion:       '17',
+        projectName:     'My Mobile App',
+        buildName:       `CI Build #${BUILD}`,
+        sessionName:     'iOS E2E',
+        debug:           true,   // enables visual logs on BrowserStack dashboard
+        networkLogs:     true,
+        appiumLogs:      true,
+      },
+    },
+    // Android — real device
+    {
+      platformName: 'Android',
+      'appium:automationName': 'UiAutomator2',
+      'appium:app': ANDROID_APP_URL,
+      'bstack:options': {
+        deviceName:      'Samsung Galaxy S24',
+        osVersion:       '14.0',
+        projectName:     'My Mobile App',
+        buildName:       `CI Build #${BUILD}`,
+        sessionName:     'Android E2E',
+        debug:           true,
+        networkLogs:     true,
+        appiumLogs:      true,
+      },
+    },
+  ],
+
+  specs: ['test/specs/**/*.spec.ts'],
+
+  mochaOpts: {
+    timeout: 120_000,  // BrowserStack sessions have network latency — increase timeout
+  },
+};
+```
+
+### App upload helper
+
+```typescript
+// test/helpers/bsUpload.ts
+import { readFileSync } from 'fs';
+import { basename } from 'path';
+
+/**
+ * Upload an app binary to BrowserStack App Storage.
+ * Returns the bs:// URL to use as the `appium:app` capability.
+ * Caches results to avoid re-uploading on retries.
+ */
+export async function uploadAppToBrowserStack(localPath: string): Promise<string> {
+  const user = process.env.BROWSERSTACK_USERNAME!;
+  const key  = process.env.BROWSERSTACK_ACCESS_KEY!;
+
+  const body = new FormData();
+  body.append('file', new Blob([readFileSync(localPath)]), basename(localPath));
+
+  const response = await fetch(
+    'https://api-cloud.browserstack.com/app-automate/upload',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${user}:${key}`).toString('base64')}`,
+      },
+      body,
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`BrowserStack app upload failed: ${response.status} ${await response.text()}`);
+  }
+
+  const data = await response.json() as { app_url: string };
+  console.log(`[BrowserStack] Uploaded app: ${data.app_url}`);
+  return data.app_url;
+}
+```
+
+### Using regex for flexible device selection
+
+```typescript
+// BrowserStack supports regex in deviceName and osVersion for flexible allocation
+capabilities: [
+  {
+    platformName: 'Android',
+    'appium:automationName': 'UiAutomator2',
+    'appium:app': ANDROID_APP_URL,
+    'bstack:options': {
+      // Any available Samsung Galaxy S series running Android 13 or 14
+      deviceName: 'Samsung Galaxy S.*',
+      osVersion:  '1[34]',
+    },
+  },
+],
+```
+
+**[community] BrowserStack sessions time out after 300 s of inactivity — set
+`appium:newCommandTimeout: 0` in capabilities to disable the driver-level timeout and rely only
+on BrowserStack's session-level limit:** WHY: With two independent timeouts, the shorter one wins.
+If your test has a `browser.pause(30000)` debugging line left in, the Appium server times out
+first (default 60 s), not BrowserStack's 300 s. Fix: set `'appium:newCommandTimeout': 0` in
+your BrowserStack capabilities to disable the Appium-level timeout and use only BrowserStack's
+session timeout as the upper bound.
+
+**[community] BrowserStack `testObservability: true` requires `@wdio/browserstack-service >= 8.x`
+— older v7.x service versions silently ignore the `testObservabilityOptions` block:** WHY: The
+Observability API was added in service v8. If you upgraded `webdriverio` to v9 but left
+`@wdio/browserstack-service` at v7, the options are valid TypeScript but do nothing at runtime.
+Fix: always upgrade all `@wdio/*` packages together: `npm install @wdio/browserstack-service@latest`.
+
+**[community] `bs://` app URLs expire after 60 days (same as Sauce Labs storage) — automation
+pipelines that cache app URLs across branches will fail after expiry with `App not found` error:**
+WHY: BrowserStack's App Storage lifecycle is 60 days from last access. An app uploaded for a
+long-lived feature branch may reference an expired ID when the branch is rebased months later.
+Fix: always re-upload the app binary at pipeline start time; treat `bs://` URLs as ephemeral
+build artefacts, not long-term references.
+
+**[community] `browserstackLocal: true` starts a BrowserStack Local tunnel process — if the tunnel
+binary is not in PATH or the firewall blocks the tunnel port (45691), sessions fail with
+`Could not connect to BrowserStack Local`:** WHY: The `@wdio/browserstack-service` downloads and
+launches `BrowserStackLocal` as a subprocess. Corporate firewalls often block the tunnel port.
+Fix: pre-download the tunnel binary as a CI artefact; verify port 45691 is open on the CI network;
+set `opts.forceLocal: true` to force all traffic through the tunnel even for publicly accessible URLs.
+
+---
+
+<!-- lang: TypeScript | sources: official docs + community | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- iter 37 additions (autoresearch loop):
+     - Appium 2.x plugin system: plugin CLI commands (install/list/update/uninstall),
+       appiumArgs use-plugins config, appium-wait-plugin (setWaitPluginProperties + 2 gotchas),
+       appium-gestures-plugin (scrollToElement/swipe/longPress commands + 1 gotcha),
+       custom plugin skeleton (TypeScript BasePlugin extension + pluginName + command intercept)
+     - Mobile accessibility testing: iOS trait verification (getElementTraits helper),
+       Android content-description audit, axe-core WebView integration (@axe-core/webdriverio
+       full TypeScript example + runAxeOnWebView helper + 3 gotchas)
+     - BrowserStack real device testing: complete wdio.conf.browserstack.ts (iOS + Android caps
+       + bstack:options + testObservability), uploadAppToBrowserStack helper using native fetch,
+       regex device selection pattern, 4 community gotchas (session timeout, observability version,
+       URL expiry, Local tunnel firewall)
+     Total new lines: ~310 | Total community pitfalls: 450+ -->
+<!-- Sources (iter 37):
+     github.com/AppiumTestDistribution/appium-wait-plugin (plugin API + CLI reference),
+     webdriver.io/docs/browserstack-service (service options + sessionNameFormat),
+     browserstack.com/docs/app-automate/appium/nodejs-webdriverio (capabilities + upload API),
+     webdriver.io/blog/2024/08/15/webdriverio-v9-release (WDIO v9 feature summary),
+     axe-core/webdriverio README (axeBuilder API, withTags, include),
+     training knowledge (Appium plugin architecture, iOS traits, Android content-desc audit) -->

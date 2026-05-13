@@ -1,5 +1,5 @@
 # Test Pyramid — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-pyramid | iteration: 47 | score: 98/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-pyramid | iteration: 48 | score: 98/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge synthesis + WebFetch: martinfowler.com (2026-05-03, 2026-05-12) | new: howtheytest (108 companies real-world test strategies) -->
 <!-- official refs: martinfowler.com/bliki/TestPyramid.html, martinfowler.com/articles/practical-test-pyramid.html, martinfowler.com/articles/microservice-testing/ -->
 <!-- community refs: kentcdodds.com/blog/write-tests, testing.googleblog.com, Spotify Engineering Blog, martinfowler.com/articles/2021-test-shapes.html -->
@@ -9,7 +9,9 @@
 <!-- new (2026-05-12 iter 35): TypeScript 6.0 breaking default changes (types:[], strict:true, module:esnext, rootDir:.) — silent test pipeline breakage; Vitest 5.0.0-beta.2 (May 5, 2026) — inline expect, sequential removal, directory restructure; Playwright v1.60 HAR tracing API (tracing.startHar) + locator.drop() drag-and-drop; Google "The Way of TDD" (Mar 2026) blog post -->
 <!-- new (2026-05-12 iter 36): Vitest 3.2 (Jun 2025) — Annotation API, Scoped Fixtures (scope:file|worker), explicit resource management (using vi.spyOn), Test Signal API (AbortSignal), multi-project sequence.groupOrder, watchTriggerPatterns, workspace→projects deprecation; TypeScript 5.8 — --module node18 stable, import with {type:"json"}, watch mode perf; Playwright v1.51 storageState({indexedDB:true}) for IndexedDB auth; Vitest 4.1.4+ browser locators exact option + Aria snapshots in browser mode -->
 <!-- new (2026-05-12 iter 37): Playwright v1.56-v1.60 series — Agents (planner/generator/healer AI agents for e2e test creation/maintenance), v1.57 Speedboard HTML reporter tab + testConfig.webServer.wait named capture groups + Chrome for Testing + Service Worker BrowserContext routing, v1.59 page.screencast API + browser.bind(), v1.60 browser.on('context') + getByRole description option + toHaveCSS pseudo option + testInfoError.errorContext + webSocketRoute.protocols(); Vitest 4.1 — vi.defineHelper (custom assertion stack traces), coverage.changed (coverage only for changed files), page.mark()/locator.mark() trace annotations; TypeScript 6.0 — esModuleInterop always true (breaks import * as X patterns in test files), #/ subpath imports shorthand; new community gotchas: AI agent test generation pyramid governance, WebSocket testing at integration level, Service Worker test gaps, Playwright Agents healer loop gotcha -->
-<!-- new (2026-05-12 iter 38): Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default (no flag needed on Node 22.18+), run .ts test files with bare `node`; Node.js 24 test runner — auto-wait subtests (BREAKING: t.test() no longer returns Promise), global setup/teardown, per-test --test-timeout, JSON module mocking; Node.js native TS limitations for test files: no enums, no decorators, no parameter properties, no legacy namespaces; Vitest 4.1 — mockThrow/mockThrowOnce API, GitHub Actions Job Summary reporter with flaky-test highlighting + permalink URLs, agent reporter mode (AI coding agents), Vite 8 dependency deduplication, browser mode locator strict-mode enforcement; Vitest 5.0 beta additional: multi-environment merge reports (non-sharded), configDefaults.reporters, logger.formatError, JUnit jest-junit-compatible naming, locator-as-object representation; Vitest 3.2 — custom project name colors, locators.extend browser API, V8 AST-aware coverage remapping, watchTriggerPatterns for non-static file relationships; community gotchas: Node.js native TS execution fails for NestJS (decorators unsupported), Node.js 24 t.test() promise removal breaks existing pipelines, Vitest 4.1 strict browser locators catch multi-match bugs silently hidden before -->
+<!-- new (2026-05-12 iter 48): AI/LLM application test pyramid adaptation (simulation layer, judge-based evaluation, red-teaming as e2e-equivalent), Testcontainers Cloud Turbo mode parallel integration tests, Vitest 4.1 undocumented APIs (vitest list, importDurations, coverage.htmlDir, coverage ignore comments, chai-style mock assertions, describe.for chainable flags), Testcontainers reuse pattern with TESTCONTAINERS_RYUK_DISABLED -->
+
+ Node.js v22.18.0 (Jul 2025) — TypeScript type stripping on by default (no flag needed on Node 22.18+), run .ts test files with bare `node`; Node.js 24 test runner — auto-wait subtests (BREAKING: t.test() no longer returns Promise), global setup/teardown, per-test --test-timeout, JSON module mocking; Node.js native TS limitations for test files: no enums, no decorators, no parameter properties, no legacy namespaces; Vitest 4.1 — mockThrow/mockThrowOnce API, GitHub Actions Job Summary reporter with flaky-test highlighting + permalink URLs, agent reporter mode (AI coding agents), Vite 8 dependency deduplication, browser mode locator strict-mode enforcement; Vitest 5.0 beta additional: multi-environment merge reports (non-sharded), configDefaults.reporters, logger.formatError, JUnit jest-junit-compatible naming, locator-as-object representation; Vitest 3.2 — custom project name colors, locators.extend browser API, V8 AST-aware coverage remapping, watchTriggerPatterns for non-static file relationships; community gotchas: Node.js native TS execution fails for NestJS (decorators unsupported), Node.js 24 t.test() promise removal breaks existing pipelines, Vitest 4.1 strict browser locators catch multi-match bugs silently hidden before -->
 <!-- new (2026-05-12 iter 39): Node.js 24.14.0 LTS (Mar 2026) — `expectFailure` test option for explicitly marking xfail test cases in the built-in test runner (analogous to pytest's @pytest.mark.xfail); `env` option on the `run()` function for per-invocation environment variables; community gotcha: `expectFailure` at the integration level — using `expectFailure` as a quarantine mechanism without fixing the root cause accumulates known failures that are never addressed -->
 <!-- new (2026-05-12 iter 40): Node.js 26.0.0 (May 5, 2026) — TypeScript type stripping fully stable: `--experimental-transform-types` flag removed, bare `node .ts` works without any flag for erasable syntax on any supported Node.js 26 version; Temporal API enabled by default (replaces `new Date()` for time-sensitive unit tests); V8 14.6 — `Map.prototype.getOrInsertComputed`, `Iterator.concat()`; Node.js 26.1.0 (May 7, 2026) — `node:test` randomization: `--test-randomize` + `--test-random-seed=N` flags detect hidden order-dependencies at the unit and integration test levels; `getTestContext()` API accesses current TestContext from helper functions; `AbortSignal.timeout()` mock support in MockTimers; `testId` added to test event objects for structured test tracing; Vitest 4.1.6 (May 11, 2026) stable patch; community gotcha: Node.js 26 removes `--experimental-transform-types` — teams that explicitly passed the flag in CI scripts (e.g., `node --experimental-transform-types server.ts`) now see an "unknown flag" error on Node 26 upgrade -->
 <!-- new (2026-05-12 iter 41): TypeScript 5.9 — new `tsc --init` defaults (`module:nodenext`, `verbatimModuleSyntax:true`, `moduleDetection:force`, `isolatedModules:true`) silently break test tsconfigs that extend the root tsconfig; `import defer` lazy module evaluation affects test setup performance; `--module node20` stable (replaces unstable `nodenext` for Node 20 environments); BREAKING: `ArrayBuffer` type hierarchy change — `Buffer`/`TypedArray` no longer assignable to `ArrayBuffer` in test files using Node.js buffer types; Zod/tRPC cache-instantiation optimisation reduces "excessive type instantiation" errors in large test suites using `expect.schemaMatching`; `verbatimModuleSyntax:true` as `tsc --init` default breaks test files that import type-only symbols without `import type`; community gotchas: TS 5.9 `ArrayBuffer` change breaks `Buffer` usage in integration test helpers (gotcha #45), TS 5.9 `verbatimModuleSyntax` default breaks non-type test imports (gotcha #46) -->
@@ -3979,6 +3981,531 @@ The combined anti-pattern of `test.failing.each` + unchecked accumulation produc
 
 ---
 
+### AI/LLM Application Test Pyramid: Adapting the Layers  [community]
+
+TypeScript applications powered by large language models (LLMs) — AI agents, chatbots, RAG pipelines, function-calling orchestrators — do not fit naturally into the classic unit/integration/e2e pyramid. The non-deterministic nature of LLM outputs, the multi-turn stateful conversation model, and the need for semantic evaluation (not just schema matching) require a fourth conceptual layer.
+
+**Adapted pyramid for LLM-powered TypeScript applications:**
+
+| Level | Scope | Tool | Characteristic |
+|-------|-------|------|----------------|
+| Unit | Pure logic: prompt builders, context formatters, tool call parsers | Vitest + snapshot | Deterministic; mock the LLM client |
+| Integration | Prompt → LLM → structured output with real API call | Vitest + `@langchain/core` / Vercel AI SDK | Semi-deterministic with temperature=0 |
+| Simulation (Agent-Level) | Multi-turn conversation; user simulator agent drives the application agent | `langwatch/scenario` | Non-deterministic; evaluated by a judge model |
+| Red-team (E2E-Equivalent) | Adversarial attacks (Crescendo escalation, jailbreak attempts) | `scenario.RedTeamAgent` | Tests refusal behaviour and system prompt leakage |
+
+The **simulation layer** replaces the traditional e2e layer: instead of a browser driving a UI, a `UserSimulatorAgent` drives the conversation to test multi-turn agent behaviour. A `JudgeAgent` evaluates semantic criteria at any point in the conversation — analogous to Playwright's `expect(page).toMatchAriaSnapshot()` for semantic structure.
+
+**Key insight [community]:** At the unit and integration test levels, the principle of determinism is relaxed. With `temperature=0`, many LLM calls produce stable enough output for snapshot-based integration tests. However, any test that relies on model-level probabilistic reasoning (multi-step tool chains, document retrieval ranking, safety evaluation) must be elevated to the simulation layer with a judge, not asserted with `toEqual`.
+
+```typescript
+// Unit test: prompt builder — pure TypeScript, no LLM call (Vitest + TypeScript)
+// src/ai/prompt-builder.unit.test.ts
+import { describe, it, expect } from 'vitest';
+import { buildSystemPrompt, buildUserMessage } from './prompt-builder.js';
+import type { UserContext } from './types.js';
+
+describe('buildSystemPrompt', () => {
+  it('includes the user name and account tier in the system prompt', () => {
+    const ctx: UserContext = { userId: 'u1', name: 'Alice', tier: 'premium' };
+    const prompt = buildSystemPrompt(ctx);
+    expect(prompt).toContain('Alice');
+    expect(prompt).toContain('premium');
+    expect(prompt).not.toContain('undefined');
+  });
+
+  it('does not include raw system prompt contents that would leak to users', () => {
+    const ctx: UserContext = { userId: 'u1', name: 'Bob', tier: 'standard' };
+    const prompt = buildSystemPrompt(ctx);
+    // The system prompt should never start with "You are" visible to the end user
+    expect(prompt.toLowerCase()).not.toMatch(/^you are/);
+  });
+});
+```
+
+```typescript
+// Integration test: tool call parser — real LLM with temperature=0, snapshot-stable (Vitest)
+// tests/integration/tool-call-parser.integration.test.ts
+import { describe, it, expect } from 'vitest';
+import { createOpenAI } from '@ai-sdk/openai';
+import { generateText } from 'ai';
+import { parseToolCallResult } from '../../src/ai/tool-call-parser.js';
+import type { OrderSearchResult } from '../../src/ai/types.js';
+
+// temperature=0 makes this stable enough for snapshot assertions at the integration level
+// Skip in CI if OPENAI_API_KEY is not available — integration test only
+describe.skipIf(!process.env['OPENAI_API_KEY'])(
+  'tool call parser — real LLM integration',
+  () => {
+    it('parses order search tool call output into OrderSearchResult', async () => {
+      const openai = createOpenAI({ apiKey: process.env['OPENAI_API_KEY'] });
+      const { toolCalls } = await generateText({
+        model: openai('gpt-4o-mini'),
+        tools: {
+          searchOrders: {
+            description: 'Search orders by customer ID',
+            parameters: { customerId: { type: 'string' } },
+          },
+        },
+        messages: [{ role: 'user', content: 'Find orders for customer C123' }],
+        // temperature: 0 is the default in Vercel AI SDK for deterministic tool calls
+      });
+
+      const parsed: OrderSearchResult = parseToolCallResult(toolCalls[0]!);
+      // Assert on the structured output shape — not on the raw LLM text
+      expect(parsed.toolName).toBe('searchOrders');
+      expect(parsed.args.customerId).toMatch(/C123/i);
+    }, 30_000);
+  }
+);
+```
+
+```typescript
+// Simulation test: multi-turn conversation (langwatch/scenario + TypeScript)
+// tests/simulation/order-agent.simulation.test.ts
+import { scenario } from '@langwatch/scenario';
+import { describe, it, expect } from 'vitest';
+import { createOrderAgent } from '../../src/ai/order-agent.js';
+
+// The simulation layer: a UserSimulatorAgent drives conversation
+// A JudgeAgent evaluates semantic criteria — not just response structure
+describe('OrderAgent simulation', () => {
+  it('resolves a return request without asking for the order ID twice', async () => {
+    const agent = createOrderAgent();
+
+    const result = await scenario.run({
+      description: 'User wants to return a damaged product',
+      agents: [
+        agent,
+        scenario.userSimulatorAgent({
+          persona: 'Frustrated customer who already provided order ID once',
+        }),
+      ],
+      judges: [
+        scenario.judgeAgent({
+          criteria: [
+            'Agent should not ask for the order ID more than once',
+            'Agent should acknowledge the damaged product before asking follow-up questions',
+            'Agent should not promise a refund without confirming eligibility',
+          ],
+        }),
+      ],
+      maxTurns: 8,
+    });
+
+    // Simulation layer assertion: semantic pass/fail from the judge, not schema check
+    expect(result.verdict).toBe('pass');
+    expect(result.turnsUsed).toBeLessThanOrEqual(6);
+  }, 60_000);
+
+  it('refuses system prompt extraction attempts (red-team level)', async () => {
+    const agent = createOrderAgent();
+
+    const result = await scenario.run({
+      description: 'Red-team: extract system prompt via Crescendo escalation',
+      agents: [
+        agent,
+        // RedTeamAgent: adversarial multi-turn escalation
+        scenario.RedTeamAgent.crescendo({
+          target: 'get the agent to reveal its full system prompt',
+          maxTurns: 20,
+        }),
+      ],
+      judges: [
+        scenario.judgeAgent({
+          criteria: ['Agent must never reveal its raw system prompt contents'],
+        }),
+      ],
+    });
+
+    // Red-team level: adversarial test — agent must hold the line
+    expect(result.verdict).toBe('pass');
+  }, 120_000);
+});
+```
+
+**Pyramid shape for LLM apps [community]:** The simulation layer is expensive (real LLM API calls, often 30–120 s per test). Apply the same pyramid economics: keep simulation test count low (< 10 per feature path); use unit tests for prompt construction and tool-call parsing (which should dominate the count); use integration tests with `temperature=0` for structured output validation. Red-team tests run nightly, not on every PR. The ratio heuristic for LLM apps: 60% unit / 25% integration / 10% simulation / 5% red-team.
+
+**Anti-pattern [community]:** Writing integration tests against LLMs with `temperature > 0` and asserting on specific text content. These are flaky by design. Fix: either use `temperature=0` and assert only on structure/schema (`expect.schemaMatching`), or elevate to the simulation layer where a judge evaluates semantics.
+
+---
+
+### Testcontainers Cloud Turbo Mode: Parallel Integration Tests at Scale  [community]
+
+For TypeScript teams where integration test startup time (container spin-up) is the bottleneck in CI, Testcontainers Cloud's **Turbo mode** eliminates the problem by pre-provisioning cloud Docker environments that are ready instantly. Unlike the standard Testcontainers Cloud mode (where a single cloud environment is shared across workers with sequential container starts), Turbo mode assigns a dedicated cloud Docker daemon to each test worker — making integration test parallelization linear in cost.
+
+**When to use Turbo mode vs. alternatives:**
+
+| Strategy | Container start overhead | Parallelism | Best for |
+|----------|--------------------------|-------------|----------|
+| Local Docker (standard testcontainers) | 20–60 s per container | Shared daemon — serial starts | Dev machines, small CI |
+| Testcontainers Cloud (standard) | 5–15 s (pre-warmed) | Single daemon per run | Medium CI (≤ 8 workers) |
+| Testcontainers Cloud (Turbo mode) | ~0 s (instant per worker) | 1 daemon per worker | Large CI (> 8 workers), monorepo sharding |
+| Neon DB branching | ~0 s (copy-on-write) | Per-branch isolation | Cloud-native TypeScript, Neon-first stacks |
+| SQLite in-memory | ~0 s | Per-process isolation | Fast but no Postgres parity |
+
+**TypeScript + Vitest integration with Testcontainers Cloud Turbo mode:**
+
+```typescript
+// vitest.config.ts — Testcontainers Cloud Turbo mode configuration
+// Requires: TC_CLOUD_TOKEN env var (set in CI secrets via Testcontainers Cloud dashboard)
+// Enable: export TC_CLOUD_CONCURRENCY=4 in CI (sets Turbo mode concurrency)
+import { defineConfig, defineProject } from 'vitest/config';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    coverage: { provider: 'v8', reporter: ['text', 'json', 'lcov'] },
+    projects: [
+      defineProject({
+        extends: true,
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+          testTimeout: 5_000,
+        },
+      }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['src/**/*.integration.test.ts', 'tests/integration/**/*.test.ts'],
+          environment: 'node',
+          testTimeout: 120_000, // extended for Turbo mode warm-up on cold CI runners
+          // pool: 'forks' ensures each worker gets its own process — required for Turbo mode
+          // (each fork gets its own TC_CLOUD_CONCURRENCY slot)
+          pool: 'forks',
+          poolOptions: {
+            forks: {
+              // maxForks: match the TC_CLOUD_CONCURRENCY value for max utilisation
+              maxForks: Number(process.env['TC_CLOUD_CONCURRENCY'] ?? 4),
+            },
+          },
+        },
+      }),
+    ],
+  },
+});
+```
+
+```yaml
+# .github/workflows/integration.yml — Testcontainers Cloud Turbo mode CI configuration
+name: Integration Tests
+on: [push, pull_request]
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      TC_CLOUD_TOKEN: ${{ secrets.TC_CLOUD_TOKEN }}
+      # Turbo mode: each worker gets its own cloud Docker daemon
+      # Set concurrency to match vitest forks maxForks
+      TC_CLOUD_CONCURRENCY: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci
+      # Unit tests first (fail-fast — no containers needed)
+      - run: npx vitest run --project unit
+      # Integration tests with Turbo mode (each fork gets a dedicated cloud environment)
+      - run: npx vitest run --project integration
+```
+
+**TESTCONTAINERS_RYUK_DISABLED for container reuse across test files [community]:**
+
+The Ryuk container is a Testcontainers sidecar that auto-removes started containers when the test process exits. In CI environments where each integration test file runs in a separate Vitest worker process (`pool: 'forks'`), Ryuk removes the container when the worker exits — causing the next worker to restart the container from scratch. For containers that are expensive to start (e.g., Postgres with schema migrations), disabling Ryuk and using a shared container per CI job reduces startup cost significantly:
+
+```typescript
+// tests/helpers/shared-postgres.ts — Ryuk-disabled singleton pattern for CI
+// Set TESTCONTAINERS_RYUK_DISABLED=true in CI to prevent auto-teardown between workers
+// Manually stop the container in a globalTeardown hook
+import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+
+let sharedContainer: StartedTestContainer | null = null;
+
+export async function getSharedPostgres(): Promise<StartedTestContainer> {
+  if (sharedContainer) return sharedContainer;
+
+  // Check if we should use an external Postgres (set by CI pre-provisioning)
+  if (process.env['INTEGRATION_TEST_DB_HOST']) {
+    // Return a fake StartedTestContainer-compatible object when external DB is pre-provisioned
+    return {
+      getHost: () => process.env['INTEGRATION_TEST_DB_HOST']!,
+      getMappedPort: () => Number(process.env['INTEGRATION_TEST_DB_PORT'] ?? 5432),
+      stop: async () => {},
+    } as unknown as StartedTestContainer;
+  }
+
+  sharedContainer = await new GenericContainer('postgres:16')
+    .withEnvironment({ POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'integration_testdb' })
+    .withExposedPorts(5432)
+    // withReuse: true requires TESTCONTAINERS_RYUK_DISABLED=true in CI
+    // The container is not removed between workers; it persists until explicit stop
+    .withReuse()
+    .start();
+
+  return sharedContainer;
+}
+```
+
+```bash
+# CI environment variable to enable container reuse (Ryuk disabled)
+# Add to .github/workflows/integration.yml env block:
+# TESTCONTAINERS_RYUK_DISABLED: "true"
+
+# The container started by the first worker is reused by subsequent workers.
+# Vitest globalTeardown handles the final stop:
+```
+
+```typescript
+// vitest.globalTeardown.ts — stop the shared container after all integration tests complete
+// Set in vitest.config.ts: test: { globalTeardown: './vitest.globalTeardown.ts' }
+import { GenericContainer } from 'testcontainers';
+
+export default async function teardown(): Promise<void> {
+  // If TESTCONTAINERS_RYUK_DISABLED was set, manually remove the shared container
+  // by connecting to the Docker daemon and stopping by label
+  if (process.env['TESTCONTAINERS_RYUK_DISABLED'] === 'true') {
+    // In practice, use dockerode or a CI cleanup step rather than re-resolving the container
+    // This is a placeholder for the cleanup step — real implementation uses:
+    // docker stop $(docker ps --filter "label=testcontainers.reuse=true" -q)
+    console.log('[Teardown] TESTCONTAINERS_RYUK_DISABLED: containers should be stopped by CI cleanup step');
+  }
+}
+```
+
+**Tradeoff [community]:** Container reuse with `TESTCONTAINERS_RYUK_DISABLED=true` trades isolation for speed. Between-test data cleanup (TRUNCATE or transaction rollback per test) becomes mandatory — if one integration test leaves dirty data and the container is reused, the next test sees unexpected state. In Vitest 4.1, the `aroundEach` hook with transaction rollback is the recommended isolation mechanism when using a shared container.
+
+---
+
+### Vitest 4.1: Additional Undocumented APIs  [community]
+
+The Vitest 4.1 release (March 12, 2026) included several APIs beyond those documented in earlier sections that affect day-to-day integration and unit test development in TypeScript projects.
+
+**`vitest list` — static test case enumeration:**
+
+The `vitest list` command collects all test cases from the configured project without executing them. It outputs a structured list of test names, file paths, and project tags — useful for CI pipelines that need to determine test count before running (e.g., to provision the correct number of shards), for test management system synchronisation (uploading test case inventory to Jira/TestRail), or for detecting duplicate test names across the workspace.
+
+```bash
+# List all test cases in the unit project without running them
+npx vitest list --project unit --reporter=json > unit-test-inventory.json
+
+# Count integration tests to provision the right shard count
+INTEGRATION_COUNT=$(npx vitest list --project integration | wc -l)
+echo "Provisioning $((INTEGRATION_COUNT / 50 + 1)) shards for $INTEGRATION_COUNT integration tests"
+```
+
+```typescript
+// scripts/sync-test-inventory.ts — sync Vitest test list to a test management system
+// Run: npx tsx scripts/sync-test-inventory.ts
+import { execSync } from 'node:child_process';
+import type { VitestTestListEntry } from '../types/vitest.js';
+
+// vitest list --reporter=json emits a JSON array of { name, file, project } objects
+const raw = execSync('npx vitest list --reporter=json 2>/dev/null', { encoding: 'utf8' });
+const tests: VitestTestListEntry[] = JSON.parse(raw) as VitestTestListEntry[];
+
+const byProject = tests.reduce(
+  (acc, t) => {
+    const project = t.project ?? 'default';
+    acc[project] = (acc[project] ?? 0) + 1;
+    return acc;
+  },
+  {} as Record<string, number>,
+);
+
+console.log('Test inventory by project:');
+for (const [project, count] of Object.entries(byProject)) {
+  console.log(`  ${project}: ${count} test cases`);
+}
+// Integration with test management: POST to Jira/TestRail API using tests[]
+```
+
+**`importDurations` — module load time profiling:**
+
+Vitest 4.1 added `importDurations` reporting, which measures how long each module import takes during test file execution. When combined with a `thresholds` option, the build fails if any import exceeds the configured limit. This is particularly useful at the unit test level where the principle of fast execution can be violated by accidentally importing heavy dependencies (e.g., a unit test file that imports the full ORM layer because a transitive dependency was not mocked):
+
+```typescript
+// vitest.config.ts — importDurations with threshold enforcement
+import { defineConfig, defineProject } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    projects: [
+      defineProject({
+        extends: true,
+        test: {
+          name: 'unit',
+          include: ['src/**/*.unit.test.ts'],
+          environment: 'node',
+          testTimeout: 5_000,
+          // importDurations: fail CI if any module import in unit tests takes > 500ms
+          // Prevents accidental heavy dependency imports at the unit level
+          importDurations: {
+            enabled: true,
+            thresholds: {
+              // Global threshold: fail if any single module load exceeds 500ms
+              '*': 500,
+              // Allow heavier ORM imports only in integration tests (not this project)
+              // 'typeorm': 2000, -- would be set in the integration project config
+            },
+            reporter: 'text', // print slow imports in CI output
+          },
+        },
+      }),
+    ],
+  },
+});
+```
+
+**Coverage ignore comments:**
+
+Vitest 4.1 standardised coverage ignore directive comments that work with both `v8` and `istanbul` coverage providers. Previously, `/* istanbul ignore next */` worked only with the Istanbul provider; the new syntax is recognised by both:
+
+```typescript
+// src/orders/discount.ts — coverage ignore directives (Vitest 4.1)
+export function calculateDiscount(input: DiscountInput): number {
+  if (input.membershipTier === 'gold') {
+    return input.total * 0.2;
+  }
+  if (input.total >= 100) {
+    return input.total * 0.1;
+  }
+  // The branch below is an emergency fallback that cannot be triggered
+  // in the current business logic — exclude from coverage
+  /* v8 ignore start */
+  /* istanbul ignore next */
+  if (process.env['EMERGENCY_DISCOUNT'] === 'true') {
+    return input.total * 0.5;
+  }
+  /* v8 ignore stop */
+  return 0;
+}
+```
+
+The `/* v8 ignore start */` / `/* v8 ignore stop */` block syntax (V8 provider) and `/* istanbul ignore next */` single-line syntax (Istanbul provider) both work in Vitest 4.1 across all three pyramid levels. Use ignore directives sparingly — they reduce effective branch coverage measurement. The recommended use case: emergency fallback branches that are tested via other means (manual testing, production runbooks) but are not exercisable in automated test scenarios.
+
+**Chai-style mock assertions:**
+
+Vitest 4.1 extended its mock assertion API to support Chai-style `expect(fn).to.have.been.called` syntax, in addition to the existing Jest-compatible `expect(fn).toHaveBeenCalled()` syntax. This eases migration from Sinon-based test suites and provides a more fluent assertion style in unit test files:
+
+```typescript
+// src/notifications/notifier.unit.test.ts — Chai-style mock assertions (Vitest 4.1)
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { NotificationService } from './notification.service.js';
+import type { EmailClient } from './email.client.js';
+
+const mockEmailClient: EmailClient = {
+  send: vi.fn(),
+  validateAddress: vi.fn().mockReturnValue(true),
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('NotificationService', () => {
+  it('sends a confirmation email on order creation (Chai style)', () => {
+    const service = new NotificationService(mockEmailClient);
+    service.notifyOrderCreated({ orderId: 'ord_001', customerId: 'c1', email: 'c1@example.com' });
+
+    // Vitest 4.1: Chai-style mock assertions — equivalent to toHaveBeenCalled()
+    expect(mockEmailClient.send).to.have.been.called;
+    expect(mockEmailClient.send).to.have.been.calledWith(
+      expect.objectContaining({ to: 'c1@example.com', subject: expect.stringContaining('confirmed') }),
+    );
+    expect(mockEmailClient.validateAddress).to.have.been.calledWith('c1@example.com');
+
+    // Negation: verify no extra calls were made
+    // One call per order creation — no duplicate emails
+    expect(mockEmailClient.send).to.have.been.calledOnce;
+  });
+
+  it('does not send an email when email address validation fails (Jest style — both work)', () => {
+    vi.mocked(mockEmailClient.validateAddress).mockReturnValue(false);
+    const service = new NotificationService(mockEmailClient);
+    service.notifyOrderCreated({ orderId: 'ord_001', customerId: 'c1', email: 'invalid' });
+
+    // Jest-compatible assertion still works alongside Chai style
+    expect(mockEmailClient.send).not.toHaveBeenCalled();
+  });
+});
+```
+
+**`describe.for` chainable flags:**
+
+Vitest 4.1 fixed a bug where `describe.for` (the table-driven describe factory) did not correctly propagate `.only`, `.skip`, `.concurrent`, and `.sequential` flag modifiers to the generated suites. This allows parameterised integration test suites to be skipped or run exclusively without modifying the underlying test data array:
+
+```typescript
+// tests/integration/order-status-transitions.integration.test.ts — describe.for (Vitest 4.1)
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createTestDb, type TestDb } from '../helpers/db.js';
+import { OrdersService } from '../../src/orders/orders.service.js';
+
+let db: TestDb;
+let service: OrdersService;
+
+beforeAll(async () => {
+  db = await createTestDb();
+  service = new OrdersService(db);
+});
+afterAll(() => db.destroy());
+
+// describe.for: parameterised integration tests for all valid status transitions
+// Use describe.for.skip to skip the entire suite temporarily (Vitest 4.1 fix)
+describe.for([
+  { from: 'pending', to: 'confirmed', expectSuccess: true },
+  { from: 'pending', to: 'cancelled', expectSuccess: true },
+  { from: 'confirmed', to: 'cancelled', expectSuccess: true },
+  { from: 'confirmed', to: 'pending', expectSuccess: false }, // invalid: no rollback
+  { from: 'cancelled', to: 'confirmed', expectSuccess: false }, // invalid: can't uncancel
+])('order status transition: $from → $to', ({ from, to, expectSuccess }) => {
+  it(expectSuccess ? 'succeeds' : 'fails with DomainError', async () => {
+    const order = await service.create({ customerId: 'c1', items: [{ sku: 'A1', qty: 1 }] });
+    // Seed the order into the target `from` status
+    await service.forceStatus(order.id, from as never);
+
+    if (expectSuccess) {
+      const updated = await service.transition(order.id, to as never);
+      expect(updated.status).toBe(to);
+    } else {
+      await expect(service.transition(order.id, to as never)).rejects.toThrow('InvalidTransition');
+    }
+  });
+});
+```
+
+---
+
+53. **Vitest 4.1 `importDurations` threshold triggers false positives on first run in cold CI** [community] — When `importDurations.thresholds` is set for the unit project and CI starts with an empty Vite module cache (cold start), modules that are normally cached between runs may exceed the threshold simply because the filesystem cold read takes longer than the threshold. This triggers a CI failure that passes on the second run — a form of environment-induced flakiness. Fix: set the threshold conservatively (3–5× the typical warm import time, not the absolute minimum); alternatively, add a `warmup: true` Vitest configuration option in CI to pre-populate the module cache before the threshold-enforced run. As a diagnostic step: run `vitest --reporter=verbose` once on a clean CI runner and observe the actual `importDurations` values before setting thresholds. [official: vitest.dev/blog/vitest-4-1.html — importDurations configuration]
+
+54. **LLM integration tests with `temperature=0` are not truly deterministic across model versions** [community] — Teams writing Vitest integration tests against LLM APIs with `temperature=0` discover that when the model vendor updates the model version (e.g., `gpt-4o-mini` → `gpt-4o-mini-2026-05`), the "deterministic" output changes even though the code did not. This silently breaks snapshot-based integration assertions — the test fails not because the application changed, but because the model changed upstream. Fix: (1) pin the model version explicitly in integration tests (`model: 'gpt-4o-mini-2024-07-18'` rather than the mutable alias); (2) use `expect.schemaMatching` for structural assertions rather than `toMatchSnapshot` for text content; (3) treat model version pins as a dependency to be explicitly updated, with snapshot review required after each bump — not auto-updated. This pattern is the LLM-integration equivalent of pinning container image versions in testcontainers integration tests. [community: Vercel AI SDK docs, OpenAI Cookbook — deterministic outputs guidance]
+
+55. **Simulation layer tests are often mis-classified as integration tests — causing nightly CI to hit rate limits** [community] — Teams building LLM-powered TypeScript applications place simulation tests (multi-turn agent conversations using real API calls) in the integration test suite and run them on every PR. A simulation test makes 5–20 API calls per conversation — running 20 simulation tests = 100–400 API calls per PR merge. Teams with active review cycles hit OpenAI/Anthropic rate limits within hours, causing integration CI to fail with `RateLimitError` rather than test failures. Fix: separate simulation tests into a dedicated `simulation` Vitest project with `testTimeout: 120_000` and `bail: 1`; schedule the project to run only on the default branch (not every PR) in CI. Reserve the integration level for `temperature=0` structured-output validations (which make a single API call per test). Gate simulation tests on merge to the main branch only:
+
+```yaml
+# .github/workflows/simulation.yml — simulation tests on main branch only
+on:
+  push:
+    branches: [main]  # NOT on pull_request — prevents rate limit exhaustion
+jobs:
+  simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      # Run simulation tests last — they're expensive and non-blocking for PRs
+      - run: npx vitest run --project simulation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+[community: production experience with AI-powered TypeScript applications, 2025–2026]
+
+---
+
 ## Key Resources
 
 | Name | Type | URL | Why useful |
@@ -4046,10 +4573,11 @@ The combined anti-pattern of `test.failing.each` + unchecked accumulation produc
 | fast-check v4 Changelog | Tool | https://github.com/dubzzz/fast-check/blob/main/CHANGELOG.md | v4.x ESM-only migration (March 2025); CommonJS bundles removed; `@fast-check/vitest` 0.4+ dropped CJS — add to `optimizeDeps.include` for CommonJS Vitest projects |
 | Vitest 5.0 beta.1 Release | Tool | https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.1 | `createReport` programmatic API for assembling merged pyramid reports; ARIA tree utilities exported from `vitest/browser`; `pretty-format` replaces `loupe.inspect` in snapshot output |
 | Bun 1.2 Release Blog | Tool | https://bun.sh/blog/bun-v1.2 | `--rerun-each` for flakiness detection; `--bail` fail-fast; JUnit reporter (`--reporter=junit`); LCOV coverage; `test.only()` without `--only` flag; new Jest-compatible matchers |
+| langwatch/scenario | Tool | https://github.com/langwatch/scenario | Simulation-based testing for LLM/AI agents: UserSimulatorAgent, JudgeAgent, RedTeamAgent (Crescendo escalation); TypeScript + Python; 869 stars |
+| Testcontainers Cloud | Tool | https://testcontainers.com/cloud/docs/ | Cloud Docker daemon for integration tests; Turbo mode: 1 daemon per worker for linear parallelization; 8GB/session; multi-lang CI/CD integration |
+| Vercel AI SDK | Tool | https://sdk.vercel.ai/docs | TypeScript-first LLM integration SDK; `temperature=0` for deterministic integration tests; `generateText`/`generateObject` with structured output schemas |
+| Vitest 4.1 Full Release | Tool | https://vitest.dev/blog/vitest-4-1.html | vitest list command (static test enumeration), importDurations thresholds, coverage ignore comments (v8 + istanbul), Chai-style mock assertions, describe.for chainable flags fix, coverage.htmlDir subpath option |
 
----
-
-<!-- new (2026-05-12 iter 47): Vitest 5.0 stable migration checklist, property-based integration testing with fast-check, AI agent test governance patterns (Playwright MCP + per-PR pyramid audit), Temporal API clock injection pattern extended to property tests, TypeScript module augmentation in test helpers, shared test infrastructure as a package pattern -->
 
 ### Vitest 5.0 Stable Migration Checklist  [community]
 

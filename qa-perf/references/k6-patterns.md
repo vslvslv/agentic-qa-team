@@ -1,5 +1,5 @@
 # k6 Patterns & Best Practices (JavaScript)
-<!-- lang: JavaScript | sources: official | community | mixed | iteration: 36 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: JavaScript | sources: official | community | mixed | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: grafana.com/docs/k6/latest/using-k6/best-practices/, /scenarios/, /thresholds/, /javascript-api/k6-metrics/, /javascript-api/k6-secrets/, /javascript-api/k6-browser/, /set-up/upgrade-to-k6-v2/, /using-k6-browser/, /testing-guides/, /using-k6/protocols/grpc/, /results-output/, /using-k6/modules/, /using-k6/protocols/http-2/, /javascript-api/k6-html/, /using-k6/scenarios/concepts/open-vs-closed/, /javascript-api/k6-http/asyncrequest/, /results-output/real-time/prometheus-remote-write/, /results-output/web-dashboard/, grafana.com/docs/k6-studio/, release-notes/v1.3.0, release-notes/v1.4.0, /release-notes/v1.5.0, /release-notes/v1.6.0, /release-notes/v2.0.0, /javascript-api/k6-browser/page/, /javascript-api/k6-browser/locator/, /testing-guides/running-large-tests/, /javascript-api/k6-experimental/webcrypto/, /javascript-api/k6-experimental/fs/, /javascript-api/k6-experimental/streams/, /javascript-api/k6-websockets/, /using-k6/scenarios/concepts/open-vs-closed/, release-notes/v1.7.0, release-notes/v1.7.1, /using-k6/secret-source/file/, /using-k6/secret-source/url/, github.com/mostafa/xk6-kafka, github.com/grafana/xk6-mqtt -->
 
 > Generated from official k6 documentation and community sources on 2026-05-12. Verified against k6 v1.7.1 (security patch for CVE-2026-33186 in gRPC); **k6 v2.0.0 final released 2026-05-11** — breaking changes and new features documented below. Iteration 28 adds: locator.filter()/all()/nth()/first()/last(), page.waitForRequest(), page.waitForEvent(), page.on('requestfailed'/'requestfinished'), frameLocator(), page.goBack()/goForward(), locator.evaluate()/evaluateHandle(), locator.pressSequentially(), k6 deps CLI, --new-machine-readable-summary, page.unroute()/unrouteAll(), mcp-k6 AI integration, OpenTelemetry stable graduation, PBKDF2 WebCrypto; community gotchas 43–47 (require() removal, Chromium orphan leak, --vus ignored in scenarios, StatsD special-char tag drop, WS bufferedAmount TypedArray bug). Iteration 29 adds: WebSocket close code/reason tracking, csv.parse() asObjects option and skipFirstLine, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48–52 (csv.parse in setup() SharedArray trap, browser mobile context missing required --browser.type, K6_CLOUD_STACK_ID required for non-default stacks, xk6-disruptor Kubernetes RBAC setup, -e flag K6_ prefix silent config miss). Iteration 30 adds: Prometheus Remote Write Native Histograms full pattern, --execution-segment manual distributed testing, Web Dashboard CI export artifact pattern, k6/websockets experimental deprecation migration, k6 v1.7.0 subcommand extension auto-resolution workflow, Promise.race() competitive failover pattern; community gotchas 53–55 (native histogram Prometheus version requirement, K6_WEB_DASHBOARD CI artifact pattern, k6/experimental/websockets deprecation migration). Iteration 31 adds: CVE-2026-33186 security advisory for gRPC (gotcha #56), k6 cloud project list CI pattern (v2.0.0), xk6 extension author v2.0.0 migration guide (easyjson → stdlib encoding/json + archive dependencies field). Iteration 32 adds: page.waitForResponse() pattern (v1.3+), locator.contentFrame() for iframe navigation chains, locator.boundingBox() for layout testing, getBy* locators on frameLocator scope, community gotchas 57–59 (waitForResponse race condition, boundingBox null on hidden elements, locator.contentFrame() vs frameLocator() disambiguation). Iteration 33 adds: locator.locator() hierarchical scoping pattern (v1.3+), k6chaijs version updated to 4.5.0.1, K6_CLOUD_STACK env var corrected to K6_CLOUD_STACK_ID throughout cloud stack section, community gotcha #60 (k6 cloud login --stack persists default stack in credentials file — subsequent commands pick it up but K6_CLOUD_STACK_ID or --stack flag overrides it). Iteration 34 adds: `file` secret source with key=value file format and Docker volume-mount pattern, `url` secret source advanced options table (urlTemplate, responsePath, headers.*, timeout, requestsPerMinuteLimit, requestsBurst, maxRetries, retryBackoff), multi-source file+url combination pattern, community gotcha #61 (url source URL-encodes {key} — Vault path slashes become %2F and return 404; fix by flattening key names or using a proxy). Iteration 35 adds: xk6-kafka v2 full load-test pattern (JSON messages, SASL-PLAIN auth, ~383k msgs/s throughput baseline, teardown consumer pattern), xk6-mqtt full load-test pattern (IoT broker testing, pub/sub with QoS levels, event-driven VU loop), community gotcha #62 (k6/experimental/fs file handle opened at init context is shared across all VU iterations — the file cursor advances per iteration; call `file.seek(0, SeekMode.Start)` at the top of default() to reset it, or open inside default() for per-iteration independence). Iteration 36 adds: Ramping Arrival Rate comprehensive multi-phase traffic example (startRate, preAllocatedVUs sizing via Little's Law, no-sleep rule), Threshold Configuration for SLOs full reference (abortOnFail, delayAbortEval, scenario-scoped thresholds, tag selector gotcha), Performance Regression Detection patterns (threshold-based CI gate, handleSummary JSON diff strategy, Grafana Cloud trend analysis), TypeScript Native Support section (k6 v0.57+ esbuild, @types/k6, tsconfig.k6.json, type-check-before-run CI pattern, esbuild bundler for Node.js deps), Grafana Dashboard Integration (web dashboard CI artifact, Prometheus Remote Write PromQL queries, InfluxDB 2.x + Grafana dashboard IDs), community gotchas 63–65 (ramping-arrival-rate startRate cold-start burst, abortOnFail delayAbortEval VU-exhaustion inaccuracy, handleSummary p(95) JSON key parentheses). Re-run `/qa-refine k6` to refresh.
@@ -10978,4 +10978,791 @@ jq '.metrics.http_req_duration.values | keys' summary.json
 > but have no threshold using it, add `options.summaryTrendStats = ["avg","p(90)","p(95)","p(99)","max"]`
 > to ensure it appears in the output. Without this, the key is absent from the JSON entirely —
 > not null, not 0, but absent — causing `jq` to return `null` and Python to raise a `KeyError`.
+
+---
+
+## Custom xk6 JavaScript Extension Authoring
+
+Building a custom xk6 extension lets you expose any Go library — database drivers, cryptographic
+primitives, vendor SDKs — as a first-class `k6/x/*` JavaScript module. Two patterns exist:
+the **simple struct** pattern and the **VU-aware module** pattern.
+
+### Simple Struct Pattern
+
+Suitable for stateless utilities (hashing, encoding, math). Every VU shares the same Go
+struct instance. Do not store per-VU state here.
+
+```go
+// File: xk6-hmac/hmac.go
+package hmac
+
+import (
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/hex"
+    "go.k6.io/k6/v2/js/modules"
+)
+
+// Register the module under "k6/x/hmac" once at startup.
+func init() {
+    modules.Register("k6/x/hmac", &HMAC{})
+}
+
+// HMAC is the exported type — exported methods become JS functions.
+type HMAC struct{}
+
+// Sign generates an HMAC-SHA256 hex signature.
+// In JS: import { HMAC } from "k6/x/hmac"; const sig = hmac.sign("key", "msg");
+func (h *HMAC) Sign(key, message string) string {
+    mac := hmac.New(sha256.New, []byte(key))
+    mac.Write([]byte(message))
+    return hex.EncodeToString(mac.Sum(nil))
+}
+```
+
+```bash
+# Build k6 with the local extension
+xk6 build --with xk6-hmac=./xk6-hmac
+
+# Test it:
+./k6 run - <<'EOF'
+import { HMAC } from "k6/x/hmac";
+const h = new HMAC();
+export default function() { console.log(h.sign("secret", "hello")); }
+EOF
+```
+
+### VU-Aware Module Pattern
+
+Required when the extension needs per-VU state (e.g., a per-VU database connection, a
+per-VU HTTP client with custom transport). Implements `modules.Module` + `modules.Instance`.
+
+```go
+// File: xk6-db/db.go
+package db
+
+import (
+    "database/sql"
+    _ "github.com/lib/pq"
+    "go.k6.io/k6/v2/js/modules"
+)
+
+func init() { modules.Register("k6/x/db", new(RootModule)) }
+
+// RootModule is instantiated once; creates a ModuleInstance per VU.
+type RootModule struct{}
+
+// ModuleInstance holds per-VU state (one DB connection per VU).
+type ModuleInstance struct {
+    vu modules.VU
+    db *sql.DB
+}
+
+func (rm *RootModule) NewModuleInstance(vu modules.VU) modules.Instance {
+    return &ModuleInstance{vu: vu}
+}
+
+func (mi *ModuleInstance) Exports() modules.Exports {
+    return modules.Exports{Default: mi}
+}
+
+// Connect opens a database connection for this VU.
+// In JS: const db = require("k6/x/db"); db.connect(dsn); db.query(sql);
+func (mi *ModuleInstance) Connect(dsn string) error {
+    var err error
+    mi.db, err = sql.Open("postgres", dsn)
+    return err
+}
+
+func (mi *ModuleInstance) Query(query string) ([]map[string]interface{}, error) {
+    rows, err := mi.db.QueryContext(mi.vu.Context(), query)
+    if err != nil { return nil, err }
+    defer rows.Close()
+    // ... scan rows into []map and return
+    return nil, nil
+}
+```
+
+```javascript
+// k6/scripts/db-validation.js — use the custom VU-aware extension
+import DB from "k6/x/db";
+import { check } from "k6";
+
+const DSN = __ENV.DB_DSN || "postgres://user:pass@localhost/testdb?sslmode=disable";
+
+export const options = {
+  scenarios: {
+    db_check: { executor: "constant-vus", vus: 5, duration: "30s" },
+  },
+};
+
+export default function () {
+  const db = new DB();
+  db.connect(DSN);
+  const rows = db.query("SELECT id, email FROM users LIMIT 10");
+  check(rows, { "got rows": (r) => r.length > 0 });
+}
+```
+
+> **[community]:** The `modules.VU` interface gives access to `vu.Context()` (a
+> `context.Context` cancelled when the VU iteration ends) and `vu.State()` (k6 runtime
+> state including the logger and tags). Always pass `vu.Context()` to long-running Go calls
+> so they are cancelled when k6 stops a VU — failing to do so causes goroutine leaks that
+> keep the k6 process alive after the test completes.
+
+---
+
+## Custom Output Extension Authoring
+
+An output extension lets you stream k6 metrics to any backend — a custom time-series DB,
+a Slack webhook, a corporate observability platform — without modifying k6's core.
+
+```go
+// File: xk6-output-webhook/webhook.go
+package webhook
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "net/http"
+
+    "go.k6.io/k6/v2/output"
+    "go.k6.io/k6/v2/stats"
+)
+
+// Register under the name "webhook" — used as: k6 run --out webhook script.js
+func init() {
+    output.RegisterExtension("webhook", New)
+}
+
+// Webhook is the output extension implementation.
+type Webhook struct {
+    params output.Params
+    url    string
+    buf    *output.SampleBuffer          // thread-safe metric buffer
+    flush  *output.PeriodicFlusher       // calls flush on interval
+}
+
+func New(params output.Params) (output.Output, error) {
+    url := params.Environment["K6_WEBHOOK_URL"]
+    if url == "" {
+        return nil, fmt.Errorf("K6_WEBHOOK_URL env var is required")
+    }
+    return &Webhook{params: params, url: url}, nil
+}
+
+// Description is shown in k6's startup banner.
+func (w *Webhook) Description() string {
+    return fmt.Sprintf("webhook (%s)", w.url)
+}
+
+// Start is called once before the test begins.
+func (w *Webhook) Start() error {
+    w.buf = &output.SampleBuffer{}
+    var err error
+    w.flush, err = output.NewPeriodicFlusher(5e9 /* 5s */, w.flushMetrics)
+    return err
+}
+
+// AddMetricSamples receives metric data from the k6 engine in real time.
+func (w *Webhook) AddMetricSamples(samples []stats.SampleContainer) {
+    w.buf.AddMetricSamples(samples) // buffer for periodic flush
+}
+
+// Stop is called once after all VUs complete.
+func (w *Webhook) Stop() error {
+    w.flush.Stop()
+    return nil
+}
+
+func (w *Webhook) flushMetrics() {
+    samples := w.buf.GetBufferedSamples()
+    if len(samples) == 0 { return }
+    payload, _ := json.Marshal(samples)
+    resp, err := http.Post(w.url, "application/json", bytes.NewBuffer(payload))
+    if err != nil {
+        w.params.Logger.Errorf("webhook flush error: %v", err)
+        return
+    }
+    resp.Body.Close()
+}
+```
+
+```bash
+# Build with the output extension
+xk6 build --with xk6-output-webhook=./xk6-output-webhook
+
+# Use it in a test run
+K6_WEBHOOK_URL=https://hooks.example.com/k6 \
+  ./k6 run --out webhook k6/scripts/load.js
+```
+
+> **[community]:** Always use `output.SampleBuffer` + `output.PeriodicFlusher` rather than
+> flushing inside `AddMetricSamples` directly. The engine calls `AddMetricSamples` on the
+> hot path (every metric emission, potentially thousands/second) — blocking I/O inside this
+> method will serialize metric collection with network calls and artificially inflate test
+> latency. The `SampleBuffer` is lock-free append-only; `PeriodicFlusher` batches the flush
+> on a configurable interval off the critical path.
+
+---
+
+## Microservices Load Testing Patterns
+
+Testing microservices requires coordinating traffic across multiple services, correlating
+request chains, and isolating per-service SLOs. The following patterns address the most
+common production scenarios.
+
+### Pattern: Per-Service Scenario Isolation
+
+Run separate k6 scenarios targeting different services within one script. Tag each scenario
+so thresholds and dashboards can filter per-service metrics independently.
+
+```javascript
+// k6/scripts/microservices-load.js
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { Trend, Rate } from "k6/metrics";
+
+// Per-service custom metrics — survive scenario tag filtering in dashboards
+const authLatency    = new Trend("latency_auth_ms",    true);
+const catalogLatency = new Trend("latency_catalog_ms", true);
+const orderLatency   = new Trend("latency_order_ms",   true);
+const orderErrors    = new Rate("errors_order");
+
+const BASE = {
+  auth:    __ENV.AUTH_URL    || "http://auth-service:8080",
+  catalog: __ENV.CATALOG_URL || "http://catalog-service:8080",
+  order:   __ENV.ORDER_URL   || "http://order-service:8080",
+};
+
+export const options = {
+  scenarios: {
+    auth_load: {
+      executor: "constant-arrival-rate",
+      rate: 50, timeUnit: "1s",
+      duration: "5m", preAllocatedVUs: 10,
+      exec: "authScenario",
+      tags: { service: "auth" },
+    },
+    catalog_browse: {
+      executor: "ramping-vus",
+      stages: [
+        { duration: "1m", target: 30 },
+        { duration: "3m", target: 30 },
+        { duration: "1m", target: 0 },
+      ],
+      exec: "catalogScenario",
+      tags: { service: "catalog" },
+    },
+    order_checkout: {
+      executor: "constant-arrival-rate",
+      rate: 10, timeUnit: "1s",
+      duration: "5m", preAllocatedVUs: 20,
+      startTime: "60s",         // start after auth/catalog warm up
+      exec: "orderScenario",
+      tags: { service: "order" },
+    },
+  },
+  thresholds: {
+    // Per-service SLOs using scenario tag selectors
+    "http_req_duration{service:auth}":    ["p(95)<200"],
+    "http_req_duration{service:catalog}": ["p(95)<500"],
+    "http_req_duration{service:order}":   ["p(95)<1500", "p(99)<3000"],
+    "errors_order":                       ["rate<0.01"],
+    // Custom Trend metrics (always available regardless of tagging)
+    "latency_auth_ms":    ["p(95)<200"],
+    "latency_catalog_ms": ["p(95)<500"],
+    "latency_order_ms":   ["p(95)<1500"],
+  },
+};
+
+let authToken = "";
+
+export function setup() {
+  const res = http.post(`${BASE.auth}/api/login`, JSON.stringify({
+    username: "loadtest@example.com", password: __ENV.TEST_PASSWORD,
+  }), { headers: { "Content-Type": "application/json" } });
+  check(res, { "auth login ok": (r) => r.status === 200 });
+  return { token: res.json("access_token") };
+}
+
+export function authScenario(data) {
+  const start = Date.now();
+  const res = http.post(`${BASE.auth}/api/token/refresh`, null, {
+    headers: { Authorization: `Bearer ${data.token}` },
+  });
+  authLatency.add(Date.now() - start);
+  check(res, { "token refresh 200": (r) => r.status === 200 });
+  sleep(0.1);
+}
+
+export function catalogScenario(data) {
+  const start = Date.now();
+  const res = http.get(`${BASE.catalog}/api/products?page=1&limit=20`, {
+    headers: { Authorization: `Bearer ${data.token}` },
+    tags: { endpoint: "product-list" },
+  });
+  catalogLatency.add(Date.now() - start);
+  check(res, { "catalog 200": (r) => r.status === 200 });
+  sleep(0.5);
+}
+
+export function orderScenario(data) {
+  // Simulate a checkout saga: add to cart → place order → poll status
+  const start = Date.now();
+
+  // Step 1: Add to cart
+  const cartRes = http.post(`${BASE.order}/api/cart`, JSON.stringify({
+    productId: `prod-${Math.ceil(Math.random() * 100)}`, qty: 1,
+  }), { headers: { "Content-Type": "application/json",
+                   Authorization: `Bearer ${data.token}` } });
+  if (!check(cartRes, { "cart add 201": (r) => r.status === 201 })) {
+    orderErrors.add(1); return;
+  }
+  const cartId = cartRes.json("cartId");
+
+  // Step 2: Place order
+  const orderRes = http.post(`${BASE.order}/api/orders`, JSON.stringify({ cartId }), {
+    headers: { "Content-Type": "application/json",
+               Authorization: `Bearer ${data.token}` },
+  });
+  orderErrors.add(orderRes.status >= 400 ? 1 : 0);
+  check(orderRes, { "order placed 202": (r) => r.status === 202 });
+
+  orderLatency.add(Date.now() - start);
+  sleep(1);
+}
+```
+
+### Pattern: Request Correlation Across Services  [community]
+
+In microservices architectures, a single user action triggers a chain of service calls.
+Use `x-correlation-id` headers to link k6 requests to distributed traces in your observability
+stack, making it easy to identify which load-test VU caused a slow downstream call.
+
+```javascript
+// k6/scripts/correlation-headers.js
+import http from "k6/http";
+import { uuidv4 } from "https://jslib.k6.io/k6-utils/1.4.0/index.js";
+
+const SERVICE_A = __ENV.SERVICE_A_URL || "http://service-a:8080";
+const SERVICE_B = __ENV.SERVICE_B_URL || "http://service-b:8080";
+
+export default function () {
+  // Generate a unique correlation ID for this VU iteration
+  const correlationId = uuidv4();
+  const traceHeaders = {
+    "x-correlation-id": correlationId,
+    "x-k6-vu":          String(__VU),
+    "x-k6-iter":        String(__ITER),
+  };
+
+  // Service A — user profile fetch
+  const profileRes = http.get(`${SERVICE_A}/api/profile`, { headers: traceHeaders });
+
+  if (profileRes.status === 200) {
+    const userId = profileRes.json("id");
+
+    // Service B — recommendations, correlated to the same trace
+    http.get(`${SERVICE_B}/api/recommendations?userId=${userId}`, {
+      headers: { ...traceHeaders, "x-parent-service": "service-a" },
+      tags:    { service: "b", endpoint: "recommendations" },
+    });
+  }
+}
+```
+
+> **[community]:** Propagate the same `correlationId` to all downstream calls in a VU
+> iteration. When you see a spike in `http_req_duration{service:b}`, you can grep your
+> distributed trace backend (Tempo, Jaeger, Zipkin) for `x-correlation-id: <id>` to
+> find the exact trace showing which downstream dependency was slow. Without this header,
+> you know *that* a service is slow but not *why* — the k6 metrics and the trace data
+> are unlinked.
+
+### Pattern: Contract Testing Under Load  [community]
+
+Validate API contracts (response schema, required fields, content-type) inline during
+load tests so schema drift is caught before it reaches staging.
+
+```javascript
+// k6/scripts/contract-load.js
+import http from "k6/http";
+import { check } from "k6";
+import { Rate } from "k6/metrics";
+
+const contractViolations = new Rate("contract_violations");
+
+/** Validate the response body matches the expected User schema. */
+function validateUserSchema(body) {
+  try {
+    const user = JSON.parse(body);
+    return (
+      typeof user.id       === "string" &&
+      typeof user.email    === "string" &&
+      typeof user.name     === "string" &&
+      Array.isArray(user.roles) &&
+      typeof user.createdAt === "string"
+    );
+  } catch { return false; }
+}
+
+export default function () {
+  const res = http.get(`${__ENV.API_URL || "http://localhost:3001"}/api/users/me`, {
+    headers: { Authorization: `Bearer ${__ENV.TEST_TOKEN}` },
+  });
+
+  const valid = check(res, {
+    "status 200":               (r) => r.status === 200,
+    "content-type json":        (r) => (r.headers["Content-Type"] || "").includes("application/json"),
+    "no server error header":   (r) => !r.headers["X-Error"],
+    "user schema valid":        (r) => validateUserSchema(r.body),
+    "response under 500ms":     (r) => r.timings.duration < 500,
+  });
+
+  contractViolations.add(!valid ? 1 : 0);
+}
+
+export const options = {
+  scenarios: {
+    contract: { executor: "constant-arrival-rate", rate: 20, timeUnit: "1s",
+                duration: "2m", preAllocatedVUs: 10 },
+  },
+  thresholds: {
+    "contract_violations": ["rate<0.001"],  // <0.1% contract violations tolerated
+    "http_req_duration":   ["p(95)<500"],
+  },
+};
+```
+
+> **[community]:** Contract checking inside load tests is a lightweight alternative to
+> running a full Pact consumer-driven contract test in isolation. It catches field removal
+> and type changes that only surface under concurrent load (e.g., a race condition that
+> returns a partial object when two requests hit the same session cache simultaneously).
+
+---
+
+## Web Vitals Thresholds Reference (k6 Browser Module)
+
+All five Core Web Vitals and TTFB metrics emitted by the k6 browser module, with
+Google-recommended thresholds for desktop and mobile contexts.
+
+| Metric name | Measures | Good (desktop) | Needs work | Poor | Mobile multiplier |
+|-------------|---------|---------------|------------|------|-------------------|
+| `browser_web_vital_lcp` | Largest Contentful Paint | p(75) < 2500 ms | 2500–4000 ms | > 4000 ms | ×1.6 (4000 ms) |
+| `browser_web_vital_fcp` | First Contentful Paint | p(75) < 1800 ms | 1800–3000 ms | > 3000 ms | ×1.7 (3000 ms) |
+| `browser_web_vital_inp` | Interaction to Next Paint | p(75) < 200 ms | 200–500 ms | > 500 ms | same |
+| `browser_web_vital_cls` | Cumulative Layout Shift | avg < 0.1 | 0.1–0.25 | > 0.25 | same |
+| `browser_web_vital_ttfb` | Time to First Byte | p(75) < 800 ms | 800–1800 ms | > 1800 ms | same |
+
+> **Note:** `browser_web_vital_fid` was removed in k6 v2.0.0 — use `browser_web_vital_inp` instead.
+> CLS is dimensionless (not milliseconds) — use `avg` or `max` rather than percentile thresholds.
+
+```javascript
+// k6/scripts/core-web-vitals.js — desktop + mobile Web Vitals baseline
+import { browser } from "k6/browser";
+import { check } from "k6";
+
+export const options = {
+  scenarios: {
+    desktop: {
+      executor: "shared-iterations",
+      vus: 2, iterations: 10,
+      options: { browser: { type: "chromium" } },
+      exec: "desktopFlow",
+      tags: { device: "desktop" },
+    },
+    mobile: {
+      executor: "shared-iterations",
+      vus: 2, iterations: 10,
+      options: {
+        browser: {
+          type: "chromium",
+          // Emulate Pixel 5 — requires k6 v0.46+ (--browser.type=chromium)
+          args: ["--window-size=393,851"],
+        },
+      },
+      exec: "mobileFlow",
+      tags: { device: "mobile" },
+    },
+  },
+  thresholds: {
+    // Desktop — Google "Good" thresholds
+    "browser_web_vital_lcp{device:desktop}":  ["p(75)<2500"],
+    "browser_web_vital_fcp{device:desktop}":  ["p(75)<1800"],
+    "browser_web_vital_inp{device:desktop}":  ["p(75)<200"],
+    "browser_web_vital_ttfb{device:desktop}": ["p(75)<800"],
+    // Mobile — more lenient (4G equivalent)
+    "browser_web_vital_lcp{device:mobile}":   ["p(75)<4000"],
+    "browser_web_vital_fcp{device:mobile}":   ["p(75)<3000"],
+    "browser_web_vital_inp{device:mobile}":   ["p(75)<300"],
+  },
+};
+
+const HOME = __ENV.APP_URL || "http://localhost:3001";
+
+async function runFlow(page, label) {
+  await page.goto(HOME, { waitUntil: "networkidle" });
+  // Trigger INP — INP requires at least one interaction per page
+  await page.getByRole("button").first().click().catch(() => {});
+  check(page, { [`${label} title ok`]: () => page.title().length > 0 });
+}
+
+export async function desktopFlow() {
+  const page = await browser.newPage();
+  try {
+    await runFlow(page, "desktop");
+  } finally {
+    await page.close();   // REQUIRED: Web Vitals are flushed on page.close()
+  }
+}
+
+export async function mobileFlow() {
+  const page = await browser.newPage();
+  try {
+    // Emulate 4G network throttling
+    const cdp = await page.createCDPSession();
+    await cdp.send("Network.emulateNetworkConditions", {
+      offline: false,
+      downloadThroughput: (4 * 1024 * 1024) / 8,
+      uploadThroughput:   (3 * 1024 * 1024) / 8,
+      latency: 20,
+    });
+    await runFlow(page, "mobile");
+  } finally {
+    await page.close();
+  }
+}
+```
+
+> **[community]:** INP (`browser_web_vital_inp`) requires at least one user interaction on
+> the page before it emits a value. Pages with no interactive elements (pure content pages)
+> will have `browser_web_vital_inp = 0` regardless of rendering performance — an empty
+> `p(75) < 200` threshold will always pass, creating a false sense of security. Always
+> click at least one interactive element (button, link, input) during browser scenarios
+> that include INP thresholds.
+
+---
+
+## Community Gotchas (Iteration 37)
+
+### 66. Custom xk6 extension `init()` runs before k6 option parsing — cannot read `__ENV` at registration time  [community]
+
+**What:** The `init()` function in a Go xk6 extension package runs at program startup, before
+k6 has parsed command-line flags or environment variables. Extensions that try to read
+`os.Getenv("K6_MY_CONFIG")` inside `init()` or in the `New()` factory receive empty strings
+because the k6 `--env` / `-e` flags have not been processed yet.
+
+**WHY:** Go's `init()` functions run during package initialization, which happens before
+`main()` is called. k6 resolves `--env` flags and populates `__ENV` only after parsing the
+command line, which is well after all `init()` functions complete.
+
+**Fix:** Read configuration inside `Start()` (output extensions) or `NewModuleInstance()`
+(JS extensions) where `output.Params.Environment` and `modules.VU.State()` are available:
+
+```go
+// WRONG — reads env before k6 processes flags
+func init() {
+    url := os.Getenv("K6_WEBHOOK_URL") // always empty — init() is too early
+    output.RegisterExtension("webhook", func(p output.Params) (output.Output, error) {
+        return &Webhook{url: url}, nil  // url is ""
+    })
+}
+
+// CORRECT — read env in the factory function (called after option parsing)
+func init() {
+    output.RegisterExtension("webhook", New)
+}
+
+func New(params output.Params) (output.Output, error) {
+    url := params.Environment["K6_WEBHOOK_URL"]  // populated correctly
+    if url == "" {
+        return nil, fmt.Errorf("K6_WEBHOOK_URL is required")
+    }
+    return &Webhook{params: params, url: url}, nil
+}
+```
+
+---
+
+### 67. Microservice scenario `startTime` offsets do not account for `setup()` duration  [community]
+
+**What:** k6 measures `startTime` from the moment the test run begins (after `setup()` completes).
+Teams that call `setup()` to pre-warm caches or seed data and take 30–60 seconds discover that
+scenarios with `startTime: "30s"` actually start 30 seconds *after* `setup()` finishes, not 30
+seconds after the `k6 run` command is issued.
+
+**WHY:** By design — `setup()` is blocking and VU scenarios begin from `t=0` after `setup()`
+returns. This is generally correct behavior, but it surprises teams who expected the scenario
+wall-clock to include `setup()` time. The confusion is compounded because the k6 summary shows
+total run duration including `setup()` time.
+
+**Fix:** Document `setup()` duration in your test plan. For time-sensitive sequencing (e.g.,
+"inject chaos exactly 5 minutes into the test"), measure `setup()` elapsed time and adjust
+`startTime` accordingly, or use `Date.now()` in `default()` to gate chaos actions dynamically:
+
+```javascript
+export function injectFaults(data) {
+  // Wait until 300 seconds after the test START (not after setup() completion)
+  // Use __VU / __ITER counters or a passed timestamp from setup()
+  const elapsed = Date.now() - data.testStartMs;
+  if (elapsed < 300_000) { return; }  // skip until 5 min elapsed
+
+  const disruptor = new ServiceDisruptor("payments", "default");
+  disruptor.injectHTTPFaults({ errorRate: 0.1, errorCode: 503, averageDelay: "200ms" }, "60s");
+}
+```
+
+---
+
+### 68. Output extensions using `AddMetricSamples` receive batched `SampleContainer` arrays — iterate with `GetSamples()`  [community]
+
+**What:** The `samples []stats.SampleContainer` parameter in `AddMetricSamples` is not a
+flat slice of `Sample` values — it is a slice of `SampleContainer` interfaces, each of which
+may contain one or many `Sample` values. Extensions that cast directly to `[]stats.Sample`
+find zero matching type assertions.
+
+**WHY:** k6 batches metrics internally to reduce lock contention on the output channel. A
+single `AddMetricSamples` call may carry hundreds of samples from multiple VUs across
+multiple metrics. The `SampleContainer` interface has a `GetSamples() []Sample` method
+to unwrap the batch.
+
+```go
+// WRONG — direct type assertion fails silently for batched containers
+func (w *Webhook) AddMetricSamples(samples []stats.SampleContainer) {
+    for _, sc := range samples {
+        if s, ok := sc.(stats.Sample); ok {  // most containers are NOT stats.Sample
+            process(s)
+        }
+        // batch containers missed entirely
+    }
+}
+
+// CORRECT — use GetSamples() to unwrap all containers
+func (w *Webhook) AddMetricSamples(samples []stats.SampleContainer) {
+    for _, sc := range samples {
+        for _, s := range sc.GetSamples() {
+            process(s)
+        }
+    }
+}
+```
+
+> **[community]:** Filter by metric name using `s.Metric.Name` inside the inner loop.
+> k6 emits all metrics (including internal ones like `vus`, `data_sent`, `data_received`)
+> through every output extension. Always whitelist the metrics your extension cares about
+> rather than forwarding everything — this reduces downstream storage costs dramatically.
+
+---
+
+### 69. xk6-disruptor `PodDisruptor` vs `ServiceDisruptor` — target selection gotcha for multi-replica services  [community]
+
+**What:** `PodDisruptor` targets pods directly by label selector; `ServiceDisruptor` targets
+the pods *backing* a named Kubernetes Service. When a service has multiple replicas,
+`ServiceDisruptor` injects faults into ALL backing pods simultaneously, causing a much higher
+blast radius than expected. Teams that set `errorRate: 0.1` assuming "10% of requests per pod"
+actually get "10% errors from ALL pods", roughly matching the global error rate they wanted —
+but if they intended to fault only *some* replicas (partial failure testing), they must use
+`PodDisruptor` with a subset label selector.
+
+```javascript
+// k6/scripts/pod-partial-fault.js
+import http from "k6/http";
+import { check } from "k6";
+import { PodDisruptor } from "k6/x/disruptor";
+
+export const options = {
+  scenarios: {
+    load: {
+      executor: "constant-vus", vus: 20, duration: "3m",
+      exec: "loadFlow", tags: { scenario: "load" },
+    },
+    fault: {
+      executor: "shared-iterations", vus: 1, iterations: 1,
+      startTime: "30s", exec: "injectFaults",
+    },
+  },
+  thresholds: {
+    "http_req_duration{scenario:load}": ["p(95)<3000"],
+    "http_req_failed{scenario:load}":   ["rate<0.50"],  // tolerate up to 50% during fault
+  },
+};
+
+export function loadFlow() {
+  const res = http.get(`${__ENV.API_URL}/api/items`);
+  check(res, { "not 500": (r) => r.status !== 500 });
+}
+
+export function injectFaults() {
+  // Target ONLY pods with the "shard: a" label — partial replica failure
+  const disruptor = new PodDisruptor({
+    namespace: __ENV.NAMESPACE || "default",
+    select:    { labels: { app: "items-service", shard: "a" } },
+  });
+
+  // Inject HTTP faults: 15% error rate, 200ms extra delay, 503 status
+  disruptor.injectHTTPFaults(
+    { averageDelay: "200ms", errorRate: 0.15, errorCode: 503 },
+    "60s"  // duration of fault injection
+  );
+}
+```
+
+> **[community]:** Before using `ServiceDisruptor` in a shared cluster, call
+> `disruptor.targets()` first and log or `check()` the count of targeted pods to avoid
+> accidentally faulting more replicas than intended. In production-mirroring environments,
+> prefer `PodDisruptor` with explicit label selectors over `ServiceDisruptor` for
+> predictable blast-radius control.
+
+---
+
+### 70. InfluxDB v2 output requires a custom xk6 build — the official `grafana/k6` Docker image does NOT include it  [community]
+
+**What:** The InfluxDB v2 output plugin (`xk6-output-influxdb`) is a community extension and
+is NOT bundled in the official `grafana/k6` Docker images on Docker Hub. Running
+`k6 run --out influxdb ...` with the stock image outputs a "unknown output type" error.
+
+**WHY:** InfluxDB v1 output (legacy, basic) is built into k6 core. InfluxDB v2 moved to
+an xk6 extension model to keep the core lean. The Grafana-maintained image only includes
+the production-ready stable modules.
+
+```bash
+# Build a custom image with InfluxDB v2 support
+FROM golang:1.22 AS builder
+RUN go install go.k6.io/xk6/cmd/xk6@latest
+RUN xk6 build \
+    --with github.com/grafana/xk6-output-influxdb \
+    --output /k6
+
+FROM grafana/k6:latest
+COPY --from=builder /k6 /usr/bin/k6
+
+# Use in docker-compose or GitHub Actions:
+# services:
+#   k6:
+#     image: custom-k6-influxdb:latest
+#     environment:
+#       K6_INFLUXDB_ORGANIZATION: my-org
+#       K6_INFLUXDB_BUCKET: k6-metrics
+#       K6_INFLUXDB_TOKEN: ${{ secrets.INFLUXDB_TOKEN }}
+#     command: run --out influxdb=http://influxdb:8086 /scripts/load.js
+```
+
+```bash
+# Alternative: use xk6 binary directly (CI without Docker)
+go install go.k6.io/xk6/cmd/xk6@latest
+xk6 build --with github.com/grafana/xk6-output-influxdb
+
+K6_INFLUXDB_ORGANIZATION=my-org \
+K6_INFLUXDB_BUCKET=k6-metrics \
+K6_INFLUXDB_TOKEN=my-token \
+./k6 run --out xk6-influxdb=http://localhost:8086 k6/scripts/load.js
+```
+
+> **[community]:** The `--out` flag value changed between v1 and v2: InfluxDB v1 uses
+> `--out influxdb=http://host:8086/dbname`; InfluxDB v2 uses `--out xk6-influxdb=http://host:8086`
+> with bucket/org/token set via env vars. Mixing the v1 flag syntax with an xk6-influxdb
+> build silently falls through to the v1 core output, which cannot authenticate to InfluxDB v2.
+
+---
 

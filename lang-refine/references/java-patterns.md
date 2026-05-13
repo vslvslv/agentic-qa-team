@@ -1,5 +1,5 @@
 # Java Patterns & Best Practices
-<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, AssertJ 4.0.0-M1 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Boot 4.0 release notes and migration guide, Spring Boot 4.1-RC1 release notes, Spring Framework 6.2-7.0 docs, MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official, ArchUnit 1.3.0 user guide, JUnit 5 extension SPI docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int @TempDir-CleanupMode system-properties-extension Constants-class assertInstanceOf-cause trimStacktrace WorkerThreadPool org.junit.start dynamic-test-ExecutionMode memory-cleanup-mode, JUnit 6.0.3 NamespacedHierarchicalStore-deadlock, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, AssertJ 4.0.0-M1 Java17-min native-isSealed-isRecord, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Spring Boot 4.0 @MockBean-removal @MockitoBean RestTestClient @AutoConfigureMockMvc-HtmlUnit MockitoTestExecutionListener-removal @PropertyMapping-relocation @WithMockUser-security-test spring-boot-resttestclient-module-4.0.6, Spring Boot 4.1-RC1 @GrpcAdvice @ServiceConnection-Ssl-fix OpenTelemetry-SDK-env-vars, Mockito 5.19 SequencedCollection-ReturnsEmptyValues, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker, ArchUnit layered-architecture cycle-detection naming-conventions, Mockito thenAnswer Answer-patterns CALLS_REAL_METHODS RETURNS_DEEP_STUBS, JUnit 5 extension SPI ParameterResolver BeforeEachCallback AfterEachCallback TestExecutionExceptionHandler ExecutionCondition InvocationInterceptor ExtensionContext-Store) | mixed | iteration: 37 | score: 99/100 | date: 2026-05-12 -->
+<!-- sources: official (Oracle JDK 21-25 docs, Oracle Interface/Inheritance tutorial, awesome-java, iluwatar/java-design-patterns, Oracle Stream package-summary, OpenJDK JEP index, JEP 491, JEP 477, JEP 454 FFM, JEP 484 Class-File API, JEP 502 Stable Values, JEP 505 Structured Concurrency updated, JUnit 5.11-5.14 release notes, JUnit 6.0-6.1 release notes, Mockito 5.x-5.23 release notes, AssertJ 3.27.7 release notes, AssertJ 4.0.0-M1 release notes, Testcontainers 2.0 release notes, WireMock docs, Awaitility docs, Spring Boot 3.4-3.5 release notes, Spring Boot 4.0 release notes and migration guide, Spring Boot 4.1-RC1 release notes, Spring Framework 6.2-7.0 docs, MockitoBean docs, MockMvcTester docs, JPMS official tutorial, Hexagonal Architecture official, ArchUnit 1.3.0 user guide, JUnit 5 extension SPI docs) | community (practitioner synthesis, Effective Java principles, awesome-java, OpenJDK JEPs, Spring pitfalls, JPA gotchas, practitioner testing patterns, JPMS pitfalls, Valhalla community analysis, locale deprecation, Object.wait pinning, teeing collector, Path.of idiom, List.copyOf null semantics, Spring @Async self-invocation, HikariCP connection pool, Thread.Builder API, KDF security APIs, @ServiceConnection pattern, @MockitoBean migration, MockMvcTester fluent assertions, JUnit 5.11 @FieldSource @AutoClose, JUnit 5.12 @EnumSource range, JUnit 5.13 @ParameterizedClass @SentenceFragment @ClassTemplate AutoCloseable-in-Store Kotlin-Sequence, JUnit 5.14 ResourceSupport OutputDirectoryCreator MediaType-relocation EnabledOnJre-JRE-OTHER ResourceLock-ClassTemplate, JUnit 6.1 @DefaultLocale @DefaultTimeZone @EmptySource-Iterable @CsvSource-commentCharacter @EnabledOnJre-int @TempDir-CleanupMode system-properties-extension Constants-class assertInstanceOf-cause trimStacktrace WorkerThreadPool org.junit.start dynamic-test-ExecutionMode memory-cleanup-mode, JUnit 6.0.3 NamespacedHierarchicalStore-deadlock, Testcontainers 2.0 module renaming, JUnit 6.0 migration, AssertJ 3.27 CompletableFuture assertions, AssertJ 3.27.7 XXE CVE-2026-24400 XmlStringPrettyFormatter-deprecated, AssertJ 4.0.0-M1 Java17-min native-isSealed-isRecord, Spring Boot 3.5 SSL Testcontainers print-condition-evaluation-report, Spring Boot 4.0 @MockBean-removal @MockitoBean RestTestClient @AutoConfigureMockMvc-HtmlUnit MockitoTestExecutionListener-removal @PropertyMapping-relocation @WithMockUser-security-test spring-boot-resttestclient-module-4.0.6, Spring Boot 4.1-RC1 @GrpcAdvice @ServiceConnection-Ssl-fix OpenTelemetry-SDK-env-vars, Mockito 5.19 SequencedCollection-ReturnsEmptyValues, Mockito 5.20 generic-type-construction, Mockito 5.21 ReturnsEmptyValues-Future, Mockito 5.22 Kotlin singleton mocking, Mockito 5.23 @Nullable-when Android-mock-maker, ArchUnit layered-architecture cycle-detection naming-conventions, Mockito thenAnswer Answer-patterns CALLS_REAL_METHODS RETURNS_DEEP_STUBS, JUnit 5 extension SPI ParameterResolver BeforeEachCallback AfterEachCallback TestExecutionExceptionHandler ExecutionCondition InvocationInterceptor ExtensionContext-Store, virtual-threads testing pinning ReentrantLock StructuredConcurrency, WireMock response-templating stateful-scenarios request-journal, Testcontainers Network reuse DockerComposeContainer custom-wait-strategy @ServiceConnection advanced) | mixed | iteration: 38 | score: 99/100 | date: 2026-05-12 -->
 
 ## Core Philosophy
 
@@ -6884,4 +6884,522 @@ public class DatabaseCleanupExtension
 - **`@ExtendWith` on every test class:** Compose multiple extensions into a single meta-annotation (`@Target(TYPE) @ExtendWith({A.class, B.class})`) to avoid repetition and keep test class headers clean.
 - **`ParameterResolver` with mutable shared objects:** If a resolver returns the same mutable object to multiple tests, concurrent execution causes data races. Either return a fresh instance per call or make the shared object deeply immutable.
 - **`InvocationInterceptor` for retry on assertion failure:** Retrying tests that fail due to assertion errors (not flakiness) masks production bugs. Only use `@Retryable` patterns for tests that interact with non-deterministic systems (external APIs, timing-sensitive async code). [community]
+
+---
+
+## Virtual Threads — Testing Concurrent Code (Java 21+)
+
+Virtual threads require specific testing strategies because they change the concurrency model: thread-per-request patterns that would exhaust OS threads now scale freely. Tests must verify both correctness (no data races, proper cancellation) and that the code actually runs on virtual threads when expected.
+
+### Asserting Virtual Thread Execution
+
+```java
+import org.junit.jupiter.api.Test;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+import static org.assertj.core.api.Assertions.assertThat;
+
+class VirtualThreadExecutionTest {
+
+    @Test
+    void orderProcessor_usesVirtualThreads() throws Exception {
+        AtomicReference<Thread> capturedThread = new AtomicReference<>();
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            executor.submit(() -> {
+                capturedThread.set(Thread.currentThread());
+            }).get(5, TimeUnit.SECONDS);
+        }
+
+        Thread t = capturedThread.get();
+        // Virtual threads are always daemon threads and report isVirtual() == true
+        assertThat(t.isVirtual())
+            .as("Task should execute on a virtual thread")
+            .isTrue();
+        assertThat(t.isDaemon())
+            .as("Virtual threads are always daemon threads")
+            .isTrue();
+    }
+
+    @Test
+    void concurrentRequests_completedWithoutExhaustion() throws Exception {
+        int taskCount = 10_000;
+        CountDownLatch latch = new CountDownLatch(taskCount);
+        ConcurrentLinkedQueue<Throwable> errors = new ConcurrentLinkedQueue<>();
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < taskCount; i++) {
+                executor.submit(() -> {
+                    try {
+                        // Simulate short blocking I/O
+                        Thread.sleep(1);
+                    } catch (Throwable e) {
+                        errors.add(e);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+            }
+            assertThat(latch.await(30, TimeUnit.SECONDS))
+                .as("All %d tasks should complete within 30 s", taskCount)
+                .isTrue();
+        }
+        assertThat(errors).as("No errors during concurrent execution").isEmpty();
+    }
+}
+```
+
+### Testing Pinning Avoidance [community]
+
+Virtual threads *pin* to their carrier OS thread when they block inside a `synchronized` block or call a native method. Pinning defeats scalability. Use JVM flags to detect pinning in tests and migrate to `ReentrantLock`.
+
+```java
+// In surefire/failsafe plugin or JVM args for test runs:
+// -Djdk.tracePinnedThreads=full
+// This prints a stack trace to stderr whenever a virtual thread pins.
+
+// BAD — synchronized block pins the virtual thread to the OS carrier
+public class PinningService {
+    private final Object lock = new Object();
+
+    public String fetchData() throws InterruptedException {
+        synchronized (lock) {
+            Thread.sleep(100);   // <-- pins carrier thread during sleep
+            return "data";
+        }
+    }
+}
+
+// GOOD — ReentrantLock releases the carrier when the virtual thread parks
+public class NonPinningService {
+    private final ReentrantLock lock = new ReentrantLock();
+
+    public String fetchData() throws InterruptedException {
+        lock.lock();
+        try {
+            Thread.sleep(100);   // virtual thread unmounts; carrier is free
+            return "data";
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+
+// Test: count pinning events using JFR (Java Flight Recorder)
+@Test
+void fetchData_doesNotPinCarrierThread() throws Exception {
+    // Enable VirtualThreadPinned JFR event if your test environment supports it
+    // For CI, pass -Djdk.tracePinnedThreads=full and assert no output to stderr.
+    // Simple alternative: assert lock type used is ReentrantLock, not synchronized
+    NonPinningService service = new NonPinningService();
+    // Run with virtual thread executor to expose pinning
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        String result = executor.submit(service::fetchData).get(5, TimeUnit.SECONDS);
+        assertThat(result).isEqualTo("data");
+    }
+}
+```
+
+### Structured Concurrency — Testing ShutdownOnFailure and ShutdownOnSuccess
+
+```java
+import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.StructuredTaskScope.Subtask;
+import org.junit.jupiter.api.Test;
+import static org.assertj.core.api.Assertions.*;
+
+class StructuredConcurrencyTest {
+
+    record OrderResult(String userId, String productName) {}
+
+    // Production code using structured concurrency
+    OrderResult fetchOrderData(long orderId) throws Exception {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            Subtask<String> userTask    = scope.fork(() -> simulateUserFetch(orderId));
+            Subtask<String> productTask = scope.fork(() -> simulateProductFetch(orderId));
+
+            scope.join().throwIfFailed();
+            return new OrderResult(userTask.get(), productTask.get());
+        }
+    }
+
+    @Test
+    void fetchOrderData_bothSucceed_returnsComposedResult() throws Exception {
+        // Both subtasks succeed — result is composed
+        OrderResult result = fetchOrderData(1L);
+        assertThat(result.userId()).isNotBlank();
+        assertThat(result.productName()).isNotBlank();
+    }
+
+    @Test
+    void fetchOrderData_oneSubtaskFails_propagatesException() {
+        // If either subtask throws, ShutdownOnFailure cancels the other
+        // and throwIfFailed() re-throws the first failure
+        assertThatThrownBy(() -> fetchOrderDataWithFailure(99L))
+            .isInstanceOf(RuntimeException.class)
+            .hasMessageContaining("Simulated failure");
+    }
+
+    private String simulateUserFetch(long id)    { return "user-" + id; }
+    private String simulateProductFetch(long id) { return "product-" + id; }
+
+    OrderResult fetchOrderDataWithFailure(long orderId) throws Exception {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            Subtask<String> userTask    = scope.fork(() -> { throw new RuntimeException("Simulated failure"); });
+            Subtask<String> productTask = scope.fork(() -> simulateProductFetch(orderId));
+            scope.join().throwIfFailed();
+            return new OrderResult(userTask.get(), productTask.get());
+        }
+    }
+}
+```
+
+**Virtual Thread Testing Anti-Patterns [community]:**
+- **Testing with `newFixedThreadPool` instead of `newVirtualThreadPerTaskExecutor`:** Platform thread pools won't surface pinning or scalability issues. Use the virtual-thread executor explicitly in tests that validate concurrent behaviour.
+- **`Thread.sleep()` in `synchronized` blocks in test helpers:** Even test scaffolding code can cause pinning. Replace `synchronized` with `ReentrantLock` in any code that runs on virtual threads, including test utilities.
+- **Not asserting `Thread.currentThread().isVirtual()`:** If your production executor is configurable, tests should verify it's actually configured to use virtual threads — a misconfigured executor silently uses platform threads.
+
+---
+
+## WireMock — Advanced Patterns
+
+The core WireMock stub/verify pattern is covered above. These advanced patterns address stateful multi-step flows, response templating, and webhook simulation.
+
+### Response Templating — Dynamic Responses from Request Data
+
+WireMock's Handlebars-based response templating allows stub responses to echo request body fields, headers, or path variables without writing custom Java code.
+
+```java
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
+import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+
+class TemplatedResponseTest {
+
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance()
+        .options(WireMockConfiguration.wireMockConfig()
+            .dynamicPort()
+            .templatingEnabled(true)      // enable Handlebars templating
+            .globalTemplating(true))      // apply to all stubs by default
+        .build();
+
+    @Test
+    void createUser_echoesNameInResponse() {
+        // {{jsonPath request.body '$.name'}} extracts the name field from the request body
+        wm.stubFor(post(urlEqualTo("/users"))
+            .willReturn(aResponse()
+                .withStatus(201)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {
+                      "id": "{{randomValue type='UUID'}}",
+                      "name": "{{jsonPath request.body '$.name'}}",
+                      "createdAt": "{{now format='yyyy-MM-dd'}}"
+                    }
+                    """)));
+
+        UserApiClient client = new UserApiClient("http://localhost:" + wm.getPort());
+        UserResponse response = client.createUser(new CreateUserRequest("Alice"));
+
+        assertThat(response.name()).isEqualTo("Alice");
+        assertThat(response.id()).isNotBlank();
+    }
+
+    @Test
+    void getUser_echoesPathParam() {
+        // {{request.pathSegments.[1]}} extracts /users/{id} → the id segment
+        wm.stubFor(get(urlMatching("/users/[0-9]+"))
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withBody("""
+                    {"id": "{{request.pathSegments.[1]}}", "name": "Test User"}
+                    """)));
+
+        UserApiClient client = new UserApiClient("http://localhost:" + wm.getPort());
+        UserResponse response = client.getUser(42L);
+
+        assertThat(response.id()).isEqualTo("42");
+    }
+}
+```
+
+### Stateful Scenarios — Multi-Step Protocol Testing
+
+WireMock scenarios model state machines: a stub can assert the current state and transition to a new state on match. This is ideal for testing retry logic, pagination, and optimistic locking.
+
+```java
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED;
+
+class StatefulScenarioTest {
+
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance()
+        .options(WireMockConfiguration.wireMockConfig().dynamicPort())
+        .build();
+
+    @Test
+    void paginatedFetch_traversesAllPages() {
+        // Page 1 — initial state
+        wm.stubFor(get(urlEqualTo("/items?page=1"))
+            .inScenario("Pagination")
+            .whenScenarioStateIs(STARTED)
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withBody("""
+                    {"items": ["a", "b"], "nextPage": 2}
+                    """)));
+
+        // Page 2 — after first request
+        wm.stubFor(get(urlEqualTo("/items?page=2"))
+            .inScenario("Pagination")
+            .whenScenarioStateIs(STARTED)
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withBody("""
+                    {"items": ["c"], "nextPage": null}
+                    """)));
+
+        ItemClient client = new ItemClient("http://localhost:" + wm.getPort());
+        List<String> all = client.fetchAll();
+
+        assertThat(all).containsExactly("a", "b", "c");
+        wm.verify(getRequestedFor(urlEqualTo("/items?page=1")));
+        wm.verify(getRequestedFor(urlEqualTo("/items?page=2")));
+    }
+
+    @Test
+    void idempotentCreate_secondCallReturns409() {
+        // First POST succeeds
+        wm.stubFor(post(urlEqualTo("/orders"))
+            .inScenario("Idempotent Create")
+            .whenScenarioStateIs(STARTED)
+            .willSetStateTo("Created")
+            .willReturn(aResponse().withStatus(201)
+                .withBody("{\"orderId\": \"ord-1\"}")));
+
+        // Duplicate POST returns 409 Conflict
+        wm.stubFor(post(urlEqualTo("/orders"))
+            .inScenario("Idempotent Create")
+            .whenScenarioStateIs("Created")
+            .willReturn(aResponse().withStatus(409)
+                .withBody("{\"error\": \"Order already exists\"}")));
+
+        OrderClient client = new OrderClient("http://localhost:" + wm.getPort());
+        OrderResponse first = client.createOrder(new OrderRequest("prod-1", 2));
+        assertThat(first.orderId()).isEqualTo("ord-1");
+
+        assertThatThrownBy(() -> client.createOrder(new OrderRequest("prod-1", 2)))
+            .isInstanceOf(DuplicateOrderException.class);
+    }
+}
+```
+
+### Request Journal Inspection — Assert All Requests Made
+
+```java
+@Test
+void auditClient_logsEveryRequest() {
+    wm.stubFor(any(anyUrl()).willReturn(aResponse().withStatus(200)));
+
+    AuditClient client = new AuditClient("http://localhost:" + wm.getPort());
+    client.recordEvent("login",  Map.of("user", "alice"));
+    client.recordEvent("logout", Map.of("user", "alice"));
+
+    // Inspect all requests made during the test via the journal
+    List<LoggedRequest> requests = wm.findAll(anyRequestedFor(anyUrl()));
+    assertThat(requests).hasSize(2);
+    assertThat(requests)
+        .extracting(r -> r.getBodyAsString())
+        .anySatisfy(body -> assertThat(body).contains("login"))
+        .anySatisfy(body -> assertThat(body).contains("logout"));
+}
+```
+
+**WireMock Advanced Anti-Patterns [community]:**
+- **Global templating enabled for non-templated stubs:** When `globalTemplating(true)` is set, WireMock processes every response body through Handlebars even if no `{{...}}` expressions are present. This silently alters responses containing literal `{{` characters (e.g., JSON with Mustache syntax). Enable templating per-stub with `.withTransformers("response-template")` instead of globally.
+- **Leaking scenarios across tests:** WireMock scenarios persist until `wm.resetAll()` is called. A test that leaves a scenario in a non-initial state will cause the next test to see unexpected stub behaviour. Use `@RegisterExtension` (not `@Rule`) with `resetMappingsAfterEachTest(true)` or call `wm.resetScenarios()` in `@AfterEach`.
+- **Verifying exact request count without tolerating retries:** `wm.verify(1, postRequestedFor(...))` fails if the SUT retries on a transient error. Use `wm.verify(moreThanOrExactly(1), ...)` when the SUT has retry logic, or inspect the journal to assert the final state instead.
+
+---
+
+## Testcontainers — Advanced Patterns
+
+### Network — Cross-Container Communication
+
+When multiple containers must communicate (e.g., an app container calling a database container), use a shared `Network` so containers can resolve each other by alias rather than localhost port.
+
+```java
+import org.testcontainers.containers.Network;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.junit.jupiter.api.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@Testcontainers
+class MultiContainerNetworkTest {
+
+    static Network network = Network.newNetwork();
+
+    @Container
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
+        .withNetwork(network)
+        .withNetworkAliases("db");   // other containers can reach it as "db"
+
+    @Container
+    static GenericContainer<?> app = new GenericContainer<>("my-app:latest")
+        .withNetwork(network)
+        .withEnv("DB_URL", "jdbc:postgresql://db:5432/test")  // uses alias
+        .withEnv("DB_USER", postgres.getUsername())
+        .withEnv("DB_PASSWORD", postgres.getPassword())
+        .withExposedPorts(8080)
+        .dependsOn(postgres);
+
+    @Test
+    void healthEndpoint_returnsOk() throws Exception {
+        String url = "http://localhost:" + app.getMappedPort(8080) + "/health";
+        var client = java.net.http.HttpClient.newHttpClient();
+        var response = client.send(
+            java.net.http.HttpRequest.newBuilder().uri(java.net.URI.create(url)).build(),
+            java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(200);
+    }
+}
+```
+
+### Container Reuse — Faster Test Cycles [community]
+
+Testcontainers' reuse mode keeps containers running across test runs (same JVM session or across restarts via container labels). This dramatically reduces test suite startup time for heavy containers like databases or Kafka.
+
+```java
+import org.testcontainers.containers.PostgreSQLContainer;
+
+// Reusable container singleton — shared across the entire test suite
+// Place in a shared base class or abstract test fixture
+public abstract class SharedPostgresTest {
+
+    static final PostgreSQLContainer<?> POSTGRES;
+
+    static {
+        POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withDatabaseName("testdb")
+            .withUsername("test")
+            .withPassword("test")
+            .withReuse(true);   // reuse across JVM restarts if container hash matches
+        POSTGRES.start();
+    }
+
+    // Subclasses call this to get a DataSource configured for the shared container
+    protected static String jdbcUrl() {
+        return POSTGRES.getJdbcUrl();
+    }
+}
+
+// Concrete test — inherits the shared container
+class UserRepositoryTest extends SharedPostgresTest {
+
+    @Test
+    void save_persistsUser() {
+        // Use jdbcUrl() to configure your DataSource / EntityManagerFactory
+        var ds = buildDataSource(jdbcUrl(), "test", "test");
+        var repo = new UserRepository(ds);
+        var saved = repo.save(new User("alice@example.com"));
+        assertThat(saved.id()).isPositive();
+    }
+}
+```
+
+> **Prerequisite:** Add `testcontainers.reuse.enable=true` to `~/.testcontainers.properties`. Without this flag, `withReuse(true)` is silently ignored. [community]
+
+### Custom Wait Strategy — Polling a Health Endpoint
+
+The default `Wait.forListeningPort()` only checks TCP connectivity, not application readiness. For services with slow startup or complex readiness checks, use a custom HTTP wait strategy or `Wait.forLogMessage()`.
+
+```java
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import java.time.Duration;
+
+GenericContainer<?> service = new GenericContainer<>("my-microservice:latest")
+    .withExposedPorts(8080)
+    // Wait until the /health endpoint returns HTTP 200
+    .waitingFor(Wait.forHttp("/health")
+        .forPort(8080)
+        .forStatusCode(200)
+        .withStartupTimeout(Duration.ofSeconds(90)))
+    // Alternative: wait for a log message emitted on readiness
+    // .waitingFor(Wait.forLogMessage(".*Started Application.*", 1))
+    ;
+```
+
+### `DockerComposeContainer` — Reuse Existing Compose Files
+
+```java
+import org.testcontainers.containers.DockerComposeContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import java.io.File;
+
+class DockerComposeTest {
+
+    static DockerComposeContainer<?> compose =
+        new DockerComposeContainer<>(new File("src/test/resources/docker-compose-test.yml"))
+            .withExposedService("postgres_1", 5432,
+                Wait.forListeningPort().withStartupTimeout(Duration.ofSeconds(60)))
+            .withExposedService("redis_1", 6379,
+                Wait.forListeningPort())
+            .withLocalCompose(true);   // use local docker-compose binary, not embedded
+
+    @Test
+    void services_startAndRespond() {
+        String pgHost   = compose.getServiceHost("postgres_1", 5432);
+        int    pgPort   = compose.getServiceMappedPort("postgres_1", 5432);
+        assertThat(pgHost).isNotBlank();
+        assertThat(pgPort).isPositive();
+    }
+}
+```
+
+### Spring Boot `@ServiceConnection` — Zero-Boilerplate Testcontainers Wiring
+
+When using Spring Boot 3.1+, `@ServiceConnection` eliminates the need to manually wire container ports into `application.properties`:
+
+```java
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest
+@Testcontainers
+class UserServiceIntegrationTest {
+
+    @Container
+    @ServiceConnection   // auto-configures spring.datasource.* from the container
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Autowired
+    UserService userService;
+
+    @Test
+    void createUser_persistsAndReturns() {
+        User created = userService.create("bob@example.com");
+        assertThat(created.id()).isPositive();
+        assertThat(userService.findById(created.id())).isPresent();
+    }
+}
+```
+
+**Testcontainers Advanced Anti-Patterns [community]:**
+- **Starting containers in `@BeforeEach`:** Each test method re-creates the container, multiplying startup overhead by the number of tests. Declare containers as `static` fields with `@Container` (or in a `static {}` block) so they start once per class.
+- **`withReuse(true)` without `testcontainers.reuse.enable=true`:** The reuse flag is silently ignored unless the property file opt-in is present. Teams that add `withReuse(true)` without configuring the property see no speed improvement and no error.
+- **Relying on `Wait.forListeningPort()` for HTTP services:** TCP port open ≠ HTTP application ready. A service can accept TCP connections while still initialising its database connection pool. Use `Wait.forHttp("/health")` for HTTP services to prevent tests from running against a half-started application.
+- **Not cleaning up test data between tests when using shared containers:** Reused containers persist data across test methods. Use `@Transactional` with rollback, truncate tables in `@AfterEach`, or use database-level reset scripts to avoid test-order dependencies.
+
 

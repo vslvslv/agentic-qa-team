@@ -1,6 +1,25 @@
 # TypeScript Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 41 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 42 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 42 (2026-05-12): added NoInfer<T> full pattern section (constrained generic defaults,
+       test fixture builder with NoInfer, assertEqualTyped helper, community pitfall about
+       inference anchor requirement); added TypeScript 5.4 Closure Narrowing Preservation section
+       (last-assignment rule, closures that defeat narrowing, testing impact, const-alias fix);
+       added Type-Safe Result<T,E> pattern for error handling (Ok/Err constructors, isOk/isErr
+       type guards, assertOk assertion helper, full test suite example, never-inference pitfall);
+       added TypeScript 5.5 Inferred Type Predicates section (four inference rules, breaking
+       change for 5.4->5.5 migration, truthiness gotcha, test impact); added Conditional Types
+       as Type-Level Test Helpers section (Expect/Equal/Extends utilities, AcceptsArgs pattern,
+       ResolvedElement extraction, any-absorption pitfall); added Distributive vs Non-Distributive
+       Conditional Types section (ToArray vs ToArrayNonDist, FunctionProperties utility,
+       spyOnMethod pattern, testing gotcha); added Object.groupBy/Map.groupBy type safety section
+       (Partial<Record<K,T[]>> return type, noUncheckedIndexedAccess pitfall, defensive access
+       patterns in tests); added Anti-Patterns: Version-Upgrade Quick Reference table (6 rows
+       covering NoInfer, groupBy, filter predicate, closure narrowing, import assert migration);
+       extended Anti-Patterns: Testing-Specific Quick Reference with 2 new rows — sourced from
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html,
+       typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html,
+       typescriptlang.org/docs/handbook/2/conditional-types.html (verified 2026-05-12)
      Iter 41 (2026-05-12): added TypeScript-Specific Testing Utilities section (type guards as
        reusable test assertions, isDefined/isApiSuccess/isApiError guards, generic test helper
        utilities with assertDefined/waitForCondition/makeFixture patterns, Awaited<ReturnType<...>>
@@ -6769,3 +6788,444 @@ it.each(STATUS_FIXTURES)('handles status %d', (status) => {
 | Branded type `as` cast in fixtures without validation | Passes wrong values (negative IDs, invalid emails) silently | Use smart constructors in test factories; reserve `as` cast for fixture constants only |
 | `infer U extends string` as a cast | Constrained infer FILTERS — resolves to `never` when U is not a string subtype | Use `Extract<U, string>` in the body to extract the string portion from a mixed union |
 | `{ ... } satisfies T as const` (wrong order) | TypeScript parse error — `satisfies` binds before `as const` | Always write `{ ... } as const satisfies T` |
+| `NoInfer<C>` omitted on default parameter | TypeScript widens inferred union to include the default value's type | Wrap optional params that must match earlier params with `NoInfer<C>` |
+| Distributing over union in conditional type unexpectedly | `type Wrap<T> = T extends any ? T[] : never` distributes, giving `string[] \| number[]` not `(string \| number)[]` | Wrap both sides: `[T] extends [any]` to prevent distribution |
+| `filter(x => !!x)` relied on for type narrowing | In TS 5.5+, truthiness filter predicates are NOT inferred (by design — 0 is falsy) | Use `filter(x => x !== null && x !== undefined)` for safe non-null filtering |
+
+---
+
+## `NoInfer<T>` — Constrain Generic Defaults Without Dual Type Parameters
+
+`NoInfer<T>` (TypeScript 5.4+, built-in utility type) prevents TypeScript from using a specific argument position as a source for type inference. The compiler infers the generic type `C` from *other* arguments only, then validates that the `NoInfer<C>` position must match the already-inferred type.
+
+### Problem it solves
+
+Before `NoInfer<T>`, constraining a "default must be one of the allowed values" required an awkward dual-parameter workaround:
+
+```typescript
+// Old approach (TypeScript < 5.4): requires a second type parameter
+function createStreetLight<C extends string, D extends C>(
+  colors: C[],
+  defaultColor?: D,
+): void { /* ... */ }
+
+// TypeScript 5.4+: NoInfer<C> — C is only inferred from `colors`, not from `defaultColor`
+function createStreetLight<C extends string>(
+  colors: C[],
+  defaultColor?: NoInfer<C>,
+): void { /* ... */ }
+
+createStreetLight(['red', 'yellow', 'green'], 'red');    // ✅ OK
+createStreetLight(['red', 'yellow', 'green'], 'blue');   // ❌ Error: 'blue' not in C
+// Argument of type '"blue"' is not assignable to parameter of type
+// '"red" | "yellow" | "green" | undefined'.
+```
+
+### Testing utilities pattern with `NoInfer`
+
+`NoInfer<T>` is particularly useful in test fixture factories and assertion helpers where a default value must belong to the same union as the primary constraint:
+
+```typescript
+// Type-safe test fixture builder: ensures `defaultValue` is a valid member
+// of the enum/union passed as `values` — not a widened version
+function makeEnumFixture<T extends string>(
+  values: readonly T[],
+  defaultValue?: NoInfer<T>,
+): { values: readonly T[]; defaultValue: T } {
+  return {
+    values,
+    defaultValue: defaultValue ?? values[0]!,
+  };
+}
+
+const statusFixture = makeEnumFixture(
+  ['pending', 'active', 'archived'] as const,
+  'active',        // ✅ valid — must be one of the three strings
+);
+// statusFixture.defaultValue: "pending" | "active" | "archived"
+
+makeEnumFixture(['pending', 'active', 'archived'] as const, 'deleted'); // ❌ compile error
+
+// Assertion helper: expected must be assignable to the inferred type, not a widener
+function assertEqualTyped<T>(actual: T, expected: NoInfer<T>): void {
+  expect(actual).toEqual(expected);
+}
+
+const user = { id: 1, name: 'Alice' };
+assertEqualTyped(user, { id: 1, name: 'Alice' }); // ✅
+assertEqualTyped(user, { id: 1, name: 'Alice', extra: true }); // ❌ excess property error
+```
+
+[community] **Pitfall:** `NoInfer<T>` is a hint to the *inference algorithm*, not a runtime check. If TypeScript cannot infer `T` from any non-`NoInfer` position, it falls back to `unknown`. Always ensure at least one parameter that is NOT wrapped in `NoInfer` provides the type inference anchor.
+
+---
+
+## TypeScript 5.4 — Closure Narrowing Preservation
+
+TypeScript 5.4 improved narrowing inside closure callbacks. Before 5.4, TypeScript sometimes dropped narrowings established before a closure was defined, assuming the variable might have been reassigned by the time the closure ran. TypeScript 5.4 preserves narrowings when the variable's last assignment occurs *before* the closure is created.
+
+```typescript
+// TypeScript < 5.4: url was re-widened to string | URL inside the callback
+// TypeScript 5.4+: url's narrowing is preserved in the closure
+function buildUrls(url: string | URL, names: string[]): string[] {
+  if (typeof url === 'string') {
+    url = new URL(url); // last assignment — TypeScript 5.4 locks in URL here
+  }
+  // url is now URL — and this is preserved inside the .map callback:
+  return names.map(name => {
+    url.searchParams.set('name', name); // ✅ No error in 5.4+ (was error in 5.3)
+    return url.toString();
+  });
+}
+```
+
+**Narrowing is disabled when a closure *also assigns* the variable:**
+
+```typescript
+function printValueLater(value: string | undefined) {
+  if (value === undefined) {
+    value = 'missing!';
+  }
+
+  setTimeout(() => {
+    value = value; // assignment inside nested function — defeats narrowing
+  }, 500);
+
+  setTimeout(() => {
+    console.log(value!.toUpperCase()); // still errors without !
+    //          ~~~~~ possibly undefined — narrowing dropped because of the assignment above
+  }, 1000);
+}
+```
+
+**Testing impact:** Test code that uses `.map`, `.filter`, or `setTimeout` callbacks can now omit redundant null checks that TypeScript 5.3 required:
+
+```typescript
+// Before 5.4: needed explicit null assertion or guard inside the callback
+function processUsers(users: (User | null)[], db: Database): void {
+  const validUsers = users.filter((u): u is User => u !== null);
+  validUsers.forEach(u => {
+    // In 5.4: u is User here — no extra assertion needed
+    db.save(u.id, u.name);
+  });
+}
+```
+
+[community] **Pitfall:** The 5.4 improvement only applies when the narrowed variable is **not mutated** inside any of the closures in scope. If even one callback in the same function assigns to the variable, TypeScript drops the narrowing for *all* closures in that function — not just the one that mutates it. Restructure the code to use a `const` alias (`const resolvedUrl = url`) to guarantee narrowing across all closures.
+
+---
+
+## Type-Safe `Result<T, E>` Pattern for Error Handling
+
+TypeScript's `useUnknownInCatchVariables` (enabled by `strict: true` since 4.4) makes caught errors `unknown`, requiring a narrow before use. The `Result<T, E>` discriminated union pattern provides a functional alternative: callers never need to catch, and the type system enforces error handling.
+
+```typescript
+// Core Result type: success or typed failure — no throw required
+type Result<T, E = Error> =
+  | { ok: true;  value: T }
+  | { ok: false; error: E };
+
+// Smart constructors (free-function style, no class required)
+const Ok  = <T>(value: T): Result<T, never>            => ({ ok: true, value });
+const Err = <E>(error: E): Result<never, E>            => ({ ok: false, error });
+
+// ---- Application code -----------------------------------------------
+
+interface ApiError {
+  status: number;
+  message: string;
+}
+
+async function fetchUser(id: number): Promise<Result<User, ApiError>> {
+  const res = await fetch(`/users/${id}`);
+  if (!res.ok) {
+    return Err({ status: res.status, message: await res.text() });
+  }
+  return Ok(await res.json() as User);
+}
+
+// Caller must handle both branches — no unchecked exception
+async function displayUser(id: number): Promise<string> {
+  const result = await fetchUser(id);
+  if (!result.ok) {
+    return `Error ${result.error.status}: ${result.error.message}`;
+  }
+  return `Hello, ${result.value.name}`;
+}
+```
+
+### Testing `Result<T, E>` with type guards
+
+```typescript
+// test/helpers/result.ts
+
+// Type guard for success variant — narrows to T
+export function isOk<T, E>(result: Result<T, E>): result is { ok: true; value: T } {
+  return result.ok === true;
+}
+
+// Type guard for failure variant — narrows to E
+export function isErr<T, E>(result: Result<T, E>): result is { ok: false; error: E } {
+  return result.ok === false;
+}
+
+// Assertion helper — throws with type context if not Ok
+export function assertOk<T, E>(
+  result: Result<T, E>,
+  msg?: string,
+): asserts result is { ok: true; value: T } {
+  if (!result.ok) {
+    const detail = JSON.stringify((result as { ok: false; error: E }).error);
+    throw new Error(msg ?? `Expected Ok result, got Err: ${detail}`);
+  }
+}
+
+// ---- Tests ----------------------------------------------------------
+
+describe('fetchUser', () => {
+  it('returns Ok with user on 200', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ id: 1, name: 'Alice' }),
+    } as Response);
+
+    const result = await fetchUser(1);
+    assertOk(result);                         // narrows to { ok: true; value: User }
+    expect(result.value.name).toBe('Alice');
+  });
+
+  it('returns Err with ApiError on 404', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false, status: 404, text: async () => 'Not Found',
+    } as unknown as Response);
+
+    const result = await fetchUser(999);
+    expect(isErr(result)).toBe(true);
+    if (isErr(result)) {
+      expect(result.error.status).toBe(404);
+      expect(result.error.message).toBe('Not Found');
+    }
+  });
+});
+```
+
+[community] **Pitfall:** The `Result<T, never>` returned by `Ok()` and `Result<never, E>` returned by `Err()` can cause inference issues when collected into an array: `const results = [Ok(1), Err('bad')]` gives `Result<number, never>[] | Result<never, string>[]`. Fix: annotate the array type explicitly — `const results: Result<number, string>[] = [Ok(1), Err('bad')]`.
+
+---
+
+## TypeScript 5.5 — Inferred Type Predicates
+
+TypeScript 5.5 automatically infers type predicate return types for simple filter functions. Before 5.5, `.filter()` returned `(T | null)[]` even with an explicit null check; with 5.5 it returns `T[]` automatically.
+
+```typescript
+// TypeScript < 5.5: birds is (Bird | undefined)[]
+// TypeScript 5.5+: birds is Bird[]  — predicate is inferred automatically
+function makeBirdCalls(countries: string[]): void {
+  const birds = countries
+    .map(country => nationalBirds.get(country))  // Map<string, Bird>.get → Bird | undefined
+    .filter(bird => bird !== undefined);           // ← inferred as (b): b is Bird
+
+  for (const bird of birds) {
+    bird.sing(); // ✅ No error — TypeScript knows bird is Bird
+  }
+}
+```
+
+### Rules for predicate inference
+
+TypeScript infers a predicate only when ALL four conditions hold:
+
+1. No explicit return type or `is` annotation on the function
+2. Single `return` statement with no implicit `return undefined`
+3. The parameter is not mutated inside the function body
+4. The return expression **type-checks** as a narrowing of the parameter
+
+```typescript
+// ❌ Truthiness checks are deliberately NOT inferred as predicates
+//    because score === 0 is falsy but a valid number
+const nums = [1, 0, 2, null].filter(x => !!x);
+// nums: (number | null)[] — !! is not a type-safe predicate
+
+// ✅ Explicit comparison → inferred as number[]
+const nums2 = [1, 0, 2, null].filter(x => x !== null);
+// nums2: number[]
+```
+
+### Breaking change for existing tests (5.4 → 5.5 migration)
+
+```typescript
+// Code that relied on widened inference will now produce errors:
+const ids: (number | null)[] = [1, 2, null, 3].filter(x => x !== null);
+ids.push(null); // ❌ Error in 5.5 — ids is now number[], not (number | null)[]
+
+// Fix: annotate the variable type explicitly when you need the wider type
+const ids2: (number | null)[] = [1, 2, null, 3].filter(x => x !== null) as (number | null)[];
+// Or simply avoid the cast: keep the result as number[] and add null separately if needed
+```
+
+[community] **Pitfall:** Teams upgrading from 5.4 to 5.5 sometimes hit unexpected errors when `.filter()` results that previously accepted `null` pushes are now typed as the narrowed type. Search for `.filter(x => x !== null)` or `.filter(Boolean)` patterns and check whether any downstream push/assignment assumes the wider type.
+
+---
+
+## Conditional Types as Type-Level Test Helpers
+
+Conditional types can encode compile-time type assertions — verifying that a generic function returns the expected type without any runtime overhead. These patterns complement runtime `expectTypeOf` assertions (Vitest) with zero-cost type-level checks.
+
+### Pattern: `Expect<T extends true>` — Type-Level Assertion
+
+```typescript
+// Type-level assertion utilities
+type Expect<T extends true> = T;
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2)
+  ? true : false;
+type Extends<A, B> = A extends B ? true : false;
+type NotExtends<A, B> = A extends B ? false : true;
+
+// ---- Type-level test cases (compile errors = test failures) ----------
+
+// Verify that a utility type produces the expected output
+type _test1 = Expect<Equal<Awaited<Promise<string>>,   string>>;
+type _test2 = Expect<Equal<ReturnType<typeof parseInt>, number>>;
+type _test3 = Expect<Equal<Parameters<typeof Math.max>, number[]>>;
+
+// Verify discriminated union variants are exhaustive
+type _test4 = Expect<Extends<{ ok: true; value: string }, Result<string, Error>>>;
+type _test5 = Expect<Extends<{ ok: false; error: Error }, Result<string, Error>>>;
+```
+
+### Pattern: Type-Level Filtering Assertion
+
+```typescript
+// Type that resolves to true only when a function type accepts the given arg types
+type AcceptsArgs<Fn, Args extends unknown[]> =
+  Fn extends (...args: Args) => unknown ? true : false;
+
+type _canAcceptNumber = Expect<AcceptsArgs<typeof parseInt, [string, number?]>>;
+
+// Verify that a mapped type removes a specific key
+type Without<T, K extends keyof T> = Omit<T, K>;
+type _noPassword = Expect<Equal<
+  keyof Without<{ id: number; name: string; password: string }, 'password'>,
+  'id' | 'name'
+>>;
+```
+
+### Pattern: Extract Generics from Complex Return Types
+
+```typescript
+// Extract the element type of a Promise-returning function's resolved value
+type ResolvedElement<Fn extends (...args: never[]) => Promise<unknown[]>> =
+  Awaited<ReturnType<Fn>> extends (infer Element)[] ? Element : never;
+
+async function fetchUsers(): Promise<User[]> { return []; }
+
+type FetchedUser = ResolvedElement<typeof fetchUsers>;
+// type FetchedUser = User
+
+// Use in tests to avoid repeating the type
+function assertFetchedUser(value: unknown): asserts value is FetchedUser {
+  expect(value).toMatchObject({ id: expect.any(Number), name: expect.any(String) });
+}
+```
+
+[community] **Pitfall:** The `Equal<A, B>` helper using conditional types with a phantom `T` (the "identity trick") correctly distinguishes `string` from `string | undefined` but may give false positives when comparing `any` types. `Equal<string, any>` returns `true` because `any` absorbs all comparisons. For testing purposes, add a separate `NotExtends<A, any>` guard when the tested type must not be `any`.
+
+---
+
+## Distributive vs Non-Distributive Conditional Types — Testing Gotchas
+
+Conditional types distribute over union members by default when the checked type is a bare type parameter. This subtlety causes surprising results in test type utilities.
+
+```typescript
+// Distributive (default): distributes over each member of the union
+type ToArray<T> = T extends unknown ? T[] : never;
+type Result1 = ToArray<string | number>;
+// Result1: string[] | number[]  — NOT (string | number)[]
+
+// Non-distributive: wraps both sides to prevent distribution
+type ToArrayNonDist<T> = [T] extends [unknown] ? T[] : never;
+type Result2 = ToArrayNonDist<string | number>;
+// Result2: (string | number)[]
+
+// Filtering with distributive types: keeps only matching members
+type OnlyStrings<T> = T extends string ? T : never;
+type StrOnly = OnlyStrings<string | number | boolean>;
+// StrOnly: string  (number and boolean resolve to never and are removed)
+
+// Practical: extract only function properties from a type
+type FunctionProperties<T> = {
+  [K in keyof T]: T[K] extends (...args: unknown[]) => unknown ? K : never;
+}[keyof T];
+
+interface MixedService {
+  baseUrl: string;
+  timeout: number;
+  fetchUser(id: number): Promise<User>;
+  saveUser(user: User): Promise<void>;
+}
+
+type ServiceMethods = FunctionProperties<MixedService>;
+// "fetchUser" | "saveUser"
+
+// Use in type-safe spy setup: only accept method names, not property names
+function spyOnMethod<T>(
+  obj: T,
+  method: FunctionProperties<T> & keyof T,
+): jest.SpyInstance {
+  return jest.spyOn(obj as Record<string, unknown>, method as string);
+}
+```
+
+[community] **Pitfall:** When writing union-filtering utility types for test helpers, always test both the distributive and union inputs explicitly. `OnlyStrings<string>` gives `string` whether or not distribution is enabled. The difference only appears with `OnlyStrings<string | number>`. Include a `type _testDistribution = Expect<Equal<OnlyStrings<string | number>, string>>` in your type tests.
+
+---
+
+## TypeScript 5.4 — Object.groupBy and Map.groupBy Type Safety
+
+`Object.groupBy` and `Map.groupBy` (ES2024, added to TypeScript 5.4's `lib`) return `Partial<Record<K, T[]>>` — values are optional because TypeScript cannot prove every key will be produced. This requires a defensive access pattern.
+
+```typescript
+// lib: es2024 or esnext required
+const items = [
+  { status: 'active', name: 'Alice' },
+  { status: 'inactive', name: 'Bob' },
+  { status: 'active', name: 'Carol' },
+];
+
+// Return type: Partial<Record<"active" | "inactive", typeof items>>
+const grouped = Object.groupBy(items, item => item.status);
+
+// ❌ TypeScript 5.7+ with noUncheckedIndexedAccess: error — value may be undefined
+const activeItems = grouped.active.map(u => u.name);
+//                          ~~~~~~ Object is possibly 'undefined'
+
+// ✅ Defensive access pattern
+const activeItems = (grouped.active ?? []).map(u => u.name);
+
+// ✅ With destructuring and defaults
+const { active = [], inactive = [] } = grouped;
+
+// Testing pattern: assert the grouped structure
+it('groups users by status', () => {
+  const result = Object.groupBy(items, item => item.status);
+
+  // Use nullish coalescing for type-safe access in assertions
+  expect(result.active ?? []).toHaveLength(2);
+  expect(result.inactive ?? []).toHaveLength(1);
+  expect(result.active?.[0]?.name).toBe('Alice');
+});
+```
+
+[community] **Pitfall:** The `Partial<Record<K, T[]>>` return type means that even if you pass a union key type, TypeScript cannot guarantee all keys are present in the output. `noUncheckedIndexedAccess` makes this visible by adding `| undefined` to all index accesses. Teams that upgrade from TypeScript 5.3 to 5.7 and enable `noUncheckedIndexedAccess` together will see a flood of errors on `groupBy` result access — fix them with `?? []` defaults, not with `!` assertions.
+
+---
+
+## Anti-Patterns: Version-Upgrade Quick Reference
+
+| Anti-pattern | Introduced in | Why it breaks | Fix |
+|---|---|---|---|
+| `.filter(x => !!x)` expecting `T[]` | TS 5.5 | Truthiness does not infer a predicate; result stays `(T \| Falsy)[]` | Use `.filter(x => x !== null && x !== undefined)` |
+| `grouped.key.map(...)` on `Object.groupBy` result | TS 5.4 / 5.7 (noUnchecked) | Value is `T[] \| undefined` — Partial record | Add `?? []` before `.map()` |
+| `filter(x => x !== null)` assigned to `(T \| null)[]` variable | TS 5.5 | Inferred predicate narrows to `T[]`; push(null) now errors | Annotate as `(T \| null)[]` explicitly if you need the wider type |
+| Closure over `let` variable expecting narrowing | TS < 5.4 | Narrowing was dropped in closures | Upgrade to 5.4+, or use a `const` alias after narrowing |
+| `NoInfer<T>` omitted on config default param | TS 5.4 | Default value widens the inferred union (`'blue'` accepted) | Wrap the default param: `defaultColor?: NoInfer<C>` |
+| `import assert { type: "json" }` syntax | TS 5.8 | `assert` keyword removed; only `with` is valid | Migrate to `import data from "./data.json" with { type: "json" }` |

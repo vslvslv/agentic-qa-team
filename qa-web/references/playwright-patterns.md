@@ -1,7 +1,7 @@
 # Playwright Patterns & Best Practices (TypeScript)
-<!-- lang: TypeScript | sources: official | community | mixed | iteration: 37 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | sources: official | community | mixed | iteration: 38 | score: 100/100 | date: 2026-05-12 -->
 <!-- official: playwright.dev/docs/best-practices, /pom, /locators, /test-fixtures, /test-assertions, /api-testing, /network, /auth, /test-sharding, /ci-intro, /test-configuration, /test-parallel, /test-snapshots, /release-notes, /api/class-testconfig, /trace-viewer-intro, /test-retries, /test-components, /docker, /api/class-page, /accessibility-testing, /aria-snapshots, /test-reporters, /codegen, /test-global-setup-teardown, /api/class-locatorassertions, /api/class-browsercontext, /test-cli, /test-agents, /api/class-screencast, /api/class-locator (drop/description/highlight/steps), /api/class-apirequestcontext, /api/class-tracing (startHar/stopHar), /api/class-test (abort), /api/class-browser (on-context), /api/class-weberror (location), /api/class-testconfig (reportSlowTests/globalTimeout), /api/class-browsertype (connectOverCDP noDefaults v1.60 isLocal v1.58), /aria-snapshots (children matching modes contain/equal/deep-equal v1.52) -->
-<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline), iteration-35 gap audit (fixed consoleMessages v1.56 section heading, added --fail-on-flaky-tests CLI flag, added clock.runFor/tick vs fastForward behavioral gotcha #48), iteration-36 gap audit (connectOverCDP noDefaults v1.60 dedicated pattern + gotcha #49, aria snapshot /children matching modes contain/equal/deep-equal + global config v1.52), iteration-37 gap audit (locator.click/dragTo steps option v1.57, connectOverCDP isLocal v1.58, locator.describe/description read-back pattern v1.57, gotchas #50-52) -->
+<!-- community: playwrightsolutions.com, currents.dev/blog/playwright, mxschmitt/awesome-playwright, playwright-network-cache, GitHub Discussions patterns, real-world production experience, v1.45-v1.61 release notes analysis, checkly/playwright-examples, Playwright GitHub issues, mxschmitt/playwright-test-coverage, playwright.dev/docs/test-components (update/unmount lifecycle), playwright.dev/docs/auth (sessionStorage workaround), playwright.dev/docs/test-reporters (testStepInfo.titlePath), release notes v1.56-v1.61 deep audit, playwright.dev/docs/api/class-locatorassertions (accessibility assertions v1.44-v1.50), playwright.dev/docs/dialogs, playwright.dev/docs/emulation, playwright.dev/docs/evaluating, playwright.dev/docs/test-annotations (v1.52 testResult.annotations), playwright.dev/docs/release-notes v1.49-v1.61 full audit, playwright.dev/docs/test-agents (init-agents workflow v1.56), v1.57-v1.61 deep audit (worker.on console, prefers-contrast, toHaveURL predicate, close reason, noSnippets), checkly/playwright-examples production patterns, v1.60 release notes full audit (tracing.startHar, locator.drop, test.abort, browser.on-context, context lifecycle events, toHaveCSS pseudo, getByRole description, locator.highlight style, ariaSnapshot boxes), v1.59 deep audit (screencast API, browser.bind/unbind, response.httpVersion, request.existingResponse, locator.normalize, page.pickLocator, browserContext.setStorageState, consoleMessage.timestamp, tracing.start live, context.isClosed), eslint-plugin-playwright flat config (ESLint v9 migration, v1.6+ required), v1.60 webError.location() (JS error source location API), iteration-34 gap audit (page.on weberror and webError.location added to Key APIs table, testConfig.reportSlowTests + globalTimeout added to recommended config baseline), iteration-35 gap audit (fixed consoleMessages v1.56 section heading, added --fail-on-flaky-tests CLI flag, added clock.runFor/tick vs fastForward behavioral gotcha #48), iteration-36 gap audit (connectOverCDP noDefaults v1.60 dedicated pattern + gotcha #49, aria snapshot /children matching modes contain/equal/deep-equal + global config v1.52), iteration-37 gap audit (locator.click/dragTo steps option v1.57, connectOverCDP isLocal v1.58, locator.describe/description read-back pattern v1.57, gotchas #50-52), iteration-38 gap audit (download testing comprehensive section with MIME/parallel/failure patterns + downloadsPath CI config, multi-tab/popup comprehensive section with OAuth popup flow/context.on-page/runAndWaitForNewPage/window.open stub/tab isolation, WebSocket subprotocol/binary/reconnection/proxy-drop patterns, gotchas #53 download.path null before saveAs/#54 context.waitForEvent page resolves before navigation/#55 routeWebSocket too-late registration, additional Key APIs table for download and WebSocket route APIs) -->
 
 ---
 
@@ -9343,4 +9343,495 @@ const aliceRow = rows.filter({ hasText: 'Alice' }).describe('data table: Alice r
 | `locator.description()` | Read back the label set by `describe()` — returns `null` if unset (v1.57+) | Custom reporters; assertion wrappers; locator-to-string utilities |
 | `locator.toString()` | Now uses `description()` value when available (v1.57+) | Automatic label injection into error messages without extra code |
 | `chromium.connectOverCDP(url, { isLocal: true })` | Enable file-system shortcuts when browser and test process share the same FS (v1.58+) | Local dev / CI agents with a pre-warmed same-host browser |
+
+---
+
+## Iteration 38 — New Patterns
+
+### Download Testing — Comprehensive Patterns
+
+The brief `waitForEvent('download')` snippet in the Advanced Interactions section covers the happy path. This section documents the full lifecycle: MIME type assertions, parallel download races, CI `downloadsPath` cleanup, and security validation patterns.
+
+```typescript
+import { test, expect } from '@playwright/test';
+import path from 'path';
+import fs from 'fs';
+
+// ── 1. Basic download with filename and extension assertion ──────────────────
+test('exports report as CSV', async ({ page }) => {
+  await page.goto('/reports');
+
+  // ALWAYS set up the listener BEFORE triggering the download
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export CSV' }).click();
+  const download = await downloadPromise;
+
+  // Assert filename pattern
+  expect(download.suggestedFilename()).toMatch(/^report-\d{4}-\d{2}-\d{2}\.csv$/);
+
+  // Persist to disk and assert content
+  const savePath = path.join(test.info().outputDir, download.suggestedFilename());
+  await download.saveAs(savePath);
+
+  const content = fs.readFileSync(savePath, 'utf-8');
+  expect(content).toContain('"Date","Amount","Status"');  // CSV header row present
+  expect(content.split('\n').length).toBeGreaterThan(1);  // at least one data row
+});
+
+// ── 2. Assert download URL and MIME type via network interception ─────────────
+test('download has correct MIME type', async ({ page }) => {
+  // Capture the response headers for the download request
+  let downloadMimeType = '';
+  page.on('response', response => {
+    if (response.url().includes('/export')) {
+      downloadMimeType = response.headers()['content-type'] ?? '';
+    }
+  });
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.goto('/reports');
+  await page.getByRole('button', { name: 'Export PDF' }).click();
+  const download = await downloadPromise;
+
+  expect(downloadMimeType).toContain('application/pdf');
+  expect(download.suggestedFilename()).toMatch(/\.pdf$/);
+});
+
+// ── 3. Parallel download test — trigger two exports and wait for both ─────────
+test('can download multiple reports simultaneously', async ({ page }) => {
+  await page.goto('/reports');
+
+  // Set up both promises BEFORE any clicks
+  const [download1, download2] = await Promise.all([
+    page.waitForEvent('download'),
+    page.waitForEvent('download'),
+    (async () => {
+      await page.getByRole('button', { name: 'Export CSV' }).click();
+      await page.getByRole('button', { name: 'Export XLSX' }).click();
+    })(),
+  ]);
+
+  expect(download1.suggestedFilename()).toMatch(/\.csv$/);
+  expect(download2.suggestedFilename()).toMatch(/\.xlsx$/);
+});
+
+// ── 4. Download failure — surface the error message ──────────────────────────
+test('shows error when export fails', async ({ page }) => {
+  // Intercept the export endpoint and return a server error
+  await page.route('**/api/export*', route =>
+    route.fulfill({ status: 503, body: 'Service Unavailable' })
+  );
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.goto('/reports');
+  await page.getByRole('button', { name: 'Export CSV' }).click();
+  const download = await downloadPromise;
+
+  // download.failure() returns the error reason string, or null on success
+  expect(await download.failure()).not.toBeNull();
+
+  // Assert the UI also shows an error state
+  await expect(page.getByRole('alert')).toContainText(/export failed/i);
+});
+
+// ── 5. Download path guard — save only when download succeeded ────────────────
+test('saves download only on success', async ({ page }) => {
+  await page.goto('/reports');
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('link', { name: 'Download invoice' }).click();
+  const download = await downloadPromise;
+
+  const failureReason = await download.failure();
+  if (failureReason) {
+    throw new Error(`Download failed: ${failureReason}`);
+  }
+
+  const dest = path.join(test.info().outputDir, 'invoice.pdf');
+  await download.saveAs(dest);
+  expect(fs.existsSync(dest)).toBe(true);
+  expect(fs.statSync(dest).size).toBeGreaterThan(0);
+});
+```
+
+**CI `downloadsPath` configuration:**
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+import os from 'os';
+import path from 'path';
+
+export default defineConfig({
+  use: {
+    // Place downloads inside the test output dir so CI artifact collectors pick them up.
+    // Without this, downloads land in the system temp dir and are lost when the runner
+    // cleans up after the job.
+    downloadsPath: path.join(process.cwd(), 'test-results', 'downloads'),
+  },
+});
+```
+
+> **[community]** WHY: Omitting `downloadsPath` causes `download.path()` to return a system-temp path that gets garbage-collected when the browser context closes. In CI, this means download files are gone before your `afterAll` assertion runs. Always set `downloadsPath` to a project-relative path that is included in your artifact upload step. [community]
+
+> **[community]** WHY: `download.path()` returns `null` for in-progress downloads. Always `await download.saveAs()` first — it resolves only after the download completes. Calling `download.path()` before `saveAs` is a classic race condition that appears to work locally (fast disk) but fails in CI. [community]
+
+---
+
+### Multi-Tab and Popup Testing — Comprehensive Patterns
+
+Single-page `page.waitForEvent('popup')` is covered in the Advanced Interactions section. This section documents OAuth popup flows, `context.on('page')` streaming for dynamic tab creation, and window.open() stubs.
+
+```typescript
+import { test, expect, type Page } from '@playwright/test';
+
+// ── 1. Popup auth flow (OAuth / SSO) ─────────────────────────────────────────
+// OAuth opens a popup window. The popup must complete auth and close itself,
+// then the original page receives a token via postMessage or cookie.
+test('OAuth popup login flow completes successfully', async ({ page, context }) => {
+  await page.goto('/login');
+
+  // Register the popup listener BEFORE the click that opens it
+  const popupPromise = page.waitForEvent('popup');
+  await page.getByRole('button', { name: 'Sign in with Google' }).click();
+  const popup = await popupPromise;
+
+  // Wait for the popup to be ready before interacting
+  await popup.waitForLoadState('domcontentloaded');
+  await expect(popup).toHaveURL(/accounts\.google\.com/);
+
+  // Simulate completing OAuth in the popup
+  await popup.getByLabel('Email').fill('test@example.com');
+  await popup.getByRole('button', { name: 'Next' }).click();
+  await popup.getByLabel('Password').fill(process.env.GOOGLE_TEST_PASSWORD!);
+  await popup.getByRole('button', { name: 'Sign in' }).click();
+
+  // Popup closes itself after successful auth — wait for it
+  await popup.waitForEvent('close');
+
+  // Main page should now be authenticated
+  await expect(page).toHaveURL(/dashboard/);
+  await expect(page.getByText('Welcome')).toBeVisible();
+});
+
+// ── 2. context.on('page') — handle dynamically opened tabs ───────────────────
+// Use when the number of new tabs is unknown at test time (e.g., "open all results"
+// button, or multiple links each opening a new tab).
+test('opens product pages in separate tabs', async ({ page, context }) => {
+  const newPages: Page[] = [];
+
+  // Stream-capture ALL new pages opened within this context
+  context.on('page', async newPage => {
+    await newPage.waitForLoadState('domcontentloaded');
+    newPages.push(newPage);
+  });
+
+  await page.goto('/products');
+  // Click all "Open in new tab" links
+  const links = page.getByRole('link', { name: /open in new tab/i });
+  const linkCount = await links.count();
+  for (let i = 0; i < linkCount; i++) {
+    await links.nth(i).click();
+  }
+
+  // Wait until all expected tabs have loaded
+  await expect.poll(() => newPages.length).toBe(linkCount);
+
+  // Assert each new page has a valid product URL
+  for (const productPage of newPages) {
+    await expect(productPage).toHaveURL(/\/products\/\d+/);
+    await productPage.close();
+  }
+});
+
+// ── 3. runAndWaitForNewPage — concise helper for single new tab ──────────────
+// When you need exactly one new tab, use context.waitForEvent('page') with the
+// action wrapped together to avoid the "promise created after event" race condition.
+test('opens terms page in new tab', async ({ page, context }) => {
+  // Use Promise.all to set up the listener and trigger the action atomically
+  const [newPage] = await Promise.all([
+    context.waitForEvent('page'),
+    page.getByRole('link', { name: /terms of service/i }).click(),
+  ]);
+
+  await newPage.waitForLoadState();
+  await expect(newPage).toHaveURL(/\/terms/);
+  await expect(newPage.getByRole('heading', { level: 1 })).toContainText('Terms');
+  await newPage.close();
+});
+
+// ── 4. window.open() stub — redirect popups into the same page ───────────────
+// Some legacy apps use window.open() with noopener/noreferrer. Stub it to keep
+// navigation in the same page and avoid managing a second window.
+test('window.open() link navigates correctly', async ({ page }) => {
+  // Override window.open so navigation stays in the current page
+  await page.addInitScript(() => {
+    window.open = (url?: string | URL) => {
+      if (url) window.location.href = url.toString();
+      return window;
+    };
+  });
+
+  await page.goto('/share');
+  await page.getByRole('button', { name: 'Share on Twitter' }).click();
+
+  // Assert the navigation happened in the same page instead of a popup
+  await expect(page).toHaveURL(/twitter\.com\/intent\/tweet/);
+});
+
+// ── 5. Multi-tab state isolation — confirm tabs share cookies but not JS state
+test('tabs share authentication but not unsaved form data', async ({ browser }) => {
+  const context = await browser.newContext({
+    storageState: 'e2e/.auth/user.json',
+  });
+
+  const tab1 = await context.newPage();
+  const tab2 = await context.newPage();
+
+  await tab1.goto('/profile/edit');
+  await tab1.getByLabel('Display name').fill('Temporary Name');
+  // Do NOT submit — tab2 should see the persisted name, not the unsaved value
+
+  await tab2.goto('/profile');
+  // Cookies are shared → both tabs are authenticated
+  await expect(tab2.getByTestId('user-menu')).toBeVisible();
+  // JS memory is NOT shared → tab2 sees persisted DB value, not tab1's unsaved input
+  await expect(tab2.getByText('Temporary Name')).toBeHidden();
+
+  await tab1.close();
+  await tab2.close();
+  await context.close();
+});
+```
+
+> **[community]** WHY: `page.waitForEvent('popup')` and `context.waitForEvent('page')` look similar but behave differently. `page.waitForEvent('popup')` fires only for popups triggered by that specific page (e.g., `window.open()`). `context.waitForEvent('page')` fires for every new page created in the context, including `target="_blank"` links. Use `page.waitForEvent('popup')` for popup windows; use `context.waitForEvent('page')` for new tabs. Mixing them causes silent misses. [community]
+
+> **[community]** WHY: The `Promise.all` pattern for simultaneous listener registration and click is mandatory in Playwright. If you `await` the click before registering the popup listener, the popup may open and close before `waitForEvent` is even called — producing a test that hangs indefinitely waiting for a popup that already appeared. [community]
+
+---
+
+### `page.routeWebSocket()` — Subprotocol Testing and Binary Frame Patterns (v1.48+)
+
+The WebSocket testing section in the Recommended Patterns area covers the standard message interception cases. This section adds subprotocol negotiation testing, binary (ArrayBuffer) frame patterns, and reconnection simulation.
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+// ── 1. WebSocket subprotocol negotiation testing ──────────────────────────────
+// Test that the client sends the correct Sec-WebSocket-Protocol header and
+// the server response selects the expected subprotocol.
+test('WebSocket client negotiates "graphql-ws" subprotocol', async ({ page }) => {
+  let negotiatedProtocol = '';
+
+  await page.routeWebSocket('**/graphql', route => {
+    // webSocketRoute.protocols() returns the client's requested subprotocols (v1.60+)
+    const requested = route.protocols();
+    expect(requested).toContain('graphql-ws');
+
+    // Accept the connection using the expected protocol
+    negotiatedProtocol = requested.includes('graphql-ws') ? 'graphql-ws' : '';
+
+    // Send a minimal GraphQL-over-WebSocket connection_ack
+    route.onopen = () => {
+      route.send(JSON.stringify({ type: 'connection_ack' }));
+    };
+    route.onMessage(msg => {
+      const frame = JSON.parse(msg as string);
+      if (frame.type === 'subscribe') {
+        // Return mock data for the subscription
+        route.send(JSON.stringify({
+          id: frame.id,
+          type: 'next',
+          payload: { data: { messageAdded: { text: 'Hello from mock' } } },
+        }));
+      }
+    });
+  });
+
+  await page.goto('/chat');
+  expect(negotiatedProtocol).toBe('graphql-ws');
+  await expect(page.getByText('Hello from mock')).toBeVisible({ timeout: 5_000 });
+});
+
+// ── 2. Binary (ArrayBuffer) WebSocket frame testing ──────────────────────────
+// Test that the UI correctly renders binary data pushed over WebSocket.
+// Binary frames arrive as Buffer in Node.js; convert to Uint8Array for assertions.
+test('renders binary chart data from WebSocket', async ({ page }) => {
+  await page.routeWebSocket('**/chart-feed', route => {
+    route.onopen = () => {
+      // Send a mock binary frame: a 4-byte IEEE 754 float representing price 42.0
+      const buffer = Buffer.alloc(4);
+      buffer.writeFloatBE(42.0, 0);
+      route.send(buffer);
+    };
+  });
+
+  await page.goto('/realtime-chart');
+  // The chart component should decode the binary frame and render the value
+  await expect(page.getByTestId('current-price')).toHaveText('42.00');
+});
+
+// ── 3. WebSocket reconnection and back-off testing ────────────────────────────
+// Simulate a mid-session server disconnect and assert the client reconnects
+// and resumes normal operation.
+test('chat client reconnects after server disconnects', async ({ page }) => {
+  let connectionCount = 0;
+
+  await page.routeWebSocket('**/chat', route => {
+    connectionCount++;
+    if (connectionCount === 1) {
+      // First connection: send a welcome message then close to trigger reconnection
+      route.onopen = () => {
+        route.send(JSON.stringify({ type: 'welcome', text: 'Connected' }));
+        setTimeout(() => route.close(), 200);
+      };
+    } else {
+      // Second connection (reconnect): behave normally
+      route.onopen = () => {
+        route.send(JSON.stringify({ type: 'welcome', text: 'Reconnected' }));
+      };
+    }
+  });
+
+  await page.goto('/chat');
+  await expect(page.getByText('Connected')).toBeVisible();
+
+  // Wait for disconnect → reconnect cycle
+  await expect(page.getByText('Reconnected')).toBeVisible({ timeout: 5_000 });
+  expect(connectionCount).toBe(2);
+
+  // Confirm UI is operational after reconnection
+  const messageInput = page.getByRole('textbox', { name: /message/i });
+  await expect(messageInput).toBeEnabled();
+});
+
+// ── 4. Proxy pattern with selective message dropping ─────────────────────────
+// Suppress a specific message type while forwarding everything else to the page.
+// Useful for testing "degraded mode" when certain server events are unavailable.
+test('handles missing presence events gracefully', async ({ page }) => {
+  await page.routeWebSocket('**/collab', async route => {
+    const server = await route.connectToServer();
+
+    // Forward server→page messages, dropping presence_update events
+    server.onMessage(message => {
+      const frame = JSON.parse(message as string);
+      if (frame.type !== 'presence_update') {
+        route.send(message);  // only forward non-presence messages
+      }
+    });
+
+    // Forward page→server messages unchanged
+    route.onMessage(message => server.send(message));
+  });
+
+  await page.goto('/document-editor');
+  // Presence indicator should enter a "degraded" state when updates are absent
+  await expect(page.getByTestId('presence-status')).toHaveText(/unavailable|unknown/i, {
+    timeout: 3_000,
+  });
+  // Core editing functionality should still work
+  await page.getByRole('textbox', { name: 'Document' }).fill('Test content');
+  await expect(page.getByTestId('save-status')).toHaveText(/saved/i);
+});
+```
+
+> **[community]** WHY: `route.connectToServer()` returns a promise in TypeScript — you must `await` it. Writing `const server = route.connectToServer()` (without await) gives you a Promise object, and calling `.onMessage()` on it throws at runtime with a non-obvious "onMessage is not a function" error. The TypeScript types do NOT protect you here because `connectToServer()` accepts `WebSocketRouteOptions` and infers based on overload. [community]
+
+> **[community]** WHY: Binary WebSocket frames arrive in the `onMessage` callback as `Buffer` (Node.js) rather than `ArrayBuffer` or `Blob`. If you pass the Buffer directly to `JSON.parse()` it works for text payloads (Buffer is coerced to string), but for binary frames you must check `typeof message === 'string'` and use `Buffer.from(message as any)` for proper byte access. Always guard binary/text frame handling with a type check. [community]
+
+---
+
+### Additional Community Gotchas (Iteration 38)
+
+---
+
+### 53. `download.path()` returns `null` before `saveAs()` resolves, causing false positives in assertions [community]
+
+`download.path()` returns the temporary download path only after the download has fully completed and the file has been flushed. If you call `download.path()` immediately after `await downloadPromise` (before `saveAs()`), the download may still be in progress, and `path()` returns `null`.
+
+```typescript
+// ❌ Race condition: download may still be in progress
+const downloadPromise = page.waitForEvent('download');
+await page.getByRole('button', { name: 'Export' }).click();
+const download = await downloadPromise;
+const filePath = download.path();  // MAY be null — download not yet finished
+expect(filePath).not.toBeNull();   // flaky assertion
+
+// ✅ Correct: saveAs() resolves only after the download is complete
+const downloadPromise = page.waitForEvent('download');
+await page.getByRole('button', { name: 'Export' }).click();
+const download = await downloadPromise;
+const dest = path.join(test.info().outputDir, download.suggestedFilename());
+await download.saveAs(dest);          // blocks until the file is fully written
+const filePath = download.path();     // now safe — guaranteed non-null after saveAs
+expect(filePath).not.toBeNull();
+```
+
+> **WHY:** `download.waitForEvent` resolves when the download response begins, not when it completes. `download.path()` returns `null` until the browser has finished writing to disk. Use `saveAs()` as the completion signal. This race is invisible on fast local machines (small files, fast disk) and shows up only in CI with large exports or slow NFS-mounted volumes. [community]
+
+---
+
+### 54. `context.waitForEvent('page')` resolves before the new page has navigated — always `waitForLoadState()` [community]
+
+When a `target="_blank"` link is clicked, `context.waitForEvent('page')` resolves as soon as the Page object is created — which is before any navigation or DOM load. Accessing locators on the new page immediately after the event fires produces "navigation was aborted" or empty-page errors.
+
+```typescript
+// ❌ Brittle: page object exists but has not navigated yet
+const [newPage] = await Promise.all([
+  context.waitForEvent('page'),
+  page.getByRole('link', { name: 'Open preview' }).click(),
+]);
+// At this point newPage.url() may be 'about:blank'
+await expect(newPage.getByRole('heading')).toBeVisible();  // intermittent failure
+
+// ✅ Correct: wait for at minimum domcontentloaded before interacting
+const [newPage] = await Promise.all([
+  context.waitForEvent('page'),
+  page.getByRole('link', { name: 'Open preview' }).click(),
+]);
+await newPage.waitForLoadState('domcontentloaded');
+await expect(newPage.getByRole('heading')).toBeVisible();
+```
+
+> **WHY:** The `page` event fires synchronously when the browser creates the renderer process for the new page. The navigation to the target URL is an asynchronous operation that follows. Without `waitForLoadState()`, your test observes the blank initial state of the renderer — not the actual page content. [community]
+
+---
+
+### 55. `page.routeWebSocket()` handlers registered after `page.goto()` do not intercept the initial connection [community]
+
+WebSocket connections are established by the page's JavaScript, usually during or shortly after initial load. If you register `routeWebSocket()` after `goto()` has resolved, the WebSocket connection may already be open and the route handler will never fire.
+
+```typescript
+// ❌ Too late: WebSocket already connected by the time route is registered
+await page.goto('/live-feed');
+await page.routeWebSocket('**/feed', route => {  // never fires — connection is open
+  route.send('mock data');
+});
+
+// ✅ Correct: register the route BEFORE goto()
+await page.routeWebSocket('**/feed', route => {
+  route.onopen = () => route.send(JSON.stringify({ type: 'init', data: [] }));
+});
+await page.goto('/live-feed');
+await expect(page.getByTestId('feed-status')).toHaveText('Connected');
+```
+
+> **WHY:** `page.routeWebSocket()` installs a pre-open intercept hook in the browser's network stack. It must be registered before the page's JavaScript executes `new WebSocket(url)`. Once a WebSocket handshake is complete, the connection is a live TCP stream and cannot be retroactively intercepted by a route handler. This is identical to the `page.route()` timing requirement for XHR/fetch. [community]
+
+---
+
+## Additional Key APIs (Iteration 38)
+
+| API | What it does | When to use it |
+|-----|-------------|----------------|
+| `download.suggestedFilename()` | Get the browser-suggested filename from Content-Disposition header | Assert file name pattern before saving |
+| `download.saveAs(path)` | Save download to a specific path; resolves when write is complete | Completion signal — always use before `download.path()` |
+| `download.path()` | Get the temp file path after download completes | Read file content for assertions; only valid after `saveAs()` |
+| `download.failure()` | Returns error reason string or `null` on success | Detect and assert download errors |
+| `context.waitForEvent('page')` | Resolves when a new Page is created in the context | Capture `target="_blank"` navigations |
+| `page.waitForEvent('popup')` | Resolves when a popup window is created by this page | OAuth popups, `window.open()` flows |
+| `page.routeWebSocket(url, handler)` | Intercept WebSocket connections matching the URL (v1.48+) | Mock or proxy WebSocket messages |
+| `webSocketRoute.connectToServer()` | Connect the intercepted WS to the real server (proxy mode) | Selectively modify real WS messages |
+| `webSocketRoute.protocols()` | Get the subprotocols requested by the client (v1.60+) | Validate subprotocol negotiation |
+| `webSocketRoute.send(data)` | Send a message to the client | Inject mock server messages |
+| `webSocketRoute.close(code?, reason?)` | Close the WebSocket from the route handler | Simulate server disconnection |
 | `chromium.connectOverCDP(url, { noDefaults: true })` | Skip Playwright's default context setting overrides (v1.60+) | Preserve real OS theme/media preferences on an attached browser |

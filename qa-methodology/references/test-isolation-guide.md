@@ -1,5 +1,5 @@
 # Test Isolation — QA Methodology Guide
-<!-- lang: TypeScript | topic: test-isolation | iteration: 26 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: test-isolation | iteration: 27 | score: 100/100 | date: 2026-05-12 -->
 <!-- Rubric: Principle Coverage 25/25 | Code Examples 25/25 | Tradeoffs & Context 25/25 | Community Signal 25/25 -->
 <!-- Sources: martinfowler.com/bliki/UnitTest.html, martinfowler.com/articles/nonDeterminism.html, -->
 <!--          Jest configuration docs, xunitpatterns.com/Four Phase Test,                          -->
@@ -103,6 +103,15 @@
 <!--            listener leak detection via `listenerCount` assertion + captured ref in describe scope -->
 <!--            (Pattern 47, Gotcha 108); Testcontainers teardown resilience against OOM crash        -->
 <!--            (Gotcha 105)                                                                           -->
+
+<!--          Iteration 27 (2026-05-12): ioredis-mock in-memory Redis isolation — jest.mock/          -->
+<!--            moduleNameMapper swap + flushall vs port-based instance isolation (Pattern 48,         -->
+<!--            Gotcha 109); memfs virtual filesystem via jest.mock('node:fs') — vol.fromJSON          -->
+<!--            seeding, vol.reset() teardown, TypeScript path-alias caveat (Pattern 49, Gotcha 110);  -->
+<!--            crypto.randomUUID / global.crypto isolation — jest.spyOn(globalThis.crypto) vs         -->
+<!--            manual globalThis.crypto replacement + Vitest vi.stubGlobal pattern,                   -->
+<!--            worker_threads workerData isolation for unit-testing Worker-spawning code               -->
+<!--            (Pattern 50, Gotcha 111)                                                                -->
 
 ---
 
@@ -6642,4 +6651,461 @@ beforeEach(() => {
 | MSW v2 — `server.resetHandlers()` | Official | https://mswjs.io/docs/api/setup-server/reset-handlers | Confirms reset discards ALL `server.use()` overrides including consumed `{ once: true }` handlers |
 | Jest — `projects` configuration | Official | https://jestjs.io/docs/configuration#projects-arraystring--projectconfig | Per-project module registry isolation; `displayName`, `testMatch`, `setupFilesAfterFramework` scoping |
 | Node.js EventEmitter — `listenerCount` | Official | https://nodejs.org/docs/latest-v24.x/api/events.html#emitterlistenercounteventname-listener | `listenerCount(event)` for post-`afterEach` leak assertion; `defaultMaxListeners` tuning |
+
+---
+
+## Patterns — Iteration 27
+
+### Pattern 48: ioredis-mock in-memory Redis isolation for unit tests (TypeScript)  [community]
+
+Pattern 13 covers isolation for tests that talk to a *real* Redis instance via key namespacing.
+For **unit tests** — code paths that import an `ioredis` client but should never require a running
+Redis server — swap the entire `ioredis` module with `ioredis-mock` via Jest's `moduleNameMapper`
+or an explicit `jest.mock()` call. The mock emulates ioredis commands in-process with zero network
+I/O: tests are fast, hermetic, and work offline.
+
+**Key ioredis-mock v6 isolation rule:** instances sharing the same host+port share an in-memory
+context (just like real Redis). To give each test a clean slate, either call `redis.flushall()` in
+`afterEach` or create instances on different ports. Using a fixed port per `describe` block prevents
+cross-suite data leakage while avoiding per-test `flushall` overhead when tests are read-heavy.
+
+```typescript
+// jest.config.ts — swap ioredis globally for ALL tests that import it
+import { defineConfig } from 'jest';
+
+export default defineConfig({
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  moduleNameMapper: {
+    // Any import of 'ioredis' resolves to the in-memory mock
+    '^ioredis$': 'ioredis-mock',
+  },
+});
+```
+
+```typescript
+// cacheService.ts — production code uses ioredis as normal
+import Redis from 'ioredis';
+
+export class CacheService {
+  constructor(private readonly redis: Redis) {}
+
+  async set(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+    await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+  }
+
+  async get<T>(key: string): Promise<T | null> {
+    const raw = await this.redis.get(key);
+    return raw === null ? null : (JSON.parse(raw) as T);
+  }
+
+  async del(key: string): Promise<void> {
+    await this.redis.del(key);
+  }
+}
+```
+
+```typescript
+// cacheService.test.ts — uses ioredis-mock transparently via moduleNameMapper
+import Redis from 'ioredis'; // resolves to ioredis-mock in test context
+import { CacheService } from './cacheService';
+
+describe('CacheService (in-memory Redis)', () => {
+  // Port 6380 creates an isolated mock context — does not share state with port 6379
+  const redis = new Redis({ host: 'localhost', port: 6380 });
+  const cache = new CacheService(redis);
+
+  afterEach(async () => {
+    // flushall resets ALL keys in this mock instance — safe because it is in-memory only
+    await redis.flushall();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  it('stores a serialised object and retrieves it', async () => {
+    await cache.set('user:1', { name: 'Alice', role: 'admin' }, 60);
+
+    const result = await cache.get<{ name: string; role: string }>('user:1');
+
+    expect(result).toEqual({ name: 'Alice', role: 'admin' });
+  });
+
+  it('returns null for a key that does not exist', async () => {
+    const result = await cache.get<unknown>('missing:key');
+
+    expect(result).toBeNull();
+  });
+
+  it('del removes the key so subsequent get returns null', async () => {
+    await cache.set('session:xyz', { token: 'abc123' }, 300);
+    await cache.del('session:xyz');
+
+    const result = await cache.get<unknown>('session:xyz');
+
+    expect(result).toBeNull();
+  });
+
+  it('flushall in afterEach prevents data leak to subsequent tests', async () => {
+    // If flushall did not run after the previous test, 'user:1' would still exist here
+    const leaked = await cache.get<unknown>('user:1');
+    expect(leaked).toBeNull();
+  });
+});
+```
+
+**Per-file jest.mock() alternative** (when `moduleNameMapper` is too broad):
+
+```typescript
+// Only swap ioredis for this file — other files continue to use real ioredis
+jest.mock('ioredis', () => {
+  const { default: RedisMock } = jest.requireActual<typeof import('ioredis-mock')>('ioredis-mock');
+  return { default: RedisMock, __esModule: true };
+});
+```
+
+---
+
+### Pattern 49: memfs virtual file system for disk-free file I/O isolation (TypeScript)  [community]
+
+Pattern 11 covers isolation using real temp directories on disk. For **unit tests** where the system
+under test uses `fs` or `node:fs` but should never touch the real disk, replace the `fs` module with
+an in-memory volume using `memfs`. Benefits over temp directories: no `afterEach` cleanup, no
+permission errors, no OS-specific path separators in assertions, and tests run 10-100× faster
+because there is no disk I/O.
+
+`memfs` exports `createFsFromVolume` and `Volume`. A `Volume` is an in-memory filesystem tree. You
+create a volume, optionally seed it with `vol.fromJSON()`, pass it to `createFsFromVolume()` to get
+a `fs`-compatible object, and then make Jest resolve `node:fs` to that object for your module under
+test. Call `vol.reset()` in `afterEach` to wipe the in-memory tree.
+
+```typescript
+// Install: npm install --save-dev memfs
+// reportExporter.ts — uses node:fs to write reports
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+export async function exportReportToFile(
+  data: Record<string, unknown>,
+  outPath: string,
+): Promise<void> {
+  const dir = path.dirname(outPath);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(outPath, JSON.stringify(data, null, 2), 'utf-8');
+}
+```
+
+```typescript
+// reportExporter.test.ts — no disk I/O; volume lives in process memory
+import { jest, beforeEach, afterEach, it, expect, describe } from '@jest/globals';
+import { Volume, createFsFromVolume } from 'memfs';
+import * as path from 'node:path';
+
+// Create a single volume shared across tests; reset it in afterEach
+const vol = new Volume();
+
+// Intercept 'node:fs' — all fs calls inside reportExporter go to the in-memory volume
+jest.mock('node:fs', () => createFsFromVolume(vol));
+
+// Import AFTER jest.mock so the mocked fs is in place
+import { exportReportToFile } from './reportExporter';
+
+describe('exportReportToFile (in-memory fs)', () => {
+  afterEach(() => {
+    // Wipe the entire in-memory tree — next test starts with an empty volume
+    vol.reset();
+  });
+
+  it('creates the output file with serialised JSON content', async () => {
+    const outPath = '/reports/run-1/output.json';
+
+    await exportReportToFile({ userId: 'u1', actions: ['login'] }, outPath);
+
+    const raw = vol.readFileSync(outPath, 'utf-8') as string;
+    const parsed = JSON.parse(raw) as { userId: string; actions: string[] };
+    expect(parsed.userId).toBe('u1');
+    expect(parsed.actions).toHaveLength(1);
+  });
+
+  it('creates intermediate directories when they do not exist', async () => {
+    const outPath = '/deep/nested/dir/report.json';
+
+    await exportReportToFile({ userId: 'u2', actions: [] }, outPath);
+
+    // vol.existsSync reflects the in-memory state — no real /deep/nested/dir was created
+    expect(vol.existsSync('/deep/nested/dir')).toBe(true);
+  });
+
+  it('overwrites an existing file without error', async () => {
+    const outPath = '/reports/report.json';
+    // Seed the volume with an existing file to test overwrite behaviour
+    vol.fromJSON({ [outPath]: '{"old":true}' });
+
+    await exportReportToFile({ userId: 'u3', actions: ['logout'] }, outPath);
+
+    const raw = vol.readFileSync(outPath, 'utf-8') as string;
+    expect(JSON.parse(raw)).not.toHaveProperty('old');
+  });
+
+  it('vol.reset() in afterEach prevents data leak — volume is empty at test start', async () => {
+    // If reset() had not run, the previous test's /reports/report.json would be visible
+    expect(vol.existsSync('/reports/report.json')).toBe(false);
+  });
+});
+```
+
+**Vitest equivalent** — Vitest does not hoist `vi.mock()` to the top of the file in all cases with
+ESM. Use the factory form explicitly:
+
+```typescript
+// vitest — memfs virtual fs
+import { vi, beforeEach, afterEach, it, expect, describe } from 'vitest';
+import { Volume, createFsFromVolume } from 'memfs';
+
+const vol = new Volume();
+
+vi.mock('node:fs', () => createFsFromVolume(vol));
+
+import { exportReportToFile } from './reportExporter';
+
+describe('exportReportToFile (Vitest + memfs)', () => {
+  afterEach(() => vol.reset());
+
+  it('writes JSON to the in-memory volume', async () => {
+    await exportReportToFile({ score: 42 }, '/tmp/result.json');
+
+    const content = vol.readFileSync('/tmp/result.json', 'utf-8') as string;
+    expect(JSON.parse(content)).toEqual({ score: 42 });
+  });
+});
+```
+
+---
+
+### Pattern 50: `crypto.randomUUID` / `global.crypto` isolation for deterministic IDs (TypeScript)  [community]
+
+Code that calls `crypto.randomUUID()` (Node.js 14.17+, browsers) produces a different UUID on every
+invocation, making assertions on generated IDs unreliable unless the test controls the source. The
+solution is to mock `globalThis.crypto.randomUUID` via `jest.spyOn()` (or `vi.spyOn()` in Vitest),
+providing a deterministic sequence of UUIDs for the test. Because `restoreMocks: true` in the Jest
+config restores the original after each test, the mock is automatically cleaned up.
+
+For code that accepts a `generateId` dependency via injection, prefer the DI approach (Pattern 3
+style). Reserve `crypto.randomUUID` mocking for code where the ID generation is deeply embedded and
+refactoring is impractical.
+
+```typescript
+// orderService.ts — uses crypto.randomUUID internally for order ID generation
+export interface Order {
+  id: string;
+  customerId: string;
+  totalCents: number;
+  status: 'pending' | 'confirmed';
+}
+
+export function createOrder(customerId: string, totalCents: number): Order {
+  return {
+    id: crypto.randomUUID(),   // non-deterministic without a mock
+    customerId,
+    totalCents,
+    status: 'pending',
+  };
+}
+```
+
+```typescript
+// orderService.test.ts — Jest + TypeScript, restoreMocks: true in config
+import { createOrder } from './orderService';
+
+describe('createOrder', () => {
+  it('assigns a stable UUID when crypto.randomUUID is mocked', () => {
+    // Arrange — intercept globalThis.crypto.randomUUID before the Act phase
+    const FIXED_UUID = '00000000-0000-0000-0000-000000000001';
+    const spy = jest
+      .spyOn(globalThis.crypto, 'randomUUID')
+      .mockReturnValue(FIXED_UUID as ReturnType<typeof crypto.randomUUID>);
+
+    // Act
+    const order = createOrder('customer-42', 9999);
+
+    // Assert
+    expect(order.id).toBe(FIXED_UUID);
+    expect(order.customerId).toBe('customer-42');
+    expect(spy).toHaveBeenCalledTimes(1);
+    // restoreMocks: true in jest.config.ts cleans up the spy automatically
+  });
+
+  it('produces unique IDs on consecutive real calls (no mock)', () => {
+    // Arrange — no spy; real crypto.randomUUID runs
+    const a = createOrder('c1', 100);
+    const b = createOrder('c2', 200);
+
+    // Assert
+    expect(a.id).not.toBe(b.id);
+    expect(a.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  it('can provide a sequence of UUIDs via mockReturnValueOnce', () => {
+    // Arrange — each call to randomUUID returns the next value in the sequence
+    jest
+      .spyOn(globalThis.crypto, 'randomUUID')
+      .mockReturnValueOnce('aaaaaaaa-0000-0000-0000-000000000001' as `${string}-${string}-${string}-${string}-${string}`)
+      .mockReturnValueOnce('bbbbbbbb-0000-0000-0000-000000000002' as `${string}-${string}-${string}-${string}-${string}`);
+
+    const first = createOrder('c1', 100);
+    const second = createOrder('c2', 200);
+
+    expect(first.id).toBe('aaaaaaaa-0000-0000-0000-000000000001');
+    expect(second.id).toBe('bbbbbbbb-0000-0000-0000-000000000002');
+  });
+});
+```
+
+**Vitest equivalent** using `vi.stubGlobal()` (preferred over `vi.spyOn` for global objects in Vitest
+because `vi.spyOn(globalThis.crypto, 'randomUUID')` may not intercept calls made from within the
+same V8 microtask context in `vmThreads` pool):
+
+```typescript
+// orderService.test.ts — Vitest
+import { vi, afterEach, it, expect, describe } from 'vitest';
+import { createOrder } from './orderService';
+
+describe('createOrder (Vitest)', () => {
+  afterEach(() => {
+    // vi.unstubAllGlobals() restores all globals stubbed in this test
+    vi.unstubAllGlobals();
+  });
+
+  it('uses a deterministic UUID when stubbed via vi.stubGlobal', () => {
+    const FIXED_UUID = 'cccccccc-0000-0000-0000-000000000003';
+    // Replace the entire crypto object with a partial stub — only randomUUID is overridden
+    vi.stubGlobal('crypto', {
+      ...globalThis.crypto,
+      randomUUID: vi.fn().mockReturnValue(FIXED_UUID),
+    });
+
+    const order = createOrder('cust-1', 4999);
+
+    expect(order.id).toBe(FIXED_UUID);
+  });
+});
+```
+
+---
+
+## Gotchas — Iteration 27
+
+109. **ioredis-mock v6+ instances on the same port share context — `new Redis()` in two separate test files can corrupt each other's data when Jest runs them in the same worker without `resetModules`.** [community]
+    In ioredis-mock v6, the shared-context design means that if `packages/api/test/auth.test.ts`
+    and `packages/api/test/session.test.ts` both `new Redis()` (default port 6379) and run in the
+    same Jest worker (e.g. `--runInBand` or a low `maxWorkers` setting), a `SET` in one test file
+    can be read by another. The fix: either call `await redis.flushall()` in every `afterEach` in
+    every test file, or assign each test *file* a unique port:
+    ```typescript
+    // jest.setup.ts — derive an isolated port from the Jest worker ID (1-based, unique per worker)
+    import Redis from 'ioredis'; // resolved to ioredis-mock via moduleNameMapper
+
+    // workerIdToPort: worker 1 → 6401, worker 2 → 6402, …
+    const WORKER_ID = Number(process.env.JEST_WORKER_ID ?? '1');
+    export const testRedis = new Redis({ host: 'localhost', port: 6400 + WORKER_ID });
+    ```
+    WHY: ioredis-mock's shared context was designed to mirror real Redis pub/sub testing, but it
+    means the "no real server" convenience comes with the same data-isolation responsibility that
+    real Redis demands. Treat it like a real cache: always flush in `afterEach` or scope by port.
+
+110. **`jest.mock('node:fs')` and `jest.mock('fs')` are two separate module entries — mocking only one leaves the other unmocked, so code using `import * as fs from 'fs'` bypasses the memfs volume.** [community]
+    Node.js has two ways to import the file system module: `'fs'` and `'node:fs'`. They are the
+    same underlying module but Jest treats them as separate entries in the module registry. If your
+    production code uses `import * as fs from 'fs'` and your test mocks only `'node:fs'` (or vice
+    versa), the mock is silently bypassed — real disk writes occur and your `vol.existsSync()` call
+    returns `false` even though the file was written. The fix: mock both in the `jest.mock` factory,
+    or use `moduleNameMapper` to alias both specifiers to `memfs`:
+    ```typescript
+    // jest.config.ts — map both module specifiers to memfs
+    import { defineConfig } from 'jest';
+
+    export default defineConfig({
+      moduleNameMapper: {
+        // Map both 'fs' and 'node:fs' to the same memfs union-fs adapter
+        '^(node:)?fs$': '<rootDir>/test/__mocks__/memfs-adapter.ts',
+        '^(node:)?fs/promises$': '<rootDir>/test/__mocks__/memfs-promises-adapter.ts',
+      },
+    });
+    ```
+    ```typescript
+    // test/__mocks__/memfs-adapter.ts
+    import { createFsFromVolume, Volume } from 'memfs';
+    export const vol = new Volume();
+    const fs = createFsFromVolume(vol);
+    export default fs;
+    export const { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } = fs;
+    ```
+    WHY: the `node:` prefix was introduced in Node.js 14.18 / 16.0 as an explicit built-in
+    protocol. Both resolve to the same native module but Jest's module resolver treats them as
+    distinct keys, so a mock on one key does not automatically apply to the other.
+
+111. **`jest.spyOn(globalThis.crypto, 'randomUUID')` fails in Jest's default `node` test environment on Node.js < 19 because `globalThis.crypto` is `undefined` — the Web Crypto API was only added to the global scope in Node.js 19.** [community]
+    On Node.js 18 (LTS), `globalThis.crypto` is undefined in the `node` Jest test environment by
+    default. `jest.spyOn(globalThis.crypto, 'randomUUID')` throws `TypeError: Cannot read properties
+    of undefined (reading 'randomUUID')`. Two fixes:
+    1. **Polyfill in `setupFilesAfterEnv`**: assign `globalThis.crypto` before spying:
+    ```typescript
+    // jest.setup.ts (setupFilesAfterEnv)
+    import { webcrypto } from 'node:crypto';
+    // Make Web Crypto available as a global so jest.spyOn works on Node.js 18
+    if (!globalThis.crypto) {
+      Object.defineProperty(globalThis, 'crypto', {
+        value: webcrypto,
+        writable: true,
+        configurable: true,
+      });
+    }
+    ```
+    2. **Use the `node:crypto` module directly** and inject via DI instead of using `globalThis.crypto`:
+    ```typescript
+    // production code — accepts a generate function as a parameter (DI approach)
+    import { randomUUID } from 'node:crypto';
+
+    export function createOrder(
+      customerId: string,
+      totalCents: number,
+      generateId: () => string = randomUUID,
+    ): Order {
+      return { id: generateId(), customerId, totalCents, status: 'pending' };
+    }
+    // test — pass a deterministic function; no spy or global mutation needed
+    const order = createOrder('c1', 100, () => 'fixed-uuid-123');
+    expect(order.id).toBe('fixed-uuid-123');
+    ```
+    WHY: `globalThis.crypto` being undefined is a Node.js 18 vs 19+ behavioural difference that
+    does not affect the browser test environment (`testEnvironment: 'jsdom'`). Teams on Node.js 18
+    LTS (still in maintenance until April 2025) frequently hit this. The DI approach (Pattern 3
+    style) is more portable and avoids the global mutation entirely.
+
+---
+
+## Quick Reference Additions — Iteration 27
+
+| Problem | Symptom | Solution | Framework |
+|---------|---------|----------|-----------|
+| Unit tests require a running Redis server | `ECONNREFUSED` in CI without Redis | Replace `ioredis` with `ioredis-mock` via `moduleNameMapper` | Jest + ioredis-mock |
+| ioredis-mock state leaks between test files | Test B reads data written by Test A in a different file | Use unique port per worker or call `flushall()` in every `afterEach` | Jest + ioredis-mock |
+| File I/O tests leave temp dirs or fail on permission errors | CI cleanup fails; stale files cause false passes | Replace `node:fs` with `memfs` volume; `vol.reset()` in `afterEach` | Jest/Vitest + memfs |
+| Both `'fs'` and `'node:fs'` need to be mocked | `vol.existsSync()` returns false despite writes | Map both specifiers in `moduleNameMapper` to the same memfs adapter | Jest config |
+| `crypto.randomUUID()` produces non-deterministic IDs | Snapshot tests fail; assertions on generated IDs are brittle | `jest.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(FIXED_UUID)` | Jest + restoreMocks |
+| `globalThis.crypto` undefined on Node.js 18 | `jest.spyOn(globalThis.crypto, ...)` throws TypeError | Polyfill `globalThis.crypto` from `node:crypto` in `setupFilesAfterEnv`, or use DI | Jest + Node.js 18 |
+
+---
+
+## Key Resources — Iteration 27 Additions
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| ioredis-mock | GitHub | https://github.com/stipsan/ioredis-mock | In-memory ioredis emulator; `moduleNameMapper` swap; v6 shared-context behaviour |
+| memfs | GitHub | https://github.com/streamich/memfs | In-memory `fs` implementation; `vol.fromJSON()` seeding, `vol.reset()`, `createFsFromVolume` |
+| Node.js — `crypto.randomUUID` | Official | https://nodejs.org/docs/latest-v24.x/api/crypto.html#cryptorandomuuidoptions | Available as `node:crypto` export since Node 14.17; added to `globalThis.crypto` in Node 19 |
+| Vitest — `vi.stubGlobal` | Official | https://vitest.dev/api/vi.html#vi-stubglobal | Stub any global (including `crypto`) with auto-restore via `vi.unstubAllGlobals()` |
 | Vitest 4.1 Blog — aroundEach / aroundAll | Official | https://vitest.dev/blog/vitest-4-1 | `aroundEach` + `aroundAll` hooks; composition with `AsyncLocalStorage.run()` for scoped per-test context |

@@ -1,6 +1,18 @@
 # C# Patterns & Best Practices
-<!-- sources: official | community | mixed | iteration: 41 | score: 98/100 | date: 2026-05-12 -->
+<!-- sources: official | community | mixed | iteration: 42 | score: 98/100 | date: 2026-05-12 -->
 <!-- iteration trace (latest):
+     Iter 42 (2026-05-12): added FakeTimeProvider full test examples (Advance/AutoAdvanceAmount boundary
+       tests, ITimer callback testing via FakeTimeProvider.Advance+Task.Yield, DI swap pattern with
+       ControlledTimeFactory, two community gotchas: async callback yield requirement and AutoAdvanceAmount
+       drift on double-read); added Verify snapshot testing deep-dive (ScrubMember/ScrubInlineGuids,
+       ModuleInitializer global settings, first-run approval CLI workflow, .gitignore/.gitattributes setup,
+       GitHub Actions CI enforcement, two community gotchas: orphaned snapshots on rename and null
+       serialization changes on upgrade); added Minimal API endpoint-level testing patterns (TypedResults
+       status+body assertions, route group auth testing, endpoint filter validation testing,
+       TypedResults direct handler unit testing without HTTP layer, two community gotchas: direct handler
+       vs full integration test complementarity and application/problem+json deserialization) — sourced from
+       learn.microsoft.com/dotnet/api/microsoft.extensions.time.testing.faketimeprovider,
+       github.com/VerifyTests/Verify, learn.microsoft.com/aspnet/core/test/integration-tests
      Iter 41 (2026-05-12): added xUnit ClassData/IEnumerable<object[]> patterns and InlineData vs MemberData vs
        ClassData comparison table; added Moq Protected().Setup() for abstract members, MockRepository batch
        VerifyAll(), and multi-invocation Callback capture; added FluentAssertions custom assertion extensions
@@ -6219,6 +6231,468 @@ public class InvoiceRendererTests
     }
 }
 ```
+
+---
+
+## FakeTimeProvider — Full Test Examples (.NET 8+)
+
+`FakeTimeProvider` (package `Microsoft.Extensions.TimeProvider.Testing`) is the official in-memory implementation of `TimeProvider` for deterministic time control in unit tests. It replaces patterns such as `DateTime.UtcNow` injection, `IClock` wrapper interfaces, or `Task.Delay` in tests.
+
+```csharp
+// dotnet add package Microsoft.Extensions.TimeProvider.Testing
+using Microsoft.Extensions.Time.Testing;
+using Xunit;
+using FluentAssertions;
+
+// Production service — depends on TimeProvider, not DateTime.UtcNow
+public class TokenExpiryService(TimeProvider timeProvider)
+{
+    public bool IsTokenExpired(DateTimeOffset issuedAt, TimeSpan ttl)
+        => timeProvider.GetUtcNow() >= issuedAt + ttl;
+
+    public DateTimeOffset GetExpiryTime(DateTimeOffset issuedAt, TimeSpan ttl)
+        => issuedAt + ttl;
+}
+
+public class TokenExpiryServiceTests
+{
+    [Fact]
+    public void IsTokenExpired_BeforeTtl_ReturnsFalse()
+    {
+        var fakeTime = new FakeTimeProvider(
+            startDateTime: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var sut = new TokenExpiryService(fakeTime);
+        var issued = fakeTime.GetUtcNow();
+
+        // Token is 1 hour TTL; advance 30 minutes — should still be valid
+        fakeTime.Advance(TimeSpan.FromMinutes(30));
+
+        sut.IsTokenExpired(issued, TimeSpan.FromHours(1)).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsTokenExpired_AfterTtl_ReturnsTrue()
+    {
+        var fakeTime = new FakeTimeProvider(
+            startDateTime: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var sut = new TokenExpiryService(fakeTime);
+        var issued = fakeTime.GetUtcNow();
+
+        // Advance past the TTL boundary
+        fakeTime.Advance(TimeSpan.FromHours(1).Add(TimeSpan.FromSeconds(1)));
+
+        sut.IsTokenExpired(issued, TimeSpan.FromHours(1)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void AutoAdvanceAmount_IncreasesTimeOnEveryRead()
+    {
+        // AutoAdvanceAmount: each call to GetUtcNow() advances the clock by this amount
+        // Useful for simulating elapsed time in loops / scheduled polling
+        var fakeTime = new FakeTimeProvider();
+        fakeTime.AutoAdvanceAmount = TimeSpan.FromMilliseconds(100);
+
+        var t1 = fakeTime.GetUtcNow();
+        var t2 = fakeTime.GetUtcNow();
+        var t3 = fakeTime.GetUtcNow();
+
+        (t2 - t1).Should().Be(TimeSpan.FromMilliseconds(100));
+        (t3 - t2).Should().Be(TimeSpan.FromMilliseconds(100));
+    }
+}
+```
+
+**Testing time-sensitive background services with `ITimer`:**
+
+```csharp
+// Production: a cache refresher that runs on a schedule
+public class CacheRefresher(TimeProvider timeProvider, ICache cache)
+{
+    private ITimer? _timer;
+
+    public void Start(TimeSpan interval)
+    {
+        _timer = timeProvider.CreateTimer(
+            callback: async _ => await cache.RefreshAsync(),
+            state: null,
+            dueTime: interval,
+            period: interval);
+    }
+
+    public void Stop() => _timer?.Dispose();
+}
+
+// Test: advance fake time to trigger the timer callback
+[Fact]
+public async Task CacheRefresher_FiresCallback_AfterInterval()
+{
+    var fakeTime = new FakeTimeProvider();
+    var mockCache = Substitute.For<ICache>();
+    var sut = new CacheRefresher(fakeTime, mockCache);
+    sut.Start(TimeSpan.FromMinutes(5));
+
+    // Advance exactly to the due time — callback fires synchronously in test
+    fakeTime.Advance(TimeSpan.FromMinutes(5));
+    await Task.Yield(); // allow the callback Task to be awaited
+
+    await mockCache.Received(1).RefreshAsync();
+}
+```
+
+**DI registration pattern — swap real for fake in tests:**
+
+```csharp
+// Program.cs — register the real provider
+builder.Services.AddSingleton(TimeProvider.System);
+
+// Integration test factory — replace with FakeTimeProvider
+public class ControlledTimeFactory : WebApplicationFactory<Program>
+{
+    public FakeTimeProvider FakeTime { get; } =
+        new FakeTimeProvider(new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero));
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureTestServices(services =>
+        {
+            // Override the singleton with the fake
+            services.AddSingleton<TimeProvider>(FakeTime);
+        });
+    }
+}
+
+[Fact]
+public async Task SubscriptionEndpoint_ExpiredSubscription_Returns402()
+{
+    var factory = new ControlledTimeFactory();
+    // Advance to after a 30-day trial that started at factory start time
+    factory.FakeTime.Advance(TimeSpan.FromDays(31));
+
+    var client = factory.CreateClient();
+    var response = await client.GetAsync("/api/subscription/status");
+    response.StatusCode.Should().Be(HttpStatusCode.PaymentRequired);
+}
+```
+
+> **Gotcha [community]:** `FakeTimeProvider.Advance()` fires `ITimer` callbacks synchronously in the calling thread. If your production code awaits the callback result (e.g., `await reminderAction()`), you must `await Task.Yield()` or `await Task.Delay(1)` after calling `Advance()` in your test to give the callback's continuation a chance to run. Without this yield, assertions immediately after `Advance()` may run before the async callback completes, causing spurious test failures.
+
+> **Gotcha [community]:** `AutoAdvanceAmount` is additive per `GetUtcNow()` read — it fires on every call including reads inside the SUT, not just explicit test reads. If your production code reads `timeProvider.GetUtcNow()` twice in the same operation (e.g., for start + end time), you will see artificial time drift in tests. Set `AutoAdvanceAmount` only when you want that behavior; for boundary tests, use explicit `Advance()` calls instead.
+
+---
+
+## Verify Snapshot Testing — Scrubbers, Settings, and CI Patterns
+
+The brief introduction in the Snapshot Testing section above covers the happy path. This section covers the production patterns needed to make snapshots reliable in CI and team environments.
+
+**Non-deterministic output — scrubbers:**
+
+```csharp
+// dotnet add package Verify.Xunit
+// dotnet add package Verify.NUnit  (or Verify.MSTest, Verify.TUnit)
+using VerifyXunit;
+
+[UsesVerify]
+public class OrderSnapshotTests
+{
+    [Fact]
+    public async Task PlaceOrder_ResponseMatchesSnapshot()
+    {
+        var service = BuildOrderService();
+        var result = await service.PlaceOrderAsync(new OrderRequest
+        {
+            CustomerId = Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            Items = [new OrderItem("SKU-001", 2)]
+        });
+
+        // ScrubMember: replace the property value with a placeholder in the snapshot
+        // ScrubInlineGuids: replace any inline GUID strings matching the pattern
+        await Verify(result)
+            .ScrubMember<OrderResponse>(r => r.OrderId)      // volatile GUID
+            .ScrubMember<OrderResponse>(r => r.CreatedAt)    // volatile timestamp
+            .ScrubInlineGuids();                              // any other GUIDs in JSON
+    }
+
+    [Fact]
+    public async Task GetOrderHistory_JsonResponseMatchesSnapshot()
+    {
+        var client = BuildTestClient();
+        var response = await client.GetAsync("/api/orders?page=1");
+        var json = await response.Content.ReadAsStringAsync();
+
+        // VerifyJson: pretty-prints JSON for readable diffs
+        await VerifyJson(json)
+            .ScrubLinesContaining("createdAt", "modifiedAt");
+    }
+}
+```
+
+**Global settings with `ModuleInitializer` — configure once for all tests:**
+
+```csharp
+// Place in a file like VerifyConfig.cs in the test project
+using System.Runtime.CompilerServices;
+
+public static class VerifyConfig
+{
+    [ModuleInitializer]
+    public static void Initialize()
+    {
+        // Use a dedicated directory for snapshot files — keep them organized
+        VerifierSettings.UseDirectory("Snapshots");
+
+        // Store snapshots as .json (not .txt) for better diff readability
+        VerifierSettings.UseExtension("json");
+
+        // Always scrub DateTime/DateTimeOffset fields globally
+        VerifierSettings.ScrubMembersWithType<DateTime>();
+        VerifierSettings.ScrubMembersWithType<DateTimeOffset>();
+
+        // Scrub machine-specific paths in any string field
+        VerifierSettings.ScrubInlineGuids();
+
+        // Sort properties alphabetically for stable diffs across .NET versions
+        VerifierSettings.SortPropertiesAlphabetically();
+    }
+}
+```
+
+**First-run approval workflow:**
+
+```bash
+# 1. Run tests for the first time — tests "fail" but create .received. files
+dotnet test
+
+# 2. Review created snapshot files
+# Snapshots land in: MyTests/Snapshots/MyClass.MyMethod.received.json
+
+# 3. Accept snapshots (renames .received. → .verified.)
+# Option A: install the Verify.DotNetTool CLI approver
+dotnet tool install --global Verify.DotNetTool
+dotnet verify accept   # accepts all pending snapshots in the current directory
+
+# Option B: manually copy
+# cp MyTests/Snapshots/MyClass.MyMethod.received.json \
+#    MyTests/Snapshots/MyClass.MyMethod.verified.json
+
+# 4. Commit .verified. files — they are the test expectation
+git add "**/*.verified.*"
+git commit -m "chore: accept Verify snapshots"
+```
+
+**`.gitignore` and `git attributes` setup:**
+
+```gitignore
+# .gitignore — exclude received files (test artifacts, never committed)
+*.received.*
+```
+
+```gitattributes
+# .gitattributes — normalize line endings in snapshot files
+# Prevents false positives from CRLF vs LF differences on Windows CI agents
+*.verified.txt  text eol=lf working-tree-encoding=UTF-8
+*.verified.json text eol=lf working-tree-encoding=UTF-8
+*.verified.xml  text eol=lf working-tree-encoding=UTF-8
+```
+
+**CI/CD enforcement — fail fast if there are unapproved snapshots:**
+
+```yaml
+# .github/workflows/test.yml (GitHub Actions excerpt)
+- name: Run tests
+  run: dotnet test --configuration Release
+
+# If any .received. files exist after the test run, snapshots changed
+# and were not approved — fail the build
+- name: Check for unapproved snapshots
+  shell: bash
+  run: |
+    RECEIVED=$(find . -name "*.received.*" | wc -l)
+    if [ "$RECEIVED" -gt 0 ]; then
+      echo "ERROR: $RECEIVED unapproved snapshot(s) found:"
+      find . -name "*.received.*"
+      exit 1
+    fi
+```
+
+> **Gotcha [community]:** Snapshot files use the **fully-qualified test method name** including the class name as the file name. If you rename a test class or method, Verify creates a new `.received.` file and leaves the old `.verified.` file orphaned — it no longer corresponds to any test, so the test silently passes against stale expectations. Run `dotnet verify clean` periodically (or in CI) to remove orphaned snapshot files.
+
+> **Gotcha [community]:** Verify serializes `null` properties differently across versions. After upgrading Verify, a snapshot may fail because `null` members are now included or excluded by default. Always review snapshot diffs in upgrade PRs; they reflect serialization changes, not application regressions.
+
+---
+
+## Minimal API Endpoint-Level Testing Patterns
+
+Minimal APIs in .NET 6+ define endpoints as lambda route handlers rather than controller actions. The `WebApplicationFactory<Program>` integration test pattern works unchanged, but there are specific testing techniques for `TypedResults`, route groups, and endpoint filters.
+
+**Testing `TypedResults` return types — HTTP status and JSON body:**
+
+```csharp
+// Production minimal API endpoint
+app.MapGet("/api/products/{id:int}", async (
+    int id,
+    IProductRepository repo,
+    CancellationToken ct) =>
+{
+    var product = await repo.GetByIdAsync(id, ct);
+    return product is null
+        ? Results.NotFound(new { message = $"Product {id} not found" })
+        : Results.Ok(product);
+});
+
+// Test — verify HTTP status code and response body shape
+[Fact]
+public async Task GetProduct_ExistingId_ReturnsOkWithBody()
+{
+    var response = await _client.GetAsync("/api/products/1");
+
+    response.StatusCode.Should().Be(HttpStatusCode.OK);
+    var product = await response.Content.ReadFromJsonAsync<ProductDto>();
+    product.Should().NotBeNull();
+    product!.Id.Should().Be(1);
+}
+
+[Fact]
+public async Task GetProduct_NonExistentId_ReturnsNotFound()
+{
+    var response = await _client.GetAsync("/api/products/99999");
+
+    response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+    body.GetProperty("message").GetString().Should().Contain("99999");
+}
+```
+
+**Testing route groups with shared prefix and policy:**
+
+```csharp
+// Production: route group with auth requirement
+var ordersGroup = app.MapGroup("/api/orders")
+    .RequireAuthorization()
+    .WithTags("Orders");
+
+ordersGroup.MapGet("/", async (IOrderRepository repo) =>
+    Results.Ok(await repo.GetAllAsync()));
+
+ordersGroup.MapPost("/", async (CreateOrderRequest req, IOrderService svc) =>
+{
+    var order = await svc.CreateAsync(req);
+    return Results.Created($"/api/orders/{order.Id}", order);
+});
+
+// Test: unauthenticated request to a protected route group
+[Fact]
+public async Task GetOrders_NoAuth_Returns401()
+{
+    // _client has no Authorization header
+    var unauthenticatedClient = _factory.CreateClient(
+        new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+    var response = await unauthenticatedClient.GetAsync("/api/orders");
+    response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+}
+
+// Test: authenticated request via TestAuthHandler
+[Fact]
+public async Task CreateOrder_ValidPayload_Returns201WithLocationHeader()
+{
+    var payload = new CreateOrderRequest
+    {
+        CustomerId = 1,
+        Items = [new OrderItemRequest("SKU-001", qty: 2)]
+    };
+
+    var response = await _client.PostAsJsonAsync("/api/orders", payload);
+
+    response.StatusCode.Should().Be(HttpStatusCode.Created);
+    response.Headers.Location.Should().NotBeNull();
+    response.Headers.Location!.PathAndQuery.Should().StartWith("/api/orders/");
+}
+```
+
+**Testing endpoint filters:**
+
+```csharp
+// Production: endpoint filter for validation
+app.MapPost("/api/orders", async (CreateOrderRequest req, IOrderService svc) =>
+    Results.Ok(await svc.CreateAsync(req)))
+.AddEndpointFilter<ValidationFilter<CreateOrderRequest>>();
+
+// ValidationFilter: returns 400 with validation errors on invalid input
+public class ValidationFilter<T>(IValidator<T> validator)
+    : IEndpointFilter where T : class
+{
+    public async ValueTask<object?> InvokeAsync(
+        EndpointFilterInvocationContext context,
+        EndpointFilterDelegate next)
+    {
+        var arg = context.Arguments.OfType<T>().First();
+        var result = await validator.ValidateAsync(arg);
+
+        if (!result.IsValid)
+            return Results.ValidationProblem(result.ToDictionary());
+
+        return await next(context);
+    }
+}
+
+// Test: filter blocks invalid input before the handler runs
+[Fact]
+public async Task CreateOrder_EmptyItems_Returns400ValidationProblem()
+{
+    var payload = new CreateOrderRequest { CustomerId = 1, Items = [] };
+
+    var response = await _client.PostAsJsonAsync("/api/orders", payload);
+
+    response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+    problem!.Errors.Should().ContainKey("Items");
+}
+```
+
+**Testing `TypedResults` return type contracts directly (without HTTP layer):**
+
+```csharp
+// For pure unit testing of the handler logic without spinning up the full server,
+// call the handler delegate directly. This is faster but doesn't test middleware.
+public static async Task<IResult> GetProductHandler(
+    int id,
+    IProductRepository repo,
+    CancellationToken ct)
+{
+    var product = await repo.GetByIdAsync(id, ct);
+    return product is null ? TypedResults.NotFound() : TypedResults.Ok(product);
+}
+
+[Fact]
+public async Task GetProductHandler_ProductExists_ReturnsOkWithProduct()
+{
+    var mockRepo = Substitute.For<IProductRepository>();
+    mockRepo.GetByIdAsync(1, Arg.Any<CancellationToken>())
+            .Returns(new Product { Id = 1, Name = "Widget" });
+
+    var result = await GetProductHandler(1, mockRepo, CancellationToken.None);
+
+    // Assert on the typed result directly — no HTTP round trip
+    var ok = result.Should().BeOfType<Ok<Product>>().Subject;
+    ok.Value!.Id.Should().Be(1);
+}
+
+[Fact]
+public async Task GetProductHandler_ProductMissing_ReturnsNotFound()
+{
+    var mockRepo = Substitute.For<IProductRepository>();
+    mockRepo.GetByIdAsync(99, Arg.Any<CancellationToken>())
+            .Returns((Product?)null);
+
+    var result = await GetProductHandler(99, mockRepo, CancellationToken.None);
+
+    result.Should().BeOfType<NotFound>();
+}
+```
+
+> **Gotcha [community]:** Testing a minimal API handler directly (calling the delegate) does **not** exercise endpoint filters, route constraints, model binding, or authentication middleware. Direct handler calls are useful for domain logic isolation but are not a substitute for at least one integration-level test per route that uses `WebApplicationFactory`. The two approaches are complementary: unit-test handler logic directly, integration-test the full HTTP contract.
+
+> **Gotcha [community]:** `Results.Problem()` and `TypedResults.Problem()` produce responses with `Content-Type: application/problem+json`. If your test reads the response as `JsonElement` (plain JSON), deserialization succeeds but you lose the `ProblemDetails` shape contract. Prefer `response.Content.ReadFromJsonAsync<ProblemDetails>()` so that missing `type` or `title` fields fail the test rather than silently returning default values.
 
 ---
 

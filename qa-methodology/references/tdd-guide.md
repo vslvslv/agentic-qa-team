@@ -1,5 +1,5 @@
 # TDD — QA Methodology Guide
-<!-- lang: TypeScript | topic: tdd | iteration: 28 | score: 98/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: tdd | iteration: 29 | score: 98/100 | date: 2026-05-12 -->
 <!-- sources: training-knowledge + martinfowler.com (WebFetch) + typescript-patterns.md + is-tdd-dead-debate (WebFetch 2026-05-12) + google-testing-blog-2026 + typescript-5.6-5.8-5.9 (WebFetch 2026-05-12) + typescript-6.0 (WebFetch 2026-05-12) + vitest-4.0 (WebFetch 2026-05-12) + vitest-4.0-verbose-reporter (WebFetch 2026-05-12) + google-tott-one-map-key-one-lookup-2026-04 + google-tott-set-safe-defaults-flags-2026-03 + tcr-kent-beck-typescript + zod-v4-tdd-patterns + using-await-using-ts52 + neon-db-branching + promise-try-es2025 + vitest-4.1 (WebFetch 2026-05-12) + vitest-4.1-aria-snapshots (WebFetch 2026-05-12) + vitest-type-testing (WebFetch 2026-05-12) + typescript-6.0-baseurl-deprecation (WebFetch 2026-05-12) + typescript-6.0-subpath-imports (WebFetch 2026-05-12) + vitest-4.1-coverage-ignore-comments (WebFetch 2026-05-12) + vitest-3.2-scoped-fixtures (WebFetch 2026-05-12) + vitest-3.2-using-spyon (WebFetch 2026-05-12) + vitest-3.2-matchers-type (WebFetch 2026-05-12) + google-tott-2025-functional-core + google-tott-2025-arrange-data-flow + typescript-6.0-temporal-api (WebFetch 2026-05-12) + vitest-3.2-abortsignal + ts5to6-codemod + vitest-4.1-builder-pattern (WebFetch 2026-05-12) + vitest-3.2-annotate-api (WebFetch 2026-05-12) + vitest-3.2-sequence-grouporder + stryker-vscode-extension-2025-11 (WebFetch 2026-05-12) + stryker-incremental-mutation (WebFetch 2026-05-12) + vitest-5.0-beta (WebFetch 2026-05-12) + llm-as-red-phase-collaborator | ISTQB CTFL 4.0 terminology applied -->
 <!-- correction 2026-05-12: noUncheckedSideEffectImports was introduced in TypeScript 5.6 (not 5.9); TypeScript 6.0 added as new section -->
 <!-- extension 2026-05-12: iter 17 — added TDD for Feature Flags (safe defaults pattern); One Map Key One Lookup for test doubles; TCR TypeScript script; gotchas #24–#26 -->
@@ -6047,6 +6047,7 @@ describe('applyLoyaltyDiscount', () => {
 | Name | Type | URL | Why useful |
 |------|------|-----|------------|
 <!-- extension 2026-05-12: iter 28 — added TDD for streaming APIs (ReadableStream, async generators, SSE); TDD for edge/serverless functions (Cloudflare Workers, AWS Lambda adapters); TDD with OpenTelemetry observability (SpanCollector fake, asserting span names/attributes); gotchas #52–#55 -->
+<!-- extension 2026-05-12: iter 29 — added TDD with Hexagonal Architecture (Ports & Adapters) full worked example; London School vs Chicago/Detroit School expanded comparison with TypeScript examples; TDD for WebSocket bidirectional communication; gotchas #56–#58 -->
 
 ---
 
@@ -6721,3 +6722,694 @@ export class OtelTestHarness {
 | Cloudflare Workers Testing Guide | Docs | https://developers.cloudflare.com/workers/testing/ | Official guide for unit-testing Workers: typed Env interfaces, KV/D1/R2 binding fakes, Miniflare for integration tests |
 | Web Streams API — ReadableStream | Docs | https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream | ReadableStream constructor, controller.enqueue/close patterns; essential for TDD of streaming HTTP responses and SSE handlers |
 | ECMAScript Async Generators | Docs | https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator | Async generator protocol; `for await...of` consumption pattern; used in streaming TDD test cases |
+| Alistair Cockburn — Hexagonal Architecture | Article | https://alistair.cockburn.us/hexagonal-architecture/ | Original "Ports & Adapters" definition; why application core must be independent of infrastructure |
+| Growing Object-Oriented Software Guided by Tests — Freeman & Pryce | Book | https://www.growing-object-oriented-software.com/ | Canonical London-school TDD reference; outside-in double-loop TDD; mock collaborators, acceptance tests first |
+
+---
+
+### TDD with Hexagonal Architecture — Ports & Adapters [community]
+
+Hexagonal Architecture (also called Ports & Adapters, coined by Alistair Cockburn) is the architectural pattern most naturally aligned with TDD. The core idea: the application logic lives inside a hexagon and communicates with the outside world only through **ports** (TypeScript interfaces) and **adapters** (concrete implementations). TDD drives the port design — writing a test case against a port forces the interface into existence before any infrastructure code.
+
+**Why hexagonal architecture and TDD are naturally paired:**
+- Every port is an interface — typed fakes implement the same interface, making in-memory test doubles structurally guaranteed to stay in sync with the real adapter.
+- The application core has zero infrastructure dependencies — no database drivers, no HTTP clients, no file system calls. This makes the inner-loop TDD cycle (unit tests on the core) blazing fast with no mocking overhead.
+- Adapters are thin translators — they are tested with integration test cases (real DB, real HTTP), not unit TDD cycles. The TDD inner loop focuses exclusively on the core.
+
+```typescript
+// ─────────────────────────────────────────────────────────────────────────────
+// PORTS: TypeScript interfaces — the application core's view of the world
+// ─────────────────────────────────────────────────────────────────────────────
+
+// src/ports/OrderRepository.ts
+export interface Order {
+  id:         string;
+  customerId: string;
+  items:      Array<{ sku: string; qty: number; unitPrice: number }>;
+  status:     'draft' | 'confirmed' | 'shipped' | 'cancelled';
+}
+
+export type CreateOrderInput = Omit<Order, 'id' | 'status'>;
+
+export interface OrderRepository {
+  create(input: CreateOrderInput): Promise<Order>;
+  findById(id: string): Promise<Order | null>;
+  updateStatus(id: string, status: Order['status']): Promise<Order>;
+}
+
+// src/ports/PaymentPort.ts
+export interface PaymentResult {
+  transactionId: string;
+  amount:        number;
+  currency:      string;
+}
+
+export interface PaymentPort {
+  charge(amount: number, currency: string, customerId: string): Promise<PaymentResult>;
+  refund(transactionId: string): Promise<void>;
+}
+
+// src/ports/NotificationPort.ts
+export interface NotificationPort {
+  sendOrderConfirmation(orderId: string, customerEmail: string): Promise<void>;
+  sendShippingUpdate(orderId: string, trackingNumber: string): Promise<void>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APPLICATION CORE: pure domain logic — no infrastructure, no frameworks
+// TDD drives this layer with typed in-memory fakes for every port
+// ─────────────────────────────────────────────────────────────────────────────
+
+// src/application/CheckoutService.ts
+import type { OrderRepository }   from '../ports/OrderRepository.js';
+import type { PaymentPort }       from '../ports/PaymentPort.js';
+import type { NotificationPort }  from '../ports/NotificationPort.js';
+
+export interface CheckoutInput {
+  customerId:    string;
+  customerEmail: string;
+  items:         Array<{ sku: string; qty: number; unitPrice: number }>;
+  currency:      string;
+}
+
+export interface CheckoutResult {
+  orderId:       string;
+  transactionId: string;
+  total:         number;
+}
+
+export class CheckoutService {
+  constructor(
+    private readonly orders:        OrderRepository,
+    private readonly payment:       PaymentPort,
+    private readonly notifications: NotificationPort,
+  ) {}
+
+  async checkout(input: CheckoutInput): Promise<CheckoutResult> {
+    const total = input.items.reduce((s, i) => s + i.unitPrice * i.qty, 0);
+    if (total <= 0) throw new Error('Order total must be positive');
+
+    const order = await this.orders.create({
+      customerId: input.customerId,
+      items:      input.items,
+    });
+
+    const payment = await this.payment.charge(total, input.currency, input.customerId);
+
+    await this.orders.updateStatus(order.id, 'confirmed');
+    await this.notifications.sendOrderConfirmation(order.id, input.customerEmail);
+
+    return { orderId: order.id, transactionId: payment.transactionId, total };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IN-MEMORY ADAPTERS (test doubles) — implement each port, used in TDD test cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+// src/test-doubles/InMemoryOrderRepository.ts
+import type { Order, CreateOrderInput, OrderRepository } from '../ports/OrderRepository.js';
+
+export class InMemoryOrderRepository implements OrderRepository {
+  readonly #store = new Map<string, Order>();
+
+  async create(input: CreateOrderInput): Promise<Order> {
+    const order: Order = { ...input, id: crypto.randomUUID(), status: 'draft' };
+    this.#store.set(order.id, order);
+    return order;
+  }
+
+  async findById(id: string): Promise<Order | null> {
+    return this.#store.get(id) ?? null;
+  }
+
+  async updateStatus(id: string, status: Order['status']): Promise<Order> {
+    const order = this.#store.get(id);
+    if (!order) throw new Error(`Order ${id} not found`);
+    const updated: Order = { ...order, status };
+    this.#store.set(id, updated);
+    return updated;
+  }
+
+  // Test helper: direct read for assertions
+  all(): Order[] { return [...this.#store.values()]; }
+}
+
+// src/test-doubles/FakePaymentPort.ts
+import type { PaymentPort, PaymentResult } from '../ports/PaymentPort.js';
+
+export class FakePaymentPort implements PaymentPort {
+  readonly charged: Array<{ amount: number; currency: string; customerId: string }> = [];
+  readonly refunded: string[] = [];
+  #shouldFail = false;
+
+  failNext(): void { this.#shouldFail = true; }
+
+  async charge(amount: number, currency: string, customerId: string): Promise<PaymentResult> {
+    if (this.#shouldFail) {
+      this.#shouldFail = false;
+      throw new Error('Payment gateway unavailable');
+    }
+    this.charged.push({ amount, currency, customerId });
+    return { transactionId: `txn-${crypto.randomUUID()}`, amount, currency };
+  }
+
+  async refund(transactionId: string): Promise<void> {
+    this.refunded.push(transactionId);
+  }
+}
+
+// src/test-doubles/SpyNotificationPort.ts
+import type { NotificationPort } from '../ports/NotificationPort.js';
+
+export class SpyNotificationPort implements NotificationPort {
+  readonly confirmations: Array<{ orderId: string; email: string }> = [];
+  readonly shippingUpdates: Array<{ orderId: string; tracking: string }> = [];
+
+  async sendOrderConfirmation(orderId: string, customerEmail: string): Promise<void> {
+    this.confirmations.push({ orderId, email: customerEmail });
+  }
+
+  async sendShippingUpdate(orderId: string, trackingNumber: string): Promise<void> {
+    this.shippingUpdates.push({ orderId, tracking: trackingNumber });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TDD TEST CASES: application core, no infrastructure
+// ─────────────────────────────────────────────────────────────────────────────
+
+// src/application/CheckoutService.test.ts
+import { describe, it, expect, beforeEach } from 'vitest';
+import { CheckoutService }           from './CheckoutService.js';
+import { InMemoryOrderRepository }   from '../test-doubles/InMemoryOrderRepository.js';
+import { FakePaymentPort }           from '../test-doubles/FakePaymentPort.js';
+import { SpyNotificationPort }       from '../test-doubles/SpyNotificationPort.js';
+
+const VALID_INPUT = {
+  customerId:    'CUST-1',
+  customerEmail: 'alice@example.com',
+  items: [{ sku: 'WIDGET-A', qty: 2, unitPrice: 49.99 }],
+  currency:      'USD',
+} as const;
+
+let orders:       InMemoryOrderRepository;
+let payment:      FakePaymentPort;
+let notifications: SpyNotificationPort;
+let service:      CheckoutService;
+
+beforeEach(() => {
+  orders        = new InMemoryOrderRepository();
+  payment       = new FakePaymentPort();
+  notifications = new SpyNotificationPort();
+  service       = new CheckoutService(orders, payment, notifications);
+});
+
+describe('CheckoutService.checkout', () => {
+  // Test case 1: RED — happy path creates order, charges payment, sends notification
+  it('creates a confirmed order and sends a confirmation', async () => {
+    const result = await service.checkout(VALID_INPUT);
+
+    expect(result.orderId).toMatch(/^[0-9a-f-]{36}$/); // UUID
+    expect(result.total).toBeCloseTo(99.98); // 2 × 49.99
+    expect(result.transactionId).toMatch(/^txn-/);
+
+    // Verify side effects via fakes — no mocks needed
+    const saved = await orders.findById(result.orderId);
+    expect(saved?.status).toBe('confirmed');
+    expect(payment.charged).toHaveLength(1);
+    expect(payment.charged[0].amount).toBeCloseTo(99.98);
+    expect(notifications.confirmations).toHaveLength(1);
+    expect(notifications.confirmations[0].email).toBe('alice@example.com');
+  });
+
+  // Test case 2: RED — zero total is rejected before any payment attempt
+  it('throws when total is zero (guards payment against zero-amount charges)', async () => {
+    await expect(
+      service.checkout({ ...VALID_INPUT, items: [] })
+    ).rejects.toThrow('total must be positive');
+    expect(payment.charged).toHaveLength(0); // payment never reached
+  });
+
+  // Test case 3: RED — payment failure does not leave a confirmed order
+  it('does not confirm the order when payment fails', async () => {
+    payment.failNext(); // FakePaymentPort will throw on next charge()
+    await expect(service.checkout(VALID_INPUT)).rejects.toThrow('Payment gateway');
+    // Order was created (draft) but never confirmed
+    const draftOrders = orders.all().filter(o => o.status === 'draft');
+    expect(draftOrders).toHaveLength(1);
+    expect(notifications.confirmations).toHaveLength(0); // no notification on failure
+  });
+});
+```
+
+**Why the hexagonal TDD pattern produces the best test suites:** Every test case above runs in < 5ms with no database, no HTTP, no file system. The TypeScript compiler enforces that `InMemoryOrderRepository`, `FakePaymentPort`, and `SpyNotificationPort` always satisfy their respective port interfaces — if `OrderRepository` gains a required method, TypeScript immediately errors in the fakes, not silently in a test that passes with wrong data. This is the key advantage over `vi.fn()` mocks: structural compliance is compiler-guaranteed.
+
+**[community] The hexagonal TDD mistake: putting business logic in adapters.** When a team starts with TDD against ports and then "just adds a little logic" to a Postgres adapter, the logic becomes untestable in the TDD inner loop (requires a DB connection). The discipline: every `if` statement, every calculation, every domain decision belongs in the application core — never in adapters. If you find yourself writing a unit test that needs a real database to execute a branch, the branch is in the wrong layer.
+
+**Adapter integration test pattern (contracts shared between fake and real adapter):**
+
+```typescript
+// src/adapters/postgres/PostgresOrderRepository.integration.test.ts
+// Run the same behavioural contract against both the fake and the real adapter
+import { describe, it, expect, beforeEach } from 'vitest';
+import type { OrderRepository } from '../../ports/OrderRepository.js';
+
+// ── Contract suite: shared across both fake and real implementations ──────────
+function describeOrderRepositoryContract(getRepo: () => OrderRepository) {
+  describe('OrderRepository contract', () => {
+    let repo: OrderRepository;
+    beforeEach(() => { repo = getRepo(); });
+
+    it('creates an order with draft status', async () => {
+      const order = await repo.create({
+        customerId: 'CUST-1',
+        items: [{ sku: 'A', qty: 1, unitPrice: 10 }],
+      });
+      expect(order.status).toBe('draft');
+      expect(order.id).toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    it('returns null for an unknown order ID', async () => {
+      expect(await repo.findById('nonexistent')).toBeNull();
+    });
+
+    it('updates status and persists the change', async () => {
+      const order = await repo.create({
+        customerId: 'CUST-2',
+        items: [{ sku: 'B', qty: 1, unitPrice: 20 }],
+      });
+      const updated = await repo.updateStatus(order.id, 'confirmed');
+      expect(updated.status).toBe('confirmed');
+      const found = await repo.findById(order.id);
+      expect(found?.status).toBe('confirmed');
+    });
+  });
+}
+
+// ── Fast unit suite: in-memory fake ─────────────────────────────────────────
+import { InMemoryOrderRepository } from '../../test-doubles/InMemoryOrderRepository.js';
+describeOrderRepositoryContract(() => new InMemoryOrderRepository());
+
+// ── Integration suite: real Postgres (CI only) ───────────────────────────────
+// import { PostgresOrderRepository } from './PostgresOrderRepository.js';
+// describeOrderRepositoryContract(() => new PostgresOrderRepository(process.env.DATABASE_URL!));
+// (Uncomment in CI; keep commented for local TDD watch loop)
+```
+
+**Why shared contract suites are essential for hexagonal TDD:** Without a contract test suite run against both the fake and the real adapter, the fake drifts from production behaviour silently. The shared `describeOrderRepositoryContract` function is the contract: any implementation that passes it is a valid `OrderRepository` adapter. Teams that adopt this pattern consistently report zero fake-divergence bugs — the contract test catches them at the integration level before production.
+
+---
+
+### London School vs Chicago/Detroit School — Full TypeScript Comparison [community]
+
+The two major TDD schools produce architecturally different codebases. Understanding both is essential for TypeScript teams: the school you choose determines your test double strategy, your object design, and your refactoring patterns.
+
+**Summary:**
+
+| Dimension | London School (Mockist) | Chicago/Detroit School (Classicist) |
+|-----------|------------------------|-------------------------------------|
+| Starting point | Acceptance test (outside-in) | Simplest domain unit (inside-out) |
+| Collaborators | Mocked (pre-specified interactions) | Real objects or fakes with real behaviour |
+| What is tested | Interaction protocol | Observable state and output |
+| Design driver | Role/responsibility discovery | Algorithm and value discovery |
+| Refactoring risk | Higher (mocks break on any rename) | Lower (fakes survive internal restructuring) |
+| Over-specification risk | High (testing HOW, not WHAT) | Low (testing outcomes) |
+| Seam creation | Automatic (mocking forces interfaces) | Deliberate (interfaces added for testability) |
+| Suitable for | Distributed object systems, microservices | Domain model, value objects, algorithms |
+
+Both schools write the test case first. The difference is in what the test case asserts and what collaborators receive.
+
+```typescript
+// ─────────────────────────────────────────────────────────────────────────────
+// SCENARIO: OrderService.confirmOrder()
+// Must: save the confirmed order, send a confirmation email, emit a domain event.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── LONDON SCHOOL: mock collaborators, assert on interactions ───────────────
+// london-school.test.ts
+import { describe, it, expect, vi } from 'vitest';
+import { OrderService } from './OrderService.js';
+import type { OrderRepository } from './ports/OrderRepository.js';
+import type { Mailer }          from './ports/Mailer.js';
+import type { EventBus }        from './ports/EventBus.js';
+
+describe('OrderService.confirmOrder — London School', () => {
+  it('saves, emails, and emits an event when confirming', async () => {
+    // Arrange: ALL collaborators are vi.fn() mocks — no real behaviour
+    const repo: OrderRepository = {
+      findById:     vi.fn().mockResolvedValue({ id: 'ORD-1', status: 'draft', customerId: 'C1' }),
+      updateStatus: vi.fn().mockResolvedValue({ id: 'ORD-1', status: 'confirmed', customerId: 'C1' }),
+      create:       vi.fn(),
+    };
+    const mailer: Mailer = {
+      send: vi.fn<[{ to: string; subject: string; body: string }], Promise<void>>()
+        .mockResolvedValue(undefined),
+    };
+    const bus: EventBus = {
+      emit: vi.fn<[string, unknown], void>(),
+    };
+    const service = new OrderService(repo, mailer, bus);
+
+    // Act
+    await service.confirmOrder('ORD-1', 'alice@example.com');
+
+    // Assert: interaction protocol — HOW the collaborators were called
+    expect(repo.updateStatus).toHaveBeenCalledWith('ORD-1', 'confirmed');
+    expect(mailer.send).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'alice@example.com', subject: expect.stringContaining('confirmed') })
+    );
+    expect(bus.emit).toHaveBeenCalledWith('order.confirmed', expect.objectContaining({ orderId: 'ORD-1' }));
+  });
+});
+
+// LONDON SCHOOL ANALYSIS:
+// ✓ Very fast to write — no fake implementations needed
+// ✓ Drives interface design (forces Mailer, EventBus interfaces)
+// ✗ Brittle: if OrderService refactors (e.g., calls updateStatus before findById),
+//   the interaction order changes and tests break — even though behaviour is identical
+// ✗ Over-specification: tests verify HOW not WHAT
+// ✗ Zero confidence that repo.updateStatus()/mailer.send() actually work together
+
+// ─── CHICAGO/DETROIT SCHOOL: real fakes, assert on observable state ──────────
+// chicago-school.test.ts
+import { InMemoryOrderRepository } from './test-doubles/InMemoryOrderRepository.js';
+import { SpyMailer }               from './test-doubles/SpyMailer.js';
+import { InMemoryEventBus }        from './test-doubles/InMemoryEventBus.js';
+
+describe('OrderService.confirmOrder — Chicago School', () => {
+  it('confirms an order and notifies the customer', async () => {
+    // Arrange: in-memory FAKES with real behaviour
+    const repo  = new InMemoryOrderRepository();
+    const mailer = new SpyMailer();
+    const bus    = new InMemoryEventBus();
+    await repo.create({ id: 'ORD-1', status: 'draft', customerId: 'C1' });
+
+    const service = new OrderService(repo, mailer, bus);
+
+    // Act
+    await service.confirmOrder('ORD-1', 'alice@example.com');
+
+    // Assert: OBSERVABLE OUTCOMES — what changed in the world?
+    const saved = await repo.findById('ORD-1');
+    expect(saved?.status).toBe('confirmed');                           // state assertion
+    expect(mailer.sent[0].to).toBe('alice@example.com');              // side effect
+    expect(bus.events).toContainEqual(
+      expect.objectContaining({ type: 'order.confirmed', orderId: 'ORD-1' })
+    );                                                                  // event emission
+  });
+
+  // ✓ Refactor-safe: OrderService can reorder internal calls — test still passes
+  // ✓ Confidence: SpyMailer, InMemoryOrderRepository have real behaviour
+  // ✓ TypeScript compile-safety: fakes implement full interfaces
+  // ✗ More upfront investment: requires fake implementations
+  // ✗ Harder to verify specific call arguments (must inspect fake state)
+});
+
+// ─── HYBRID APPROACH: Chicago for state, London for call counts on expensive ops
+// hybrid-school.test.ts
+describe('OrderService.confirmOrder — Hybrid', () => {
+  it('calls payment gateway exactly once (costly op)', async () => {
+    const repo    = new InMemoryOrderRepository(); // Chicago: real fake for persistence
+    const payment = {                              // London: mock for the costly payment call
+      charge: vi.fn<[number, string], Promise<{ transactionId: string }>>()
+        .mockResolvedValue({ transactionId: 'txn-001' }),
+    };
+    await repo.create({ id: 'ORD-1', status: 'draft', customerId: 'C1', total: 50 });
+
+    const service = new OrderService(repo, payment as any, new SpyMailer(), new InMemoryEventBus());
+    await service.confirmOrder('ORD-1', 'alice@example.com');
+
+    // Chicago assertion: persistent state is correct
+    expect((await repo.findById('ORD-1'))?.status).toBe('confirmed');
+
+    // London assertion: costly side effect happened exactly once
+    expect(payment.charge).toHaveBeenCalledTimes(1); // prevent double-charging
+    expect(payment.charge).toHaveBeenCalledWith(50, expect.any(String));
+  });
+});
+```
+
+**Production guidance on choosing a school:**
+
+```typescript
+// When to use each school — TypeScript decision guide
+
+// ── USE LONDON SCHOOL WHEN: ───────────────────────────────────────────────────
+// 1. Discovering roles: you do not yet know what collaborators exist
+//    (Outside-in TDD starts here — mock what you wish existed)
+// 2. Verifying cardinality is business-critical (payment must fire exactly once)
+//    (London mocks let you assert callCount precisely)
+// 3. The object under test has many collaborators and you want to isolate it completely
+//    (A class with 5 dependencies is hard to fake all at once)
+
+// ── USE CHICAGO SCHOOL WHEN: ─────────────────────────────────────────────────
+// 1. Domain logic is the focus (calculations, state machines, rules)
+//    (No mocking needed — pure functions are trivially Chicago-testable)
+// 2. You want test cases that survive internal refactoring
+//    (Rename a method, reorder calls — Chicago tests still pass)
+// 3. You have a typed in-memory fake already built
+//    (InMemoryOrderRepository is always the better choice over vi.fn() for repos)
+// 4. Building a library where the public API contract matters more than internals
+
+// ── NEVER MIX WITHIN A SINGLE TEST CASE: ─────────────────────────────────────
+// Mixing assertion styles (state AND interaction) in one test case produces
+// false confidence: if the state assertion passes but the interaction assertion
+// fails, you don't know which one represents the real requirement.
+// Keep each test case asserting either state (Chicago) or interaction (London).
+```
+
+**[community] The most costly TDD mistake teams make when mixing schools: asserting BOTH state and interaction in one test case.** When `expect(repo.save).toHaveBeenCalledWith(...)` (London) AND `expect(saved.status).toBe('confirmed')` (Chicago) appear in the same `it(...)` block, the test communicates two conflicting things: "check the HOW" and "check the WHAT." When one fails, the root cause is ambiguous. When the implementation is refactored (the HOW changes), the interaction assertion breaks even though the outcome is correct — a false Red. Enforce one assertion style per test case as a team standard.
+
+**[community] Outside-in TDD (London School start) transitions to Chicago after roles are discovered.** In the Double-Loop TDD pattern, the outer loop (acceptance test) uses London-style mocks to discover what collaborators are needed. Once the collaborators are named, the inner loop uses Chicago-style fakes to TDD each collaborator in isolation. This hybrid produces the best architecture: the outer loop prevents under-design, the inner loop prevents over-mocking.
+
+---
+
+### TDD for WebSocket Communication — Bidirectional Message Protocols [community]
+
+WebSocket connections are bidirectional, stateful, and asynchronous — three properties that make TDD challenging when applied naively. The correct TDD approach: extract the message-handling logic into a pure state machine (functional core), test it with synchronous test cases, and wrap it in a thin WebSocket adapter that is integration-tested separately.
+
+The key insight: **a WebSocket handler is a state machine that receives typed messages and produces typed responses.** TDD drives the state machine design; the WebSocket transport is an adapter.
+
+```typescript
+// ws-protocol.ts — typed WebSocket message protocol (drives TDD interface design)
+export type ClientMessage =
+  | { type: 'subscribe';   channel: string }
+  | { type: 'unsubscribe'; channel: string }
+  | { type: 'publish';     channel: string; payload: unknown }
+  | { type: 'ping' };
+
+export type ServerMessage =
+  | { type: 'subscribed';  channel: string; subscriberId: string }
+  | { type: 'unsubscribed'; channel: string }
+  | { type: 'message';     channel: string; payload: unknown; from: string }
+  | { type: 'pong' }
+  | { type: 'error';       code: string; reason: string };
+
+// ws-handler.ts — pure state machine: (state, message) → (new state, responses[])
+// No WebSocket API dependency — fully unit-testable
+export interface SubscriptionState {
+  subscriberId: string;
+  channels:     Set<string>;
+}
+
+export interface HandlerResult {
+  newState:  SubscriptionState;
+  responses: ServerMessage[];
+  broadcast: Array<{ channel: string; message: ServerMessage }>;
+}
+
+export function handleClientMessage(
+  state:   SubscriptionState,
+  message: ClientMessage
+): HandlerResult {
+  switch (message.type) {
+    case 'ping':
+      return {
+        newState:  state,
+        responses: [{ type: 'pong' }],
+        broadcast: [],
+      };
+
+    case 'subscribe': {
+      if (state.channels.has(message.channel)) {
+        return {
+          newState:  state,
+          responses: [{ type: 'error', code: 'ALREADY_SUBSCRIBED', reason: `Already subscribed to ${message.channel}` }],
+          broadcast: [],
+        };
+      }
+      const channels = new Set([...state.channels, message.channel]);
+      return {
+        newState:  { ...state, channels },
+        responses: [{ type: 'subscribed', channel: message.channel, subscriberId: state.subscriberId }],
+        broadcast: [],
+      };
+    }
+
+    case 'unsubscribe': {
+      if (!state.channels.has(message.channel)) {
+        return {
+          newState:  state,
+          responses: [{ type: 'error', code: 'NOT_SUBSCRIBED', reason: `Not subscribed to ${message.channel}` }],
+          broadcast: [],
+        };
+      }
+      const channels = new Set([...state.channels].filter(c => c !== message.channel));
+      return {
+        newState:  { ...state, channels },
+        responses: [{ type: 'unsubscribed', channel: message.channel }],
+        broadcast: [],
+      };
+    }
+
+    case 'publish': {
+      if (!state.channels.has(message.channel)) {
+        return {
+          newState:  state,
+          responses: [{ type: 'error', code: 'NOT_SUBSCRIBED', reason: 'Cannot publish to unsubscribed channel' }],
+          broadcast: [],
+        };
+      }
+      return {
+        newState:  state,
+        responses: [],
+        broadcast: [{
+          channel: message.channel,
+          message: { type: 'message', channel: message.channel, payload: message.payload, from: state.subscriberId },
+        }],
+      };
+    }
+  }
+}
+```
+
+```typescript
+// ws-handler.test.ts — TDD test cases: pure function, no WebSocket runtime needed
+import { describe, it, expect } from 'vitest';
+import { handleClientMessage, SubscriptionState } from './ws-handler.js';
+
+// Fresh state factory — pure, no side effects
+const makeState = (overrides: Partial<SubscriptionState> = {}): SubscriptionState => ({
+  subscriberId: 'sub-001',
+  channels:     new Set<string>(),
+  ...overrides,
+});
+
+describe('handleClientMessage', () => {
+  // Test case 1: RED — ping produces pong
+  it('responds with pong to a ping message', () => {
+    const state  = makeState();
+    const result = handleClientMessage(state, { type: 'ping' });
+    expect(result.responses).toEqual([{ type: 'pong' }]);
+    expect(result.broadcast).toHaveLength(0);
+    expect(result.newState).toBe(state); // state unchanged — no mutation
+  });
+
+  // Test case 2: RED — subscribe to a new channel
+  it('adds channel to state and responds subscribed', () => {
+    const state  = makeState();
+    const result = handleClientMessage(state, { type: 'subscribe', channel: 'orders' });
+    expect(result.responses).toEqual([{ type: 'subscribed', channel: 'orders', subscriberId: 'sub-001' }]);
+    expect(result.newState.channels.has('orders')).toBe(true);
+    expect(result.newState.channels.has('orders')).not.toBe(state.channels.has('orders')); // immutable
+  });
+
+  // Test case 3: RED — subscribe to an already-subscribed channel produces error
+  it('returns error when subscribing to already-subscribed channel', () => {
+    const state  = makeState({ channels: new Set(['orders']) });
+    const result = handleClientMessage(state, { type: 'subscribe', channel: 'orders' });
+    expect(result.responses[0]).toMatchObject({ type: 'error', code: 'ALREADY_SUBSCRIBED' });
+    expect(result.newState.channels.size).toBe(1); // state unchanged
+  });
+
+  // Test case 4: RED — unsubscribe removes channel
+  it('removes channel from state and responds unsubscribed', () => {
+    const state  = makeState({ channels: new Set(['orders', 'payments']) });
+    const result = handleClientMessage(state, { type: 'unsubscribe', channel: 'orders' });
+    expect(result.responses).toEqual([{ type: 'unsubscribed', channel: 'orders' }]);
+    expect(result.newState.channels.has('orders')).toBe(false);
+    expect(result.newState.channels.has('payments')).toBe(true); // other channel preserved
+  });
+
+  // Test case 5: RED — publish broadcasts to channel
+  it('broadcasts a message to the channel when subscribed', () => {
+    const state  = makeState({ channels: new Set(['orders']) });
+    const result = handleClientMessage(state, { type: 'publish', channel: 'orders', payload: { orderId: 'ORD-1' } });
+    expect(result.responses).toHaveLength(0); // no direct response
+    expect(result.broadcast).toHaveLength(1);
+    expect(result.broadcast[0].channel).toBe('orders');
+    expect(result.broadcast[0].message).toMatchObject({
+      type: 'message', channel: 'orders', from: 'sub-001',
+    });
+  });
+
+  // Test case 6: RED — publish to non-subscribed channel returns error
+  it('returns error when publishing to an unsubscribed channel', () => {
+    const state  = makeState(); // no subscriptions
+    const result = handleClientMessage(state, { type: 'publish', channel: 'orders', payload: {} });
+    expect(result.responses[0]).toMatchObject({ type: 'error', code: 'NOT_SUBSCRIBED' });
+    expect(result.broadcast).toHaveLength(0);
+  });
+});
+```
+
+**Wiring the state machine to a real WebSocket connection (adapter layer):**
+
+```typescript
+// ws-adapter.ts — thin imperative shell: wires the pure state machine to ws
+// This layer is integration-tested (not unit TDD'd)
+import type { WebSocket } from 'ws'; // or 'bun:websocket', '@cloudflare/workers-types', etc.
+import { handleClientMessage, SubscriptionState } from './ws-handler.js';
+import type { ClientMessage, ServerMessage } from './ws-protocol.js';
+
+export function createConnectionHandler(
+  ws: WebSocket,
+  subscriberId: string,
+  broadcast: (channel: string, message: ServerMessage) => void
+): () => void {
+  let state: SubscriptionState = { subscriberId, channels: new Set() };
+
+  function send(msg: ServerMessage): void {
+    if (ws.readyState === 1 /* OPEN */) {
+      ws.send(JSON.stringify(msg));
+    }
+  }
+
+  ws.on('message', (raw: Buffer) => {
+    try {
+      const message = JSON.parse(raw.toString()) as ClientMessage;
+      const result = handleClientMessage(state, message);
+      state = result.newState;
+      result.responses.forEach(send);
+      result.broadcast.forEach(({ channel, message: msg }) => broadcast(channel, msg));
+    } catch {
+      send({ type: 'error', code: 'INVALID_JSON', reason: 'Message must be valid JSON' });
+    }
+  });
+
+  // Return cleanup function — subscribe the caller to handle connection close
+  return () => { state.channels.clear(); };
+}
+```
+
+**[community] The WebSocket TDD pattern that eliminates 90% of WebSocket bugs:** Model the connection state as an immutable value object (`SubscriptionState`) and the message handler as a pure function `(state, message) → result`. This pattern means every WebSocket behaviour is testable with a synchronous `it()` block — no WebSocket server setup, no async waiting for message delivery. The only integration test needed is "does the wire serialisation (JSON parse/stringify) work?" — one test case, not fifty.
+
+**[community] WebSocket test suites that use a mock `ws` library (e.g., `mock-socket`) are unnecessarily complex.** Mock WebSocket libraries simulate the bidirectional transport layer — but the transport is not what TDD should test. When the message-handling logic is extracted into a pure function (as above), there is nothing in the transport layer to TDD. Use `mock-socket` only for end-to-end integration tests that verify the full JSON wire protocol works correctly. The unit-level state machine tests run without any WebSocket library at all.
+
+---
+
+### Real-World Gotchas [community] — Additions (iter 29)
+
+56. **[community] Hexagonal architecture TDD breaks down when adapters contain business logic that is tested via integration tests only.** A common drift pattern: a team starts with a clean hexagon but incrementally adds `if` statements to the Postgres adapter (filtering, sorting, aggregation in SQL). These branches are only reachable in integration tests (which require a DB container), meaning the fast TDD inner loop cannot drive them. The symptom: integration test suite takes 8 minutes; unit tests finish in 3 seconds but do not cover critical query logic. The rule: **if a branch in an adapter cannot be exercised by the in-memory fake, the branch is in the wrong layer.** Refactor by lifting the branching logic into the application core and keeping the adapter as a pure translator. The test case that drove you to add the branch belongs in a unit test, not an integration test.
+
+57. **[community] London-school mocks with `vi.fn()` silently pass after interface changes in TypeScript.** When `OrderRepository.findById` is renamed to `findByOrderId` (a legitimate refactor), London-school test cases using `{ findById: vi.fn() }` continue to compile and pass — because the mock object is typed `as OrderRepository` (or with `as any`), suppressing the TypeScript error. Chicago-school fakes (`class InMemoryOrderRepository implements OrderRepository`) immediately produce a compile error on the old method name. The diagnostic: if your test doubles use `vi.fn()` for repository methods, run `tsc --noEmit` after every interface change and grep for `vi.fn()` mock objects that are not typed against the interface. This is the most important maintenance argument for Chicago-school fakes over London-school mocks in TypeScript projects.
+
+58. **[community] WebSocket TDD state machine tests are invalidated by mutable `Set` sharing between state transitions.** In TypeScript, `new Set([...existingSet, 'newItem'])` creates a new Set — but developers sometimes write `existingSet.add('newItem')` which mutates the original Set in place, breaking the immutability contract of the state machine. The TDD symptom: test case 2 (`subscribe to channel`) passes, but test case 3 (`double-subscribe error`) also passes the state mutation check — because both share the same underlying Set object. The fix: always create `new Set([...state.channels, ...])` for additions and `new Set([...state.channels].filter(...))` for removals. Enable `noUncheckedIndexedAccess: true` and `readonly` on the `channels` field in `SubscriptionState` to make accidental mutation a TypeScript compile error. A TDD test case that asserts `result.newState !== state` (reference inequality) catches in-place mutation during the Red→Green cycle.
+
+---
+
+| WebSocket Protocol Testing | Article | https://developer.mozilla.org/en-US/docs/Web/API/WebSocket | Web standard WebSocket API — message/close/error event model; typed message handling for TDD |
+| Hexagonal Architecture — Alistair Cockburn | Article | https://alistair.cockburn.us/hexagonal-architecture/ | Original "Ports & Adapters" definition from 2005; why application core independence enables TDD without infrastructure |
+| Growing Object-Oriented Software Guided by Tests | Book | https://www.growing-object-oriented-software.com/ | Freeman & Pryce — canonical outside-in (London school) TDD reference; acceptance-test outer loop, unit-test inner loop |
+| Test Double — Martin Fowler | Article | https://martinfowler.com/bliki/TestDouble.html | Canonical taxonomy: Dummy, Fake, Stub, Spy, Mock — when to use each, Chicago vs London school implications |

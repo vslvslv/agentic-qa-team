@@ -1,5 +1,5 @@
 # CI/CD Testing — QA Methodology Guide
-<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 39 | score: 100/100 | date: 2026-05-12 -->
+<!-- lang: TypeScript | topic: ci-cd-testing | iteration: 40 | score: 100/100 | date: 2026-05-12 -->
 <!-- sources: training knowledge + iterative refinement pass | new: typescriptlang.org/docs/handbook/release-notes/typescript-5-9 (TS 5.9 May 2025: --module node20 stable — locked Node 20 semantics with no future behavior changes unlike nodenext; cache instantiations on mapper types — ~11% faster tsc on complex libraries like Zod/tRPC; types:[] in tsc --init default tsconfig blocks accidental @types/* ambient pollution; ArrayBuffer type hierarchy change — Uint8Array.buffer now returns SharedArrayBuffer|ArrayBuffer union, may produce new CI type errors on upgrade; moduleDetection:force default in tsc --init; import defer deferred module evaluation — requires --module preserve or esnext, NOT supported under node20/node18/nodenext, reduces test cold-start by deferring heavy fixture init to first property access; noUncheckedSideEffectImports — new strict flag errors on import 'polyfill' if module cannot be resolved or has no @types declarations, catches dead imports silently ignored before TS 5.9, enable as non-blocking audit first on polyfill-heavy codebases) | prev: typescriptlang.org/docs/handbook/release-notes/typescript-5-8 (TS 5.8 Feb 2025: --erasableSyntaxOnly validates Node.js type-stripping compatibility — errors on enums/namespaces/parameter-properties/import=/export=; --module node18 stable — disallows require() of ESM; --module nodenext allows require() of ESM on Node 22+; --libReplacement false skips @typescript/lib-* package lookups for faster CI; granular branch return type checking catches any-infected return expressions) | nodejs.org/blog/release/v24.0.0 (Node 24 LTS: --test-global-setup for zero-framework global setup/teardown, snapshot testing stable since Node 23.4, programmatic coverage thresholds lineCoverage/branchCoverage/functionCoverage in node:test run(), type stripping at RC status, npm 11 bundled: --ignore-scripts suppresses prepare, bulk audit endpoint fallback removed, requires Node ^20.17.0 || >=22.9.0) | prev: playwright.dev/docs/release-notes (v1.54: trace retain-on-failure-and-retries; v1.57: Chrome for Testing replaces Chromium; v1.60: test.abort() guard-rail fixture, HAR recording as first-class tracing API via tracing.startHar()/stopHar(), aria snapshot boxes option for bounding-box AI processing, locator.drop() for external drag-and-drop file uploads, browser.on('context') lifecycle event, testInfoError.errorContext for richer assertion diagnostics; v1.59: Screencast API, browser.bind(), --debug=cli, PLAYWRIGHT_DASHBOARD, await using for resources), vitest.dev/guide/migration (v4.0: poolOptions.threads.maxThreads→maxWorkers, singleThread→maxWorkers:1+isolate:false, VITEST_MAX_WORKERS, coverage.all removed, coverage.include now required, V8 AST-based remapping; v5.0-beta: attachmentsDir renamed .vitest/attachments/, sequential option removed→concurrent, inlined expect package, blob reporter default .vitest/blob/, non-sharded multi-environment report merging, V8 coverage now tracks node:child_process+node:worker_threads), github.blog (Copilot Actions minutes billing June 2026, OIDC custom properties GA March 2026, workflow rerun limit 50 April 2026, custom runner images GA March 2026), nektos/act (v0.2.79: --validate/--strict workflow flags), vitest.dev/blog/vitest-4-1 (GitHub Actions job summary reporter zero-config, viteModuleRunner:false experimental, aroundEach/aroundAll, detect-async-leaks, test tags, coverage.changed, Vite 8 support, mockThrow/mockThrowOnce, Chai-style mock assertions, vi.defineHelper, agent reporter, browser page.mark/locator.mark), jestjs.io/blog (Jest 30 June 2025: 37% faster runs, 77% lower memory, native jest.config.ts, globalsCleanup option, retryTimes waitBeforeRetry/retryImmediately, unrs-resolver, babel-plugin-transform-barrels barrel optimizer, expect.arrayOf, jest.advanceTimersToNextFrame, jest.onGenerateMock, using keyword spy cleanup, test.each %$ placeholder) -->
 <!-- terminology: ISTQB CTFL 4.0 — "test level" (not "test layer"), "test suite" (not "test set"), "test case" (not "test"), "defect" (not "bug") -->
 
@@ -9450,6 +9450,691 @@ if (large.length > 0) {
 > [community] The most common cache bloat source: Playwright browser binaries cached without scoping to the Playwright version. When Playwright updates internally (e.g., via a patch release of `@playwright/test`), the browser binary may change but the lockfile hash stays the same — so the cache hit serves the wrong binary version. Always include the Playwright version in the cache key: `key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}`. Better yet, extract the version string explicitly and include it: `npx playwright --version | cut -d' ' -f2`.
 
 ---
+
+### CTRF — Common Test Report Format for Portable CI Reporting [community]
+
+CTRF (Common Test Report Format) is a vendor-neutral JSON schema for test results, designed to work across all test frameworks (Jest, Vitest, Playwright, Mocha, Cypress, k6, and more) and all CI providers (GitHub Actions, GitLab CI, CircleCI, Buildkite). Unlike JUnit XML — which has no consistent schema for flaky test data, retry counts, or attachment metadata — CTRF captures a richer result model with first-class support for retry history, flakiness tagging, suite metadata, and environment attributes.
+
+**Why CTRF matters for CI:** JUnit XML was designed in the 1990s for single-run Java test suites. It lacks fields for `retries`, `flaky` status, `attachments`, and `ai_summary`. CTRF defines all of these in a versioned JSON schema, enabling a single reporting step (`ctrf-io/github-test-reporter`) to produce PR annotations, flaky test permalinks, trend analysis, and AI-powered failure summaries — regardless of the test runner.
+
+> [community] Teams that adopt CTRF as their CI test reporting format report two immediate wins: (1) a single reporting step replaces 3–5 provider-specific reporter integrations (jest-junit, playwright-junit, mocha-junit), and (2) the flakiness tracking fields (`retries`, `flaky: true`) give accurate per-test flakiness rates rather than inferred rates from parallel retry counts. The migration cost is low — most popular test frameworks have a CTRF reporter published on npm.
+
+**CTRF JSON schema (minimal — what every report must contain):**
+
+```typescript
+// types/ctrf.d.ts — CTRF v1 schema (simplified, from ctrf.io)
+interface CtrfReport {
+  results: {
+    tool: {
+      name: string;          // "jest" | "vitest" | "playwright" | ...
+      version?: string;
+    };
+    summary: {
+      tests: number;
+      passed: number;
+      failed: number;
+      pending: number;
+      skipped: number;
+      other: number;
+      start: number;         // Unix ms timestamp
+      stop: number;
+    };
+    tests: CtrfTest[];
+    environment?: CtrfEnvironment;
+  };
+}
+
+interface CtrfTest {
+  name: string;
+  status: 'passed' | 'failed' | 'skipped' | 'pending' | 'other';
+  duration: number;           // milliseconds
+  message?: string;           // failure message
+  trace?: string;             // stack trace
+  rawStatus?: string;         // original runner status
+  tags?: string[];            // Vitest tags, Playwright annotations
+  suite?: string;             // parent describe block
+  filePath?: string;
+  retries?: number;           // number of retry attempts
+  flaky?: boolean;            // true if passed after retrying
+  browser?: string;           // for e2e: 'chromium' | 'firefox' | 'webkit'
+  ai?: string;                // AI-generated failure summary
+  attachments?: Array<{ name: string; contentType: string; path: string }>;
+}
+
+interface CtrfEnvironment {
+  reportName?: string;
+  buildName?: string;
+  buildNumber?: string;
+  buildUrl?: string;
+  repositoryName?: string;
+  repositoryUrl?: string;
+  commit?: string;
+  branchName?: string;
+  osPlatform?: string;
+  osRelease?: string;
+  testEnvironment?: string;
+}
+```
+
+**Jest CTRF reporter setup (TypeScript):**
+
+```bash
+# Install the Jest CTRF reporter
+npm install --save-dev jest-ctrf-json-reporter
+```
+
+```typescript
+// jest.config.ts — add CTRF reporter alongside default reporters
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  reporters: [
+    'default',                                   // keep default console output
+    ['jest-ctrf-json-reporter', {
+      outputFile: 'ctrf/jest-ctrf-report.json',  // CTRF JSON output
+    }],
+  ],
+  maxWorkers: '50%',
+  coverageProvider: 'v8',
+};
+
+export default config;
+```
+
+**Vitest CTRF reporter setup (TypeScript):**
+
+```bash
+npm install --save-dev vitest-ctrf-json-reporter
+```
+
+```typescript
+// vitest.config.ts — CTRF reporter for Vitest
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    reporters: [
+      'default',
+      ['vitest-ctrf-json-reporter', {
+        outputFile: 'ctrf/vitest-ctrf-report.json',
+        includeEnvironment: true,   // capture Node version, OS, branch
+      }],
+    ],
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+    },
+  },
+});
+```
+
+**Playwright CTRF reporter:**
+
+```bash
+npm install --save-dev playwright-ctrf-json-reporter
+```
+
+```typescript
+// playwright.config.ts — CTRF reporter for Playwright
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  reporter: [
+    ['html'],
+    ['playwright-ctrf-json-reporter', {
+      outputFile: 'ctrf/playwright-ctrf-report.json',
+      // Include browser and OS metadata in the CTRF environment block
+      includeTestSuiteProperty: true,
+    }],
+  ],
+  retries: process.env['CI'] ? 2 : 0,
+  use: {
+    trace: 'retain-on-failure-and-retries',
+  },
+});
+```
+
+**GitHub Actions — CTRF reporting step with `ctrf-io/github-test-reporter`:**
+
+```yaml
+# .github/workflows/ci.yml — unified CTRF test reporting
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage
+        continue-on-error: true   # capture CTRF report even on test failure
+
+      # Publish CTRF report as PR annotation + job summary
+      - name: Publish CTRF test report
+        uses: ctrf-io/github-test-reporter@v1
+        with:
+          report-path: './ctrf/*.json'
+          # Generate detailed PR comment with failed test details
+          github-report: true
+          # Flaky test detection: tests that passed after retries
+          flaky-rate-report: true
+          # Show historical trend (requires artifact from previous run)
+          summary-delta-report: true
+          upload-artifact: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: always()   # always report — even when tests fail
+```
+
+**CTRF merge for multi-runner sharded tests:**
+
+```yaml
+  merge-reports:
+    needs: [unit, integration, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: ctrf-all/
+          pattern: ctrf-*
+          merge-multiple: true
+      # Merge all CTRF reports into one for unified PR comment
+      - name: Merge CTRF reports
+        run: npx ctrf merge ctrf-all/ --output ctrf/merged-report.json
+      - name: Publish merged CTRF report
+        uses: ctrf-io/github-test-reporter@v1
+        with:
+          report-path: './ctrf/merged-report.json'
+          github-report: true
+          flaky-rate-report: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: always()
+```
+
+**TypeScript script to generate a CTRF report from any custom test runner output:**
+
+```typescript
+// scripts/to-ctrf.ts — convert custom test results to CTRF format
+import * as fs from 'fs';
+import type { CtrfReport, CtrfTest } from '../types/ctrf';
+
+interface CustomResult {
+  suiteName: string;
+  testName: string;
+  passed: boolean;
+  durationMs: number;
+  errorMessage?: string;
+  retryCount?: number;
+}
+
+function customToCTRF(results: CustomResult[], toolName: string): CtrfReport {
+  const tests: CtrfTest[] = results.map(r => ({
+    name: `${r.suiteName} > ${r.testName}`,
+    status: r.passed ? 'passed' : 'failed',
+    duration: r.durationMs,
+    message: r.errorMessage,
+    retries: r.retryCount ?? 0,
+    flaky: !r.passed && (r.retryCount ?? 0) > 0,  // failed initially but retried
+    suite: r.suiteName,
+  }));
+
+  const passed = tests.filter(t => t.status === 'passed').length;
+  const failed = tests.filter(t => t.status === 'failed').length;
+  const now = Date.now();
+
+  return {
+    results: {
+      tool: { name: toolName },
+      summary: {
+        tests: tests.length,
+        passed,
+        failed,
+        pending: 0,
+        skipped: 0,
+        other: 0,
+        start: now - results.reduce((sum, r) => sum + r.durationMs, 0),
+        stop: now,
+      },
+      tests,
+      environment: {
+        branchName: process.env['GITHUB_REF_NAME'] ?? 'local',
+        commit: process.env['GITHUB_SHA'] ?? 'local',
+        buildNumber: process.env['GITHUB_RUN_NUMBER'] ?? '0',
+        osPlatform: process.platform,
+      },
+    },
+  };
+}
+
+// Read custom format, convert to CTRF, write output
+const input = JSON.parse(fs.readFileSync(process.argv[2]!, 'utf8')) as CustomResult[];
+const report = customToCTRF(input, 'custom-runner');
+fs.mkdirSync('ctrf', { recursive: true });
+fs.writeFileSync('ctrf/custom-ctrf-report.json', JSON.stringify(report, null, 2));
+console.log(`[to-ctrf] Converted ${input.length} results → ctrf/custom-ctrf-report.json`);
+```
+
+> [community] The CTRF `flaky: true` field is the format's most operationally valuable addition over JUnit XML. A test result with `flaky: true` means it was initially flagged as failing (non-passing on first attempt) but ultimately passed on retry. This is distinct from a test that simply failed. The `ctrf-io/github-test-reporter` surfaces flaky tests in a dedicated section of the PR comment — separating "tests that reliably fail" from "tests that passed after a fight". Teams that track CTRF flakiness rates per PR (not per run) build a much more accurate picture of test suite health than teams using pass/fail binary CI outcomes alone.
+
+---
+
+### GitHub Actions Merge Queue (`merge_group` event) [community]
+
+GitHub's merge queue (GA since May 2023, widely adopted by 2024) addresses a critical problem in high-velocity teams: two PRs that each pass CI individually can conflict and break `main` when merged simultaneously. The merge queue batches PRs and tests each combination before merging — the CI workflow must respond to the `merge_group` event, not just `pull_request`.
+
+**Why this matters for CI architecture:** A CI workflow that only triggers on `push` or `pull_request` will appear to pass for every PR, but the merge queue commit (which combines one or more PRs with the current `main`) may not trigger the same workflow — or may trigger it without the test results being required. This is a silent gap: code that passes PR CI fails merge queue CI without blocking the merge, because the merge queue status check is not configured as required.
+
+> [community] Teams that enable merge queues without updating their CI workflows to handle `merge_group` report the same failure mode: the merge queue shows a green checkmark (no required status checks configured for the `merge_group` context), merges the combined branches into `main`, and the `main` branch goes red. The fix is to add `merge_group:` to the workflow `on:` trigger and add the resulting status check to the merge queue configuration as a required check.
+
+**Updating an existing CI workflow to support merge queues:**
+
+```yaml
+# .github/workflows/ci.yml — add merge_group trigger alongside existing triggers
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Add this: merge_group triggers when a PR enters the merge queue
+  # The merge queue creates a temporary branch (gh-readonly-queue/main/...) and pushes
+  # a commit that combines the PR with the current queue head
+  merge_group:
+    types: [checks_requested]   # only meaningful type for merge queues
+
+concurrency:
+  # Separate concurrency group for merge_group — never cancel a merge queue run
+  group: ${{ github.workflow }}-${{ github.event_name == 'merge_group' && github.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run lint
+
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm test -- --ci --coverage
+
+  # e2e: run full suite on merge_group, smoke only on PR
+  e2e:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run e2e tests
+        run: |
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            # Full e2e suite in merge queue — catches integration conflicts
+            npx playwright test
+          else
+            # Smoke only on PR — fast feedback
+            npx playwright test --grep @smoke
+          fi
+```
+
+**TypeScript helper to detect merge queue context:**
+
+```typescript
+// src/test-utils/ci-context.ts — detect merge queue vs PR context in test setup
+export type CIContext = 'merge_group' | 'pull_request' | 'push' | 'local';
+
+export function getCIContext(): CIContext {
+  if (!process.env['CI']) return 'local';
+
+  // GitHub Actions sets GITHUB_EVENT_NAME
+  const eventName = process.env['GITHUB_EVENT_NAME'];
+  if (eventName === 'merge_group') return 'merge_group';
+  if (eventName === 'pull_request') return 'pull_request';
+  if (eventName === 'push') return 'push';
+  return 'local';
+}
+
+// Use in test setup: skip expensive setup in PR context, run fully in merge queue
+export function shouldRunFullIntegration(): boolean {
+  const ctx = getCIContext();
+  return ctx === 'merge_group' || ctx === 'push';
+}
+```
+
+```typescript
+// tests/integration/payment-flow.test.ts — context-aware test setup
+import { describe, it, beforeAll } from 'vitest';
+import { shouldRunFullIntegration } from '../../src/test-utils/ci-context';
+
+describe('Payment flow — integration', () => {
+  // Seed full transaction history only in merge queue / main runs
+  // PR runs use minimal seed (faster setup)
+  beforeAll(async () => {
+    if (shouldRunFullIntegration()) {
+      await seedFullTransactionHistory();   // 500 transactions, 3s setup
+    } else {
+      await seedMinimalTestData();           // 10 transactions, 200ms setup
+    }
+  });
+
+  it('processes a refund correctly', async () => {
+    // ... test body
+  });
+});
+
+async function seedFullTransactionHistory(): Promise<void> {
+  // implementation
+}
+async function seedMinimalTestData(): Promise<void> {
+  // implementation
+}
+```
+
+**Configuring merge queue in GitHub repository settings:**
+
+The merge queue must be enabled in the repository branch protection rules AND the relevant status checks must be configured as required for the `merge_group` context (not just the `pull_request` context):
+
+```yaml
+# .github/workflows/merge-queue-gate.yml — dedicated merge queue gate workflow
+# This workflow only runs in the merge queue context — validates the combined commit
+name: Merge Queue Gate
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  # Full integration test suite — runs only in the merge queue
+  full-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: test }
+        options: --health-cmd pg_isready --health-interval 10s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      - run: npm run test:integration:full
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
+          CI: true
+          GITHUB_EVENT_NAME: merge_group
+```
+
+> [community] The merge queue `concurrency` group needs special handling: `cancel-in-progress: true` must NOT apply to merge queue runs. If two PRs are queued and the second run cancels the first, the first PR is ejected from the queue with a "cancelled" status and must re-enter — doubling the queue delay. Always scope concurrency cancellation to non-merge-group contexts using the conditional shown above.
+
+> [community] A subtle merge queue anti-pattern: configuring the required status check by branch name (`gh-readonly-queue/main/*`) rather than by workflow name. Branch-name-based status checks require a wildcard in GitHub's branch protection settings, which some organizations disable for security reasons. The reliable pattern is to configure required status checks by the workflow's exact job name (e.g., `unit`, `integration`) and ensure those job names match between the `pull_request` and `merge_group` contexts.
+
+---
+
+### Automated Flaky Test Quarantine via GitHub Issues [community]
+
+Manual flakiness quarantine (updating a quarantine list, filing a backlog ticket) breaks down at scale. When a test fails multiple times across different CI runs, the workflow should automatically create a GitHub Issue, label the test as flaky in the PR comment, and add the test to the quarantine list — with no human intervention required until the fix is ready.
+
+> [community] Teams with 50+ test cases and active development report that manual flakiness triage takes 2–4 hours per sprint — the developer has to find the failing test in CI logs, look up whether it has been flaky before, file an issue, update the quarantine list, and re-run CI. Full automation of these steps reduces the triage overhead to zero and ensures every flaky test has a tracking issue within minutes of detection, not days.
+
+**Automated flakiness detection and issue creation (GitHub Actions + TypeScript):**
+
+```typescript
+// scripts/auto-quarantine.ts — auto-create GitHub issue for newly-flaky tests
+import * as fs from 'fs';
+
+interface CtrfTest {
+  name: string;
+  status: 'passed' | 'failed';
+  retries?: number;
+  flaky?: boolean;
+  suite?: string;
+  filePath?: string;
+}
+
+interface CtrfReport {
+  results: {
+    tests: CtrfTest[];
+    summary: { failed: number; tests: number };
+    environment?: { branchName?: string; commit?: string; buildNumber?: string };
+  };
+}
+
+async function autoQuarantine(reportPath: string): Promise<void> {
+  const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as CtrfReport;
+  const flakyTests = report.results.tests.filter(t => t.flaky === true);
+
+  if (flakyTests.length === 0) {
+    console.log('[auto-quarantine] No flaky tests detected — nothing to do.');
+    return;
+  }
+
+  const githubToken = process.env['GITHUB_TOKEN'];
+  const repo = process.env['GITHUB_REPOSITORY'];      // e.g., 'myorg/myrepo'
+  const runUrl = `https://github.com/${repo}/actions/runs/${process.env['GITHUB_RUN_ID']}`;
+  const branch = report.results.environment?.branchName ?? 'unknown';
+  const commit = report.results.environment?.commit?.slice(0, 8) ?? 'unknown';
+
+  if (!githubToken || !repo) {
+    console.warn('[auto-quarantine] GITHUB_TOKEN or GITHUB_REPOSITORY not set — skipping issue creation');
+    return;
+  }
+
+  for (const test of flakyTests) {
+    const issueTitle = `[flaky] ${test.name}`;
+
+    // Check if issue already exists to avoid duplicates
+    const searchRes = await fetch(
+      `https://api.github.com/search/issues?q=${encodeURIComponent(`is:issue label:flaky "${issueTitle}" repo:${repo}`)}`,
+      { headers: { Authorization: `Bearer ${githubToken}`, 'User-Agent': 'auto-quarantine' } },
+    );
+    const { total_count: existing } = await searchRes.json() as { total_count: number };
+
+    if (existing > 0) {
+      console.log(`[auto-quarantine] Issue already exists for: ${test.name} — skipping`);
+      continue;
+    }
+
+    // Create a new issue for this flaky test
+    const issueBody = [
+      `## Flaky Test Detected`,
+      ``,
+      `**Test:** \`${test.name}\``,
+      `**Suite:** \`${test.suite ?? 'unknown'}\``,
+      `**File:** \`${test.filePath ?? 'unknown'}\``,
+      `**Retries needed:** ${test.retries ?? 1}`,
+      ``,
+      `**CI Run:** [View run](${runUrl})`,
+      `**Branch:** \`${branch}\``,
+      `**Commit:** \`${commit}\``,
+      ``,
+      `### Next Steps`,
+      `1. Add to quarantine list in \`tests/quarantine.ts\` to stop blocking CI`,
+      `2. Investigate root cause (timing? shared state? external dependency?)`,
+      `3. Fix and remove from quarantine list in the same PR`,
+      ``,
+      `*This issue was created automatically by the auto-quarantine workflow.*`,
+    ].join('\n');
+
+    const createRes = await fetch(
+      `https://api.github.com/repos/${repo}/issues`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'auto-quarantine',
+        },
+        body: JSON.stringify({
+          title: issueTitle,
+          body: issueBody,
+          labels: ['flaky', 'test-quality', 'auto-created'],
+        }),
+      },
+    );
+
+    if (createRes.ok) {
+      const issue = await createRes.json() as { html_url: string; number: number };
+      console.log(`[auto-quarantine] Created issue #${issue.number}: ${issue.html_url}`);
+    } else {
+      const error = await createRes.text();
+      console.error(`[auto-quarantine] Failed to create issue: ${error}`);
+    }
+  }
+}
+
+autoQuarantine(process.env['CTRF_REPORT'] ?? 'ctrf/ctrf-report.json').catch(console.error);
+```
+
+**GitHub Actions workflow — run auto-quarantine after tests:**
+
+```yaml
+# .github/workflows/ci.yml — auto-quarantine step after tests
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write       # required: create issues for flaky tests
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+
+      # Run tests with CTRF reporter (captures retry/flaky data)
+      - run: npm test -- --ci
+        continue-on-error: true
+
+      # Auto-create GitHub Issues for newly-flaky tests
+      - name: Auto-quarantine flaky tests
+        run: npx ts-node scripts/auto-quarantine.ts
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CTRF_REPORT: ctrf/jest-ctrf-report.json
+
+      # Publish CTRF report to PR comment (shows flaky section)
+      - name: Publish CTRF test report
+        uses: ctrf-io/github-test-reporter@v1
+        with:
+          report-path: './ctrf/*.json'
+          github-report: true
+          flaky-rate-report: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: always()
+```
+
+**Quarantine list management (TypeScript, enforced by custom jest/vitest reporter):**
+
+```typescript
+// tests/quarantine.ts — centralized quarantine list (auto-maintained by auto-quarantine script)
+// Each entry links to the tracking GitHub issue
+export const QUARANTINED_TESTS: Record<string, { issue: string; since: string }> = {
+  'UserAuthFlow > should refresh token silently': {
+    issue: 'https://github.com/myorg/myrepo/issues/142',
+    since: '2025-11-03',
+  },
+  'PaymentForm > submits on Enter key': {
+    issue: 'https://github.com/myorg/myrepo/issues/156',
+    since: '2025-11-10',
+  },
+};
+
+// Fail CI if a test has been quarantined for > 30 days (stale quarantine is a defect)
+export function auditQuarantineAge(): void {
+  const now = new Date();
+  const STALE_THRESHOLD_DAYS = 30;
+
+  for (const [testName, meta] of Object.entries(QUARANTINED_TESTS)) {
+    const since = new Date(meta.since);
+    const ageDays = Math.floor((now.getTime() - since.getTime()) / (1000 * 60 * 60 * 24));
+    if (ageDays > STALE_THRESHOLD_DAYS) {
+      console.error(
+        `[quarantine-audit] STALE: "${testName}" has been quarantined for ${ageDays} days` +
+        ` (threshold: ${STALE_THRESHOLD_DAYS} days). Issue: ${meta.issue}`,
+      );
+    }
+  }
+}
+```
+
+**Stale quarantine audit as a CI gate:**
+
+```yaml
+# .github/workflows/ci.yml — quarantine age gate (prevents forgotten flaky tests)
+  quarantine-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: npm }
+      - run: npm ci
+      # Fail CI if any test has been quarantined for > 30 days
+      - name: Audit quarantine age
+        run: node --import tsx/esm tests/quarantine-audit.ts
+```
+
+```typescript
+// tests/quarantine-audit.ts — standalone script for CI gate
+import { QUARANTINED_TESTS, auditQuarantineAge } from './quarantine.js';
+
+const stale = Object.entries(QUARANTINED_TESTS).filter(([, meta]) => {
+  const ageDays = Math.floor((Date.now() - new Date(meta.since).getTime()) / 86_400_000);
+  return ageDays > 30;
+});
+
+auditQuarantineAge();
+
+if (stale.length > 0) {
+  console.error(`\n[quarantine-audit] ${stale.length} test(s) stale > 30 days.`);
+  console.error('Either fix the flaky test or escalate to a P1 defect.');
+  process.exit(1);
+}
+
+console.log(`[quarantine-audit] All ${Object.keys(QUARANTINED_TESTS).length} quarantined tests are within age threshold.`);
+```
+
+> [community] The stale quarantine gate — failing CI when a test has been quarantined for more than 30 days — is the most effective forcing function for flakiness remediation. Without it, quarantined tests accumulate silently. Teams that introduce the 30-day gate typically fix their oldest flaky tests within the same sprint of enabling it: the approaching deadline is more motivating than a backlog issue. Teams that cannot fix the test within 30 days should escalate to a P1 defect with explicit owner assignment.
+
+> [community] The auto-quarantine workflow has a critical security consideration: it runs with `permissions: issues: write`. This permission must be scoped carefully on forks — a malicious PR from a fork could trigger the workflow and spam issues. Limit `issues: write` to workflows triggered by `merge_group` and `push` (not `pull_request` from forks). Use `pull_request_target` only after carefully reviewing the security implications.
+
+> [community] Flaky test tracking with auto-created issues pays an unexpected dividend: the issue history becomes a diagnostic dataset. Teams that review their "flaky" label issues quarterly find patterns: 40% of flaky tests cluster around the same two modules (usually async state management or database timing), 30% were caused by a specific infrastructure change (Node.js upgrade, database migration), and 30% are genuinely non-deterministic. This pattern analysis drives architectural improvements that eliminate entire classes of flakiness.
+
+---
+
+## Key Resources (Updated)
+
+| Name | Type | URL | Why useful |
+|------|------|-----|------------|
+| CTRF — Common Test Report Format | official-docs | https://ctrf.io/ | Vendor-neutral JSON schema for portable test results across all runners |
+| ctrf-io/github-test-reporter | github-action | https://github.com/ctrf-io/github-test-reporter | Rich PR annotations, flaky test tracking, trend analysis from CTRF reports |
+| GitHub Merge Queue Docs | official-docs | https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue | merge_group event, required status checks, queue configuration |
+| nektos/act | github-repo | https://github.com/nektos/act | Run GitHub Actions locally; --validate flag for workflow pre-flight checks |
+| Testcontainers Cloud | official-docs | https://testcontainers.com/cloud/docs/ | Remote Docker daemon for CI; Turbo mode for parallel container execution |
+| Tracetest (Kubeshop) | github-repo | https://github.com/kubeshop/tracetest | Trace-based test assertions using OpenTelemetry spans |
+| Playwright Docs | official-docs | https://playwright.dev/docs/ci | Official CI integration guide for Playwright |
+| Vitest Docs | official-docs | https://vitest.dev/guide/improving-performance | Performance tuning: sharding, workers, browser mode |
+| Google Testing Blog | blog | https://testing.googleblog.com/ | Production testing experience from Google's engineering teams |
+| Martin Fowler — Testing | blog | https://martinfowler.com/testing/ | Foundational test strategy, practical pyramid, microservice testing |
 
 
 
