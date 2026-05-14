@@ -6,8 +6,10 @@ description: |
   Self-healing test maintenance skill. Given CI failure output or a failing test suite,
   classifies the failure type, applies the repair strategy, validates via re-run, and
   routes the fix via confidence gate: auto-commit (>=0.87), review PR (0.62-0.87), or
-  GitHub issue (<0.62). Use when asked to "fix broken tests", "heal tests", "repair
-  selectors", or when CI shows test failures on a PR. (qa-agentic-team)
+  GitHub issue (<0.62)
+when_to_use: |
+  Use when asked to "fix broken tests", "heal tests", "repair
+  selectors", or when CI shows test failures on a PR.
 allowed-tools:
   - Bash
   - Read

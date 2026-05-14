@@ -7,7 +7,10 @@ description: |
   or an OTLP backend to identify the slowest test stages, flappy infrastructure steps, parallelism
   opportunities, and recurring failure patterns across recent runs. Produces an actionable CI
   optimization report.
-  Env vars: BUILDEVENTS_APIKEY, CI_TRACE_LOOKBACK, HONEYCOMB_DATASET. (qa-agentic-team)
+  Env vars: BUILDEVENTS_APIKEY, CI_TRACE_LOOKBACK, HONEYCOMB_DATASET.
+when_to_use: |
+  Use when asked to "optimize CI pipeline", "analyze build traces", "find slow tests in CI",
+  "CI performance", "identify flaky infrastructure", or "analyze Honeycomb build events".
 allowed-tools:
   - Bash
   - Read

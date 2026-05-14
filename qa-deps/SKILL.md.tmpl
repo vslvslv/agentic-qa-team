@@ -7,7 +7,10 @@ description: |
   docker-compose.yml using Docker Compose or Testcontainers, runs a lightweight health check against
   each service (database connection, cache ping, HTTP health endpoint, message queue connectivity),
   then tears down. Catches infrastructure drift before full integration tests run.
-  Env vars: DEPS_TIMEOUT, DEPS_KEEP_RUNNING. (qa-agentic-team)
+  Env vars: DEPS_TIMEOUT, DEPS_KEEP_RUNNING.
+when_to_use: |
+  Use when asked to "check service dependencies", "smoke test infrastructure", "test docker-compose
+  services", "health check dependencies", "test database connection", or "verify services are up".
 allowed-tools:
   - Bash
   - Read

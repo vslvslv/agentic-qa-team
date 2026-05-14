@@ -7,9 +7,17 @@ description: |
   native iOS/Android with Appium/WebDriverIO, or cross-platform with Maestro),
   generates test cases for critical user flows, executes them against a
   simulator/emulator or physical device, and produces a structured report.
-  Works standalone or as a sub-agent of /qa-team. Use when asked to "qa mobile",
+  Works standalone or as a sub-agent of /qa-team
+when_to_use: |
+  Use when asked to "qa mobile",
   "test the app", "mobile tests", "detox", "appium", "maestro",
-  "react native testing", or "ios/android test agent". (qa-agentic-team)
+  "react native testing", or "ios/android test agent".
+paths:
+  - ".detoxrc.*"
+  - "maestro/**"
+  - "android/**"
+  - "ios/**"
+  - "app.json"
 allowed-tools:
   - Bash
   - Read

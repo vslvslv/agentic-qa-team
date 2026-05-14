@@ -8,9 +8,16 @@ description: |
   fast-check — ts-morph extracts TypeScript interfaces, Claude generates fc.record()
   arbitraries, 200 combinations tested for crashes, (3) Stryker mutation quality gate
   on changed components — surviving mutants classified EQUIVALENT vs. GENUINE-GAP,
-  killing assertions generated. Reports per-component A–F quality grade. Use when asked
+  killing assertions generated. Reports per-component A–F quality grade
+when_to_use: |
+  Use when asked
   to "test components", "run storybook", "component qa", "prop testing", "mutation
-  score components", or "storybook tests". (qa-agentic-team)
+  score components", or "storybook tests".
+paths:
+  - ".storybook/**"
+  - "**/*.stories.*"
+  - "stryker.config.*"
+  - "src/components/**"
 allowed-tools:
   - Bash
   - Read

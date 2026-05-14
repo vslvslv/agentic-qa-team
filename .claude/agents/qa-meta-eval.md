@@ -9,6 +9,7 @@ description: |
   specific anti-pattern findings. Env var QA_META_TARGET=<skill-name> to scope to
   one skill. Input: qa-refine-workspace/meta-evals/scenarios.json.
 model: sonnet
+color: purple
 memory: project
 tools:
   - Bash

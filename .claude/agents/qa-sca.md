@@ -7,6 +7,7 @@ description: |
   against the previous SBOM to surface only new findings per run. Env vars:
   SCA_FAIL_ON_CRITICAL, SCA_LICENSE_DENY_LIST.
 model: sonnet
+color: red
 memory: project
 tools:
   - Bash

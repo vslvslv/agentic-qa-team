@@ -8,8 +8,10 @@ description: |
   generates relationship-aware synthetic data that respects constraints, unique keys,
   and realistic value distributions. Optionally seeds directly to a test DB via psql
   or prisma db seed. Chaos mode injects nulls, boundary values, and duplicates.
+when_to_use: |
   Use when asked to "seed test data", "generate fixtures", "populate test database",
-  "seed DB", or "create test data". (qa-agentic-team)
+  "seed DB", or "create test data".
+
 allowed-tools:
   - Bash
   - Read

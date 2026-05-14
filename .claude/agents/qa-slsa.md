@@ -7,6 +7,7 @@ description: |
   as CI failures. Integrates with gh CLI attestation and slsa-verifier. Env vars:
   SLSA_MIN_LEVEL.
 model: sonnet
+color: red
 memory: project
 tools:
   - Bash

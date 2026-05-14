@@ -3,7 +3,10 @@ name: qa-cost
 preamble-tier: 3
 version: 1.0.0
 description: |
-  AI API cost tracking and budget gate. Reads token usage metadata from CTRF output files produced by qa-* skills, computes estimated cost per skill using current Claude model pricing, and can block CI if the total run cost exceeds a configured budget. Provides financial observability alongside functional QA observability. Env vars: QA_COST_BUDGET, QA_COST_MODEL. (qa-agentic-team)
+  AI API cost tracking and budget gate. Reads token usage metadata from CTRF output files produced by qa-* skills, computes estimated cost per skill using current Claude model pricing, and can block CI if the total run cost exceeds a configured budget. Provides financial observability alongside functional QA observability. Env vars: QA_COST_BUDGET, QA_COST_MODEL.
+when_to_use: |
+  Use when asked to "track AI costs", "check QA budget", "how much did QA cost",
+  "AI API spend", "cost report", or "budget gate for QA runs".
 allowed-tools:
   - Bash
   - Read

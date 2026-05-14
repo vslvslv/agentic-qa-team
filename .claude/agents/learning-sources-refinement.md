@@ -18,6 +18,7 @@ tools:
   - Grep
   - AskUserQuestion
 model: sonnet
+color: purple
 memory: project
 effort: high
 hooks:

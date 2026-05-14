@@ -16,13 +16,12 @@ description: |
   guides are not yet generated.
 
   Works standalone or as a sub-agent of /qa-team (writes report to $TEMP/qa-audit-report.md).
-
+when_to_use: |
   Use when asked to:
   - "audit tests", "qa audit", "test quality review", "test methodology review"
   - "check test suite health", "is our testing good?", "improve our tests"
   - "test pyramid analysis", "why are our tests slow / flaky / brittle?"
   - "test coverage gaps", "how should we structure our tests?"
-  (qa-agentic-team)
 allowed-tools:
   - Bash
   - Read

@@ -7,7 +7,10 @@ description: |
   plus license compliance checking. Generates a CycloneDX SBOM, scans for CVEs in all
   direct and transitive dependencies, flags denied license types (GPL, AGPL), and diffs
   against the previous SBOM to surface only new findings per run. Env vars:
-  SCA_FAIL_ON_CRITICAL, SCA_LICENSE_DENY_LIST. (qa-agentic-team)
+  SCA_FAIL_ON_CRITICAL, SCA_LICENSE_DENY_LIST.
+when_to_use: |
+  Use when asked to "scan dependencies", "check CVEs", "generate SBOM", "license compliance",
+  "software composition analysis", "dependency vulnerabilities", or "supply chain scan".
 allowed-tools:
   - Bash
   - Read

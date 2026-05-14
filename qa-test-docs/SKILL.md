@@ -7,7 +7,10 @@ description: |
   Markdown documentation summarizing what each test suite covers, which business rules
   it guards, which edge cases are addressed, and notable gaps. Groups tests by feature
   domain. Output is suitable for compliance audits, sprint reviews, and onboarding.
-  Env vars: TEST_DOCS_OUTPUT, TEST_DOCS_FORMAT. (qa-agentic-team)
+  Env vars: TEST_DOCS_OUTPUT, TEST_DOCS_FORMAT.
+when_to_use: |
+  Use when asked to "document the tests", "generate test documentation", "what do our tests cover",
+  "test suite summary", "onboarding test docs", or "compliance test documentation".
 allowed-tools:
   - Bash
   - Read

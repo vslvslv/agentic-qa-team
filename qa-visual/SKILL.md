@@ -6,9 +6,16 @@ description: |
   Visual regression test agent. Navigates key pages, captures screenshots with
   Playwright, compares them against stored baselines using pixel-diff, and reports
   any visual regressions. Manages baseline creation, threshold configuration, and
-  diff artifact storage. Works standalone or as a sub-agent of /qa-team. Use when
+  diff artifact storage. Works standalone or as a sub-agent of /qa-team
+when_to_use: |
+  Use when
   asked to "qa visual", "visual testing", "visual regression", "screenshot diff",
-  "UI regression", "pixel diff", or "visual test agent". (qa-agentic-team)
+  "UI regression", "pixel diff", or "visual test agent".
+paths:
+  - "playwright.config.*"
+  - "chromatic.config.*"
+  - ".storybook/**"
+  - "**/*.stories.*"
 allowed-tools:
   - Bash
   - Read

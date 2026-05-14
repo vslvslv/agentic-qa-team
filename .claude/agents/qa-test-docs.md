@@ -7,6 +7,7 @@ description: |
   domain. Output is suitable for compliance audits, sprint reviews, and onboarding.
   Env vars: TEST_DOCS_OUTPUT, TEST_DOCS_FORMAT.
 model: sonnet
+color: cyan
 memory: project
 tools:
   - Bash

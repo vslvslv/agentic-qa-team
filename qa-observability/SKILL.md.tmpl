@@ -10,9 +10,11 @@ description: |
   cause statement. Appends a FAILURE_REASON block to the test report. Only
   activates when observability stack is configured (OTEL_EXPORTER_OTLP_ENDPOINT,
   LOKI_URL, JAEGER_URL, or TEMPO_URL). Works standalone or as a post-failure
-  hook invoked by any qa-* skill. Use when asked to "rca", "root cause",
+  hook invoked by any qa-* skill
+when_to_use: |
+  Use when asked to "rca", "root cause",
   "why did the test fail", "observability analysis", "trace failure", or
-  "qa observability". (qa-agentic-team)
+  "qa observability".
 allowed-tools:
   - Bash
   - Read

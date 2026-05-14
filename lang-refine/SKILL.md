@@ -9,7 +9,7 @@ description: |
   Runs the same autoresearch-style loop as qa-refine: official docs + community sources
   → score against a 4-dimension rubric (0–100) → keep/revert until score ≥ 80.
   Writes reference guides to lang-refine/references/<language>-patterns.md.
-
+when_to_use: |
   Use this skill whenever the user asks to:
   - "research Python / Java / C# / Kotlin / Ruby / Bash best practices"
   - "create a design patterns reference" or "document SOLID principles"

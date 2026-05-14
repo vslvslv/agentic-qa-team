@@ -8,7 +8,10 @@ description: |
   with 8 curated adversarial scenarios and judges each output against quality criteria
   (non-hollow assertions, correct classification, graceful degradation, no fabricated
   results). Uses a UserSimulatorAgent + JudgeAgent pattern. Reports per-skill pass rate;
-  flags skills below 80%. Env var QA_META_TARGET scopes to one skill. (qa-agentic-team)
+  flags skills below 80%. Env var QA_META_TARGET scopes to one skill.
+when_to_use: |
+  Use when asked to "evaluate QA skills", "red team the QA agents", "check QA skill quality",
+  "run meta eval", "adversarial QA testing", or "validate QA agent outputs".
 allowed-tools:
   - Bash
   - Read

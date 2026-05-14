@@ -8,8 +8,10 @@ description: |
   layer grouping violations by WCAG POUR principle with user impact and code-level fix
   suggestions, (3) AI-generated alt text for images lacking descriptions.
   Produces a structured report with WCAG SC references, severity, and fix confidence.
+when_to_use: |
   Use when asked to "qa accessibility", "a11y audit", "WCAG check", "axe scan",
-  or included automatically by /qa-team for web apps. (qa-agentic-team)
+  or included automatically by /qa-team for web apps.
+
 allowed-tools:
   - Bash
   - Read

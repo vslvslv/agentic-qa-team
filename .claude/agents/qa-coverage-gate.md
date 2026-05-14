@@ -7,6 +7,7 @@ description: |
   generates LLM-suggested test stubs targeting the specific uncovered lines.
   Env vars: COVERAGE_THRESHOLD, COVERAGE_COMPARE_BRANCH, COVERAGE_GENERATE_STUBS.
 model: sonnet
+color: cyan
 memory: project
 tools:
   - Bash

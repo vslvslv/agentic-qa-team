@@ -12,7 +12,10 @@ description: |
   parses Figma URLs from JIRA ticket bodies, fetches frame PNGs via Figma API, runs
   Claude vision analysis, produces structured test cases, and pushes them to TestRail
   or Xray. Env vars: JIRA_URL, JIRA_TOKEN, FIGMA_TOKEN, TESTRAIL_URL / XRAY_URL,
-  JIRA_EPIC_ID, TEST_SPECS_DIR. (qa-agentic-team)
+  JIRA_EPIC_ID, TEST_SPECS_DIR.
+when_to_use: |
+  Use when asked to "generate tests from JIRA", "create test plan from epic", "sync Figma to TestRail",
+  "generate Playwright specs from requirements", "test case management", or "sprint QA setup".
 allowed-tools:
   - Bash
   - Read

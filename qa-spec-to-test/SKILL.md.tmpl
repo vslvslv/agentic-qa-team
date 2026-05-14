@@ -5,7 +5,10 @@ version: 1.0.0
 description: |
   Converts Markdown PRD/spec documents into structured YAML test plans and optional Playwright
   skeleton spec files. Point it at docs/*.md, PRD*.md, SPEC*.md, or specs/ directories.
-  (qa-agentic-team)
+when_to_use: |
+  Use when asked to "convert spec to tests", "generate tests from PRD", "spec to Playwright",
+  "create test plan from requirements", "extract test cases from docs", or "tests from markdown spec".
+
 allowed-tools:
   - Bash
   - Read

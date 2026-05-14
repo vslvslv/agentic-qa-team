@@ -6,8 +6,10 @@ description: |
   Swarm exploratory testing skill. Spawns N parallel browser agents that autonomously
   explore a running web app — clicking links, submitting forms with dummy data, recording
   console errors, broken links, 4xx/5xx responses, and unexpected redirects. No scripts
-  required. Use when asked to "explore the app", "smoke test", "find broken links",
-  "exploratory test", "vibetest", or after a deploy. (qa-agentic-team)
+  required
+when_to_use: |
+  Use when asked to "explore the app", "smoke test", "find broken links",
+  "exploratory test", "vibetest", or after a deploy.
 allowed-tools:
   - Bash
   - Read

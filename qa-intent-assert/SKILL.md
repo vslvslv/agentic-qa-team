@@ -3,7 +3,10 @@ name: qa-intent-assert
 preamble-tier: 3
 version: 1.0.0
 description: |
-  Natural-language code property assertions via LLM judge. Reads *.intent.yaml files from the project defining plain-English properties that code must satisfy ('This function must never return a negative balance'), then evaluates each assertion against the target code using an LLM judge. Novel assertion paradigm that catches semantic intent violations that unit tests miss. Env vars: INTENT_STRICT, INTENT_DIR. (qa-agentic-team)
+  Natural-language code property assertions via LLM judge. Reads *.intent.yaml files from the project defining plain-English properties that code must satisfy ('This function must never return a negative balance'), then evaluates each assertion against the target code using an LLM judge. Novel assertion paradigm that catches semantic intent violations that unit tests miss. Env vars: INTENT_STRICT, INTENT_DIR.
+when_to_use: |
+  Use when asked to "check code intent", "run intent assertions", "verify code properties",
+  "check intent.yaml", "LLM code assertions", or "semantic code verification".
 allowed-tools:
   - Bash
   - Read

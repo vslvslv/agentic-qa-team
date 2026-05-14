@@ -7,7 +7,10 @@ description: |
   leaked credentials, API keys, and tokens, validating detected secrets against live APIs
   to distinguish verified (active) from unverified. Blocks CI if verified secrets are
   found. Env vars: TRUFFLEHOG_MODE (history|staged|both), SECRETS_FAIL_ON_VERIFIED.
-  (qa-agentic-team)
+when_to_use: |
+  Use when asked to "scan for secrets", "check for leaked credentials", "TruffleHog scan",
+  "find API keys in code", "secrets audit", or "check git history for credentials".
+
 allowed-tools:
   - Bash
   - Read

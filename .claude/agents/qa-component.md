@@ -18,6 +18,7 @@ tools:
   - AskUserQuestion
   - Agent
 model: sonnet
+color: pink
 memory: project
 effort: high
 hooks:

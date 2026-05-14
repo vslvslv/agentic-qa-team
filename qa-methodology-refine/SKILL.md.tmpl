@@ -15,7 +15,7 @@ description: |
   score against a 4-dimension rubric (0–100) → iterative refinement until score ≥ 80
   or 3 iterations. Code examples are generated in the project's actual language.
   Output lives in qa-methodology/references/<topic>-guide.md.
-
+when_to_use: |
   Use when asked to:
   - "refine methodology", "qa methodology", "testing best practices"
   - "generate [test pyramid | TDD | BDD | contract testing | flakiness | coverage] guide"
@@ -24,7 +24,6 @@ description: |
   - "what are best practices for [test isolation | test data | ci testing | ...]?"
   Proactively suggest after any conversation where the user mentions poor test
   coverage, flaky tests, slow test suites, or onboarding challenges with testing.
-  (qa-agentic-team)
 allowed-tools:
   - WebFetch
   - WebSearch

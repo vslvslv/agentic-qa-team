@@ -9,6 +9,7 @@ description: |
   or LOKI_URL is configured. Input env vars: FAILING_TEST_NAME, TRACE_ID,
   FAILURE_TIMESTAMP (unix seconds), FAILURE_MESSAGE, FAILING_REPORT_PATH.
 model: sonnet
+color: yellow
 memory: project
 tools:
   - Bash

@@ -16,6 +16,7 @@ tools:
   - AskUserQuestion
   - Agent
 model: sonnet
+color: purple
 memory: project
 effort: medium
 hooks:

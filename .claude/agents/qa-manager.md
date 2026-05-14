@@ -12,6 +12,7 @@ description: |
   Env vars: JIRA_URL, JIRA_TOKEN, FIGMA_TOKEN, TESTRAIL_URL / XRAY_URL,
   JIRA_EPIC_ID, TEST_SPECS_DIR.
 model: sonnet
+color: cyan
 memory: project
 tools:
   - Bash

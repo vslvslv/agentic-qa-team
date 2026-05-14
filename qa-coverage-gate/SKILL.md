@@ -7,7 +7,10 @@ description: |
   coverage change between the current branch and the base branch, and blocks CI if
   changed files drop below a configurable threshold. For files below threshold,
   generates LLM-suggested test stubs targeting the specific uncovered lines.
-  Env vars: COVERAGE_THRESHOLD, COVERAGE_COMPARE_BRANCH, COVERAGE_GENERATE_STUBS. (qa-agentic-team)
+  Env vars: COVERAGE_THRESHOLD, COVERAGE_COMPARE_BRANCH, COVERAGE_GENERATE_STUBS.
+when_to_use: |
+  Use when asked to "check coverage", "coverage gate", "coverage delta", "enforce coverage threshold",
+  "generate test stubs for uncovered lines", or to block CI on a coverage drop.
 allowed-tools:
   - Bash
   - Read

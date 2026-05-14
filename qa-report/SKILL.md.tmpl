@@ -3,7 +3,10 @@ name: qa-report
 preamble-tier: 3
 version: 1.0.0
 description: |
-  Unified QA dashboard and sprint report. Aggregates CTRF output files from all qa-* skills run in a CI pipeline or sprint, producing a single executive Markdown or HTML report: pass/fail trend by skill, flakiness index from qa-flaky-registry.json, coverage delta if available, performance budget adherence, and an LLM-generated top-3 risk areas narrative. Env vars: REPORT_FORMAT, REPORT_PERIOD, REPORT_OUTPUT. (qa-agentic-team)
+  Unified QA dashboard and sprint report. Aggregates CTRF output files from all qa-* skills run in a CI pipeline or sprint, producing a single executive Markdown or HTML report: pass/fail trend by skill, flakiness index from qa-flaky-registry.json, coverage delta if available, performance budget adherence, and an LLM-generated top-3 risk areas narrative. Env vars: REPORT_FORMAT, REPORT_PERIOD, REPORT_OUTPUT.
+when_to_use: |
+  Use when asked to "generate QA report", "QA dashboard", "aggregate test results",
+  "sprint QA summary", "test results report", or "combine CTRF outputs".
 allowed-tools:
   - Bash
   - Read

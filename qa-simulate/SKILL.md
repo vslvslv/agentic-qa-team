@@ -7,9 +7,11 @@ description: |
   multi-turn interaction sequences for a given feature description. A RedTeamAgent
   (opt-in via QA_REDTEAM=1) runs adversarial variants. A JudgeAgent scores each
   scenario for correctness. Scenarios are cached as JSON fixtures for deterministic CI
-  replay. Use when asked to "simulate user journeys", "test user flows", "AI-driven
+  replay
+when_to_use: |
+  Use when asked to "simulate user journeys", "test user flows", "AI-driven
   testing", "scenario testing", "red team the checkout", or "simulate user behavior".
-  (qa-agentic-team)
+
 allowed-tools:
   - Bash
   - Read

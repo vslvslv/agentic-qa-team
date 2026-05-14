@@ -7,6 +7,7 @@ description: |
   then tears down. Catches infrastructure drift before full integration tests run.
   Env vars: DEPS_TIMEOUT, DEPS_KEEP_RUNNING.
 model: sonnet
+color: orange
 memory: project
 tools:
   - Bash

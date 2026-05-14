@@ -8,9 +8,11 @@ description: |
   status codes, schema validation, auth enforcement, and error handling. Uses the
   idiomatic testing tool for the project's language: Playwright request context
   (JS/TS), REST Assured (Java), pytest+requests (Python), HttpClient+NUnit (C#),
-  or RSpec+Faraday (Ruby). Works standalone or as a sub-agent of /qa-team. Use
+  or RSpec+Faraday (Ruby). Works standalone or as a sub-agent of /qa-team
+when_to_use: |
+  Use
   when asked to "qa api", "test the api", "api tests", "contract testing",
-  "test endpoints", or "rest/graphql testing". (qa-agentic-team)
+  "test endpoints", or "rest/graphql testing".
 allowed-tools:
   - Bash
   - Read

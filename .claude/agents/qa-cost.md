@@ -7,6 +7,7 @@ description: |
   financial observability alongside functional QA observability.
   Env vars: QA_COST_BUDGET, QA_COST_MODEL.
 model: sonnet
+color: yellow
 memory: project
 tools:
   - Bash

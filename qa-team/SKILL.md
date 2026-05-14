@@ -6,8 +6,10 @@ description: |
   Agentic QA orchestrator. Analyzes the current project, determines which testing
   domains apply (web, API, mobile, performance, visual), and spawns specialized
   sub-agents for each. Aggregates all results into a unified quality report.
+when_to_use: |
   Use when asked to "run qa", "qa team", "full test suite", "test everything",
   "qa the app", or "run all agents".
+
 allowed-tools:
   - Bash
   - Read
@@ -18,6 +20,8 @@ allowed-tools:
   - AskUserQuestion
   - Agent
 disable-model-invocation: true
+model: sonnet
+effort: high
 ---
 
 ## Version check

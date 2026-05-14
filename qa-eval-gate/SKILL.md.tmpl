@@ -3,7 +3,10 @@ name: qa-eval-gate
 preamble-tier: 3
 version: 1.0.0
 description: |
-  Eval-driven CI gate for AI features. Enforces that every AI feature shipped has a passing evaluation harness before the PR merges. Discovers eval files in evals/ or tests/evals/ directories, runs them with the detected eval runner, scores results, and blocks CI if the aggregate pass-rate drops below a configurable threshold. Env vars: EVAL_PASS_THRESHOLD, EVAL_FAIL_FAST, ANTHROPIC_API_KEY. (qa-agentic-team)
+  Eval-driven CI gate for AI features. Enforces that every AI feature shipped has a passing evaluation harness before the PR merges. Discovers eval files in evals/ or tests/evals/ directories, runs them with the detected eval runner, scores results, and blocks CI if the aggregate pass-rate drops below a configurable threshold. Env vars: EVAL_PASS_THRESHOLD, EVAL_FAIL_FAST, ANTHROPIC_API_KEY.
+when_to_use: |
+  Use when asked to "run evals", "eval gate", "check AI feature quality", "run evaluation harness",
+  "enforce eval pass rate", or "validate AI features before merge".
 allowed-tools:
   - Bash
   - Read

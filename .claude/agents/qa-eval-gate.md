@@ -7,6 +7,7 @@ description: |
   aggregate pass-rate drops below a configurable threshold.
   Env vars: EVAL_PASS_THRESHOLD, EVAL_FAIL_FAST, ANTHROPIC_API_KEY.
 model: sonnet
+color: purple
 memory: project
 tools:
   - Bash

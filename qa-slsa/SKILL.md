@@ -7,7 +7,10 @@ description: |
   artifacts (npm packages, Docker images, release binaries) have valid SLSA provenance
   attestations chaining to a trusted CI environment. Flags unsigned or tampered artifacts
   as CI failures. Integrates with gh CLI attestation and slsa-verifier. Env vars:
-  SLSA_MIN_LEVEL. (qa-agentic-team)
+  SLSA_MIN_LEVEL.
+when_to_use: |
+  Use when asked to "verify SLSA attestations", "check supply chain provenance",
+  "verify build artifacts", "SLSA compliance", "artifact signing check", or "provenance verification".
 allowed-tools:
   - Bash
   - Read

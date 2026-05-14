@@ -7,6 +7,7 @@ description: |
   geo-gated feature inconsistencies invisible to standard E2E tests.
   Env vars: QA_TIMEZONES, QA_GEOLOCATIONS, QA_GEO_PAGES, WEB_URL.
 model: sonnet
+color: blue
 memory: project
 tools:
   - Bash

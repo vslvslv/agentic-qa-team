@@ -6,7 +6,10 @@ description: |
   steps, parallelism opportunities, and recurring failure patterns across recent runs.
   Produces an actionable CI optimization report.
   Env vars: BUILDEVENTS_APIKEY, CI_TRACE_LOOKBACK, HONEYCOMB_DATASET.
+disallowedTools:
+  - Edit
 model: sonnet
+color: yellow
 memory: project
 tools:
   - Bash

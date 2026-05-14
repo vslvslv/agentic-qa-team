@@ -7,7 +7,10 @@ description: |
   geo-locations using page.emulateTimezone() and browser.newContext({ geolocation, locale }) to catch
   date/time arithmetic bugs, DST boundary transitions, locale formatting errors, and geo-gated feature
   inconsistencies invisible to standard E2E tests.
-  Env vars: QA_TIMEZONES, QA_GEOLOCATIONS, QA_GEO_PAGES, WEB_URL. (qa-agentic-team)
+  Env vars: QA_TIMEZONES, QA_GEOLOCATIONS, QA_GEO_PAGES, WEB_URL.
+when_to_use: |
+  Use when asked to "test timezones", "geo testing", "timezone simulation", "test DST boundaries",
+  "locale testing", "test geolocation features", or "international date formatting".
 allowed-tools:
   - Bash
   - Read

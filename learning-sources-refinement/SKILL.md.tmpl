@@ -8,14 +8,13 @@ description: |
   QA tools, QA methodology, programming languages, and security/accessibility/AI testing.
   Updates learning-sources/*.md catalog files, flags stale entries, and produces a
   discovery report with per-skill recommendations.
-
+when_to_use: |
   Use when asked to:
   - "update learning sources" or "refresh the knowledge catalog"
   - "find new QA tool sources" / "discover new language references"
   - "check for stale sources in the catalog"
   - "what new testing resources are available?"
   Run before a batch of refine skill runs to ensure all skills use current sources.
-  (qa-agentic-team)
 allowed-tools:
   - WebSearch
   - Read

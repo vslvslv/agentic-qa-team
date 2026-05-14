@@ -6,6 +6,7 @@ description: |
   Extracts testable acceptance criteria, tags by priority (P1/P2/P3), and generates skeleton
   .spec.ts files for P1 scenarios. Env vars: QA_SPEC_FILES, SPEC_OUTPUT, SPEC_GEN_PLAYWRIGHT.
 model: sonnet
+color: cyan
 memory: project
 tools:
   - Bash

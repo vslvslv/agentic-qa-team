@@ -7,6 +7,7 @@ description: |
   is reached. Covers both cold-start and in-app navigation scenarios.
   Env vars: PLATFORM, APP_BUNDLE_ID, DEVICE_ID.
 model: sonnet
+color: blue
 memory: project
 tools:
   - Bash

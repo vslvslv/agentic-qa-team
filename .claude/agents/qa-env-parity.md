@@ -7,6 +7,7 @@ description: |
   classification of missing required keys, mismatched values, and stale orphaned entries.
   Env vars: PARITY_ENVIRONMENTS, PARITY_REQUIRED_KEYS.
 model: sonnet
+color: yellow
 memory: project
 tools:
   - Bash

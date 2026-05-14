@@ -7,7 +7,10 @@ description: |
   from apple-app-site-association, assetlinks.json, and PWA manifest files, then generates tests
   that fire each URI scheme and assert the correct screen or web fallback is reached. Covers both
   cold-start and in-app navigation scenarios.
-  Env vars: PLATFORM, APP_BUNDLE_ID, DEVICE_ID. (qa-agentic-team)
+  Env vars: PLATFORM, APP_BUNDLE_ID, DEVICE_ID.
+when_to_use: |
+  Use when asked to "test deep links", "validate universal links", "check URI schemes",
+  "test apple-app-site-association", "test assetlinks.json", or "deep link testing".
 allowed-tools:
   - Bash
   - Read

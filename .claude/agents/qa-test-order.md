@@ -7,6 +7,7 @@ description: |
   shared global state leakage. Generates an isolation dependency graph and recommends
   beforeEach/afterEach fixes. Env vars: TEST_ORDER_RUNS, TEST_ORDER_TIMEOUT.
 model: sonnet
+color: cyan
 memory: project
 tools:
   - Bash

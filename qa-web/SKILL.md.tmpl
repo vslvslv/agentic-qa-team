@@ -6,8 +6,15 @@ description: |
   Web E2E test agent. Discovers the web app's pages and user flows, generates
   test specs for the detected framework (Playwright, Cypress, or Selenium WebDriver),
   executes them, and produces a structured report. Works standalone or as a sub-agent
-  of /qa-team. Use when asked to "qa web", "test the UI", "write e2e tests",
-  "run playwright", "run cypress", "run selenium", or "web test agent". (qa-agentic-team)
+  of /qa-team
+when_to_use: |
+  Use when asked to "qa web", "test the UI", "write e2e tests",
+  "run playwright", "run cypress", "run selenium", or "web test agent".
+paths:
+  - "playwright.config.*"
+  - "cypress.config.*"
+  - "**/wdio.conf.*"
+  - "e2e/**"
 allowed-tools:
   - Bash
   - Read

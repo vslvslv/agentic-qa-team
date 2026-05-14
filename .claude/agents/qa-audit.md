@@ -14,7 +14,10 @@ tools:
   - Glob
   - Grep
   - AskUserQuestion
+disallowedTools:
+  - Edit
 model: sonnet
+color: yellow
 memory: project
 effort: high
 hooks:

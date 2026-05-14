@@ -7,7 +7,10 @@ description: |
   assertion-free tests, sleep() calls, magic numbers, permanently skipped tests, empty
   describe blocks, console.log leakage, and copy-paste test bodies. LLM categorizes each
   smell by type and severity and generates inline fix suggestions.
-  Env vars: TEST_LINT_SEVERITY. (qa-agentic-team)
+  Env vars: TEST_LINT_SEVERITY.
+when_to_use: |
+  Use when asked to "lint the tests", "find test smells", "check test quality", "test anti-patterns",
+  "find sleep() in tests", "find skipped tests", or "test code quality audit".
 allowed-tools:
   - Bash
   - Read

@@ -7,6 +7,7 @@ description: |
   semantic intent violations that unit tests miss.
   Env vars: INTENT_STRICT, INTENT_DIR.
 model: sonnet
+color: purple
 memory: project
 tools:
   - Bash

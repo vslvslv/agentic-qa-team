@@ -7,8 +7,10 @@ description: |
   spider, active scan, Claude OWASP Top 10 / CWE triage. Mode B (lightweight, always
   available) probes security headers, exposed sensitive files, CORS config, and JWT
   weaknesses via curl. Nuclei runs as a second pass when installed. All probes are
-  read-only. Use when asked to "security test", "run ZAP", "DAST scan", "check security
-  headers", "pentest staging", or "find vulnerabilities". (qa-agentic-team)
+  read-only
+when_to_use: |
+  Use when asked to "security test", "run ZAP", "DAST scan", "check security
+  headers", "pentest staging", or "find vulnerabilities".
 allowed-tools:
   - Bash
   - Read

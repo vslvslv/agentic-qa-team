@@ -7,7 +7,10 @@ description: |
   and config keys across dev/staging/production environment files to detect silent drift
   that causes 'works in staging' failures. Generates a structured drift report with LLM
   classification of missing required keys, mismatched values, and stale orphaned entries.
-  Env vars: PARITY_ENVIRONMENTS, PARITY_REQUIRED_KEYS. (qa-agentic-team)
+  Env vars: PARITY_ENVIRONMENTS, PARITY_REQUIRED_KEYS.
+when_to_use: |
+  Use when asked to "check env parity", "compare environment configs", "find missing env vars",
+  "detect config drift", "staging vs production config", or "environment variable audit".
 allowed-tools:
   - Bash
   - Read

@@ -6,6 +6,7 @@ description: |
   to distinguish verified (active) from unverified. Blocks CI if verified secrets are
   found. Env vars: TRUFFLEHOG_MODE (history|staged|both), SECRETS_FAIL_ON_VERIFIED.
 model: sonnet
+color: red
 memory: project
 tools:
   - Bash

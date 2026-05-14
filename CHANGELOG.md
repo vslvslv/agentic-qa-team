@@ -5,6 +5,27 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.16.1.0 — 2026-05-14 — skill/agent metadata improvements
+
+### All skills (38)
+- Added `when_to_use:` field to all skills — trigger phrases extracted from descriptions or written from scratch
+- Removed `(qa-agentic-team)` suffix from all skill descriptions
+
+### Framework skills (qa-web, qa-perf, qa-mobile, qa-visual, qa-component)
+- Added `paths:` glob patterns for auto-loading when relevant config files are present
+
+### All agents (34)
+- Added `color:` field to all 34 sub-agents (thematic: red=security, blue=web, green=mobile/explore, yellow=analysis, purple=AI, cyan=quality, orange=infra/perf, pink=components)
+
+### Read-only agents (qa-audit, qa-ci-trace, qa-report)
+- Added `disallowedTools: [Edit]` to prevent inadvertent modification of existing project files
+
+### Bug fixes
+- qa-team: added missing `model: sonnet` and `effort: high` fields
+- qa-report agent: replaced invalid `${CLAUDE_SKILL_DIR}` external hook references with inline hook commands
+
+---
+
 ## v1.16.0.20 — 2026-05-12 — nightly refinement run — 22 guides extended (cycle 17/100)
 
 ### qa-refine (5 guides, +3,111 lines)

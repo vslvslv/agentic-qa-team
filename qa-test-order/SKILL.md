@@ -7,7 +7,10 @@ description: |
   randomized orderings (using jest --randomize, pytest-randomly, or go test -shuffle)
   to identify tests that only pass when run after specific other tests — a sign of
   shared global state leakage. Generates an isolation dependency graph and recommends
-  beforeEach/afterEach fixes. Env vars: TEST_ORDER_RUNS, TEST_ORDER_TIMEOUT. (qa-agentic-team)
+  beforeEach/afterEach fixes. Env vars: TEST_ORDER_RUNS, TEST_ORDER_TIMEOUT.
+when_to_use: |
+  Use when asked to "find order-dependent tests", "detect test coupling", "randomize test order",
+  "tests that fail in random order", "test isolation issues", or "global state leakage in tests".
 allowed-tools:
   - Bash
   - Read

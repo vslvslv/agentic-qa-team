@@ -6,9 +6,17 @@ description: |
   Performance test agent. Identifies critical user journeys and API endpoints,
   generates load test scripts for the detected tool (k6, JMeter, or Locust),
   executes them, and analyzes throughput, latency percentiles, and error rates.
-  Works standalone or as a sub-agent of /qa-team. Use when asked to "qa performance",
+  Works standalone or as a sub-agent of /qa-team
+when_to_use: |
+  Use when asked to "qa performance",
   "load test", "stress test", "performance testing", "k6", "jmeter", "locust",
-  "benchmark the api", or "perf test agent". (qa-agentic-team)
+  "benchmark the api", or "perf test agent".
+paths:
+  - "**/k6/**"
+  - "**/jmeter/**"
+  - "**/locust/**"
+  - "**/load-test*/**"
+  - "*.k6.js"
 allowed-tools:
   - Bash
   - Read

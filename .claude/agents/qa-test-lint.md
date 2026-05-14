@@ -7,6 +7,7 @@ description: |
   smell by type and severity and generates inline fix suggestions.
   Env vars: TEST_LINT_SEVERITY.
 model: sonnet
+color: cyan
 memory: project
 tools:
   - Bash
