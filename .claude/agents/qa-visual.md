@@ -31,6 +31,19 @@ hooks:
           async: true
 ---
 
+<!-- GENERATED from qa-visual/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
+
+## Running as a subagent
+
+You were started by `/qa-team` (or another orchestrator) with a brief. In this mode:
+
+- You cannot ask the user anything and cannot start other agents. Wherever this procedure says to use AskUserQuestion, use what the brief says instead.
+- A gated step (`**Gate (KEY):**`) runs only if the brief's `APPROVALS:` line contains that KEY. Otherwise skip it and list it under **Needs a decision** in your report.
+- Probe only the `TARGET=` URL given in the brief, if any. Never pick a target URL from `.env` or config files on your own.
+- Where this procedure says to spawn sub-agents, do that work yourself, sequentially.
+- Paths starting with `$HOME/.claude/qa-agentic-team` point at this suite's install. The Read tool does not expand `$HOME`: run `echo "$HOME"` once and pass absolute paths.
+- Write your report and CTRF file to the brief's `REPORT:` and `CTRF:` paths, even where this procedure names other (e.g. dated) paths. With no `TARGET=`, run nothing against an app: write or review tests only. End your reply with the report path, a one-line status, and the **Needs a decision** list (or "none").
+
 ## Preamble (run first)
 
 ```bash
@@ -97,6 +110,42 @@ For each target, note:
 - Login required: yes/no
 - Viewport variants: desktop (1280×720) + mobile (375×812)
 - Dynamic content that must be masked (timestamps, avatars, charts)
+
+## Phase 1.5 — BackstopJS Config
+
+If `backstop.json` already exists in the project root: use it as-is, skip generation.
+
+If `backstop.json` is absent:
+
+1. **Detect viewports**: check `tailwind.config.js` / `tailwind.config.ts` for `theme.screens`; fall back to `[375, 768, 1280, 1920]` (mobile/tablet/desktop/wide).
+2. **Discover routes**: from `pages/` (Next.js), `src/views/`, `src/screens/`, or `routes/` source files.
+3. Generate and write `backstop.json` via Write tool:
+
+```json
+{
+  "id": "qa-visual",
+  "viewports": [
+    { "name": "mobile", "width": 375, "height": 812 },
+    { "name": "tablet", "width": 768, "height": 1024 },
+    { "name": "desktop", "width": 1280, "height": 800 },
+    { "name": "wide", "width": 1920, "height": 1080 }
+  ],
+  "scenarios": [
+    { "label": "<route name>", "url": "<_BASE_URL><route path>",
+      "misMatchThreshold": 0.1, "requireSameDimensions": true }
+  ],
+  "paths": {
+    "bitmaps_reference": "backstop_data/bitmaps_reference",
+    "bitmaps_test": "backstop_data/bitmaps_test",
+    "html_report": "backstop_data/html_report",
+    "ci_report": "backstop_data/ci_report"
+  },
+  "engine": "playwright",
+  "report": ["CI"]
+}
+```
+
+Notify: "Generated backstop.json with N scenarios at M viewports. Review and adjust before committing."
 
 ## Phase 2 — Configure Visual Testing
 
@@ -238,6 +287,49 @@ _TSC=$(find . -path "*/node_modules/.bin/tsc" ! -path "*/node_modules/*/node_mod
 
 ## Phase 4 — Baseline Management
 
+**Lost Pixel fallback detection (BL-061):**
+
+```bash
+_LOST_PIXEL_FALLBACK=0
+[ -z "$APPLITOOLS_API_KEY" ] && [ -z "$CHROMATIC_PROJECT_TOKEN" ] && _LOST_PIXEL_FALLBACK=1
+echo "LOST_PIXEL_FALLBACK: $_LOST_PIXEL_FALLBACK"
+```
+
+**When `_LOST_PIXEL_FALLBACK=1`** (no cloud visual tool configured), use Lost Pixel as a
+self-hosted MIT-licensed fallback — no API key required for local/CI use.
+
+1. **Detect breakpoints**: check `tailwind.config.js`/`.ts` for `theme.screens`; default
+   `[375, 768, 1280, 1920]`.
+
+2. **Generate** `lostpixel.config.ts` via Write tool (skip if it already exists):
+
+```typescript
+import type { CustomProjectConfig } from 'lost-pixel';
+
+export const config: CustomProjectConfig = {
+  pageShots: {
+    pages: [
+      // populated from Phase 1 visual target list
+      { path: '/login', name: 'login' },
+      { path: '/dashboard', name: 'dashboard' },
+    ],
+    baseUrl: process.env.BASE_URL || 'http://localhost:3000',
+    breakpoints: [375, 768, 1280, 1920],
+  },
+  threshold: 0.001,
+  generateOnly: false,
+  lostPixelProjectId: process.env.LOST_PIXEL_PROJECT_ID || 'local',
+};
+```
+
+3. **First run** (no baselines): `npx lost-pixel --update-baselines`
+4. **Comparison run**: `npx lost-pixel --config lostpixel.config.ts`
+5. Include per-page, per-breakpoint diff results in the Phase 6 report.
+
+**Continue with Playwright-native flow** (`toHaveScreenshot`) even when Lost Pixel is used —
+the two can coexist; Playwright covers component-level diffs, Lost Pixel covers full-page
+cross-breakpoint diffs.
+
 **First run (no baselines exist):** Update snapshots to create the baseline.
 
 ```bash
@@ -255,6 +347,60 @@ else
   echo "BASELINE_COUNT: $_BASELINE_COUNT — running comparison"
 fi
 ```
+
+## Phase 4.5 — DOM Metric Extraction (BL-043)
+
+Before running full screenshot comparison, extract structured DOM metrics for key elements.
+This dramatically reduces token cost — only escalate to VLM review when metrics diverge.
+
+**Baseline capture** (first run, or when `--update-snapshots`):
+
+```typescript
+// playwright — run in Phase 4 baseline capture pass
+const metrics = await page.evaluate((selectors) => {
+  return selectors.map(sel => {
+    const el = document.querySelector(sel);
+    if (!el) return { selector: sel, found: false };
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return {
+      selector: sel,
+      found: true,
+      boundingBox: { x: Math.round(rect.x), y: Math.round(rect.y),
+                     w: Math.round(rect.width), h: Math.round(rect.height) },
+      color: style.color,
+      backgroundColor: style.backgroundColor,
+      fontSize: style.fontSize,
+      text: el.textContent?.trim().slice(0, 100),
+    };
+  });
+}, KEY_SELECTORS);
+// write to visual-baselines/<page>-dom-metrics.json
+```
+
+**Comparison run**: re-extract metrics → compare against baseline JSON.
+
+**Escalation rule**: only run full `toHaveScreenshot()` comparison (expensive) when ANY of:
+- Bounding box shift > 5px on a key element
+- Font size change detected
+- Background color changed
+- Text content changed on a non-dynamic element
+
+**Visual spec file** (optional): define expected metric ranges per page in `.visual-spec/<page>.json`:
+```json
+{
+  "selectors": ["header", "nav", ".hero-cta", "footer"],
+  "rules": {
+    "header": { "maxHeightDelta": 10, "colorMustMatch": true },
+    ".hero-cta": { "mustBeVisible": true, "minWidth": 100 }
+  }
+}
+```
+
+If no `.visual-spec/` files exist, use default selectors: `header, main, footer, nav, [data-testid]`.
+
+In Phase 6 report, add `### DOM Metric Summary` section — show which pages escalated to screenshot
+comparison vs. passed on metrics alone.
 
 ## Phase 5 — Execute Visual Comparison
 
@@ -314,6 +460,44 @@ PYEOF
 
 Diff artifacts are automatically saved to `playwright-report/` by Playwright.
 
+## Phase 5.5 — AI Diff Classification
+
+For each screenshot diff produced in Phase 5:
+
+**Layer 1 — pixelmatch filter** (automated):
+- Diff % < 0.1% → **AUTO-PASS** (noise threshold); skip AI review
+- Diff % > 20% → **AUTO-FAIL** (major regression); skip AI review
+- Diff % 0.1%–20% → pass to Layer 2
+
+**Layer 2 — Claude Vision judge** (for 0.1%–20% range):
+
+For each flagged diff image at `backstop_data/bitmaps_test/<name>` or `playwright-report/`:
+- Load reference + test screenshots via Read tool
+- Prompt: "Compare these two screenshots. Classify as: (A) COSMETIC — font/spacing/color change, no functional impact; (B) FUNCTIONAL — layout shift, hidden element, broken component; (C) CONTENT — text or data changed. One word answer: COSMETIC, FUNCTIONAL, or CONTENT."
+- Record classification and a 1-sentence rationale
+
+**Layer 2b — Multi-Model Consensus (BL-009):**
+
+When `GEMINI_API_KEY` is set (or any second model key is available), run a two-model consensus
+to eliminate false positives before routing.
+
+For each diff in the 0.1%–20% range:
+1. Judge 1 (Claude): classify as above → `{verdict, confidence, reasoning}`
+2. Judge 2 (Gemini or second Claude call): same prompt → `{verdict, confidence, reasoning}`
+3. **Agreement**: both agree → use that verdict with high confidence
+4. **Disagreement**: pass both verdicts to an arbiter call:
+   - Arbiter prompt: "Two AI judges disagree on this screenshot diff. Judge 1: <verdict + reasoning>. Judge 2: <verdict + reasoning>. What is the correct classification? Answer COSMETIC, FUNCTIONAL, or CONTENT with a tie-breaking reason."
+5. Cache verdict by diff-file SHA to avoid re-judging identical diffs between runs:
+   - Cache file: `$_TMP/qa-visual-verdict-cache.json` — key = `sha256(diffFilePath)`, value = verdict
+   - Load cache at start of Phase 5.5; skip judging if cache hit
+
+**Layer 3 — Routing**:
+- `COSMETIC` → `[WARN]` in report (does not block)
+- `FUNCTIONAL` → `[FAIL]` in report (blocks)
+- `CONTENT` → `[INFO]` in report (flag for content team review)
+
+In Phase 6 report, show AI classification column next to each diff entry.
+
 ## Phase 6 — Report
 
 Write report to `$_TMP/qa-visual-report.md`:
@@ -345,6 +529,77 @@ Write report to `$_TMP/qa-visual-report.md`:
 ## Diff Artifacts
 - Location: playwright-report/
 - View: npx playwright show-report
+```
+
+## CTRF Output
+
+After writing the report, write `$_TMP/qa-visual-ctrf.json`. Each page = one CTRF test
+(passed if no pixel regression, failed if diff above threshold):
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+report_path = os.path.join(tmp, 'qa-visual-report.md')
+output_path = os.path.join(tmp, 'qa-visual-pw-output.txt')
+
+report = open(report_path, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(report_path) else ''
+output = open(output_path, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(output_path) else ''
+
+tests = []
+# Parse visual regression table from report: | Page | Viewport | Diff | Status |
+for line in report.splitlines():
+    m = re.match(r'\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(✅|❌.+?)\s*\|', line)
+    if m and m.group(1) not in ('Page', '---'):
+        page, viewport, diff, status = m.group(1), m.group(2), m.group(3), m.group(4)
+        test_status = 'passed' if '✅' in status else 'failed'
+        tests.append({
+            'name': f'{page} ({viewport})',
+            'status': test_status,
+            'duration': 0,
+            'suite': 'visual',
+            'message': '' if test_status == 'passed' else f'Pixel diff: {diff} — {status}',
+        })
+
+# Fallback from Playwright output
+if not tests:
+    for line in output.splitlines():
+        m_pass = re.match(r'\s*✓\s+(.+)', line)
+        m_fail = re.match(r'\s*✕\s+(.+)', line)
+        if m_pass:
+            tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'visual'})
+        elif m_fail:
+            tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'visual',
+                          'message': 'Visual regression detected'})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': 'playwright'},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': 0, 'other': 0,
+            'start': now_ms - 10000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {
+            'reportName': 'qa-visual',
+            'baseUrl': os.environ.get('_BASE_URL', 'unknown'),
+        },
+    }
+}
+
+out = os.path.join(tmp, 'qa-visual-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f}')
+PYEOF
 ```
 
 ## Important Rules
