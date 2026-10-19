@@ -176,7 +176,7 @@ CI failure classification and repair pipeline with confidence-gated routing.
 
 - **6-type taxonomy**: broken-selector, stale-element, moved-element, assertion-drift, navigation-change, timing-issue
 - **Repair strategy dispatch**: DOM diff for selectors; inline-snapshot fix; Keploy re-record for API schema changes
-- **Confidence gate**: auto-commit ≥ 0.87 · review PR 0.62–0.87 · GitHub issue < 0.62
+- **Confidence routing** (a recommendation; each route needs approval): commit ≥ 0.87 · review PR 0.62–0.87 · GitHub issue < 0.62 — commits go to a `qa-heal/*` branch and include only files qa-heal changed
 - **Test impact scoping**: uses `git diff` to heal only tests impacted by changed files (bounds cost)
 - **Env**: `GITHUB_TOKEN`, `CI_FAILURE_LOG` (path to CI output), `QA_HEAL_CONFIDENCE_THRESHOLD`
 

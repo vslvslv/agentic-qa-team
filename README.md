@@ -21,7 +21,7 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 | `/qa-explore` | Exploratory testing — parallel swarm agents autonomously navigate and probe the app |
 | `/qa-component` | Component tests — Storybook interaction tests + React Testing Library unit coverage |
 | `/qa-seed` | Test data seeding — schema-aware (DDL / Prisma / TypeORM); clean or chaos mode |
-| `/qa-heal` | Self-healing — classifies CI failures (broken selector, timing, logic) and commits fixes |
+| `/qa-heal` | Self-healing — classifies CI failures (broken selector, timing, logic) and proposes fixes; commits, PRs and issues only with your approval |
 | `/qa-observability` | Observability RCA — reads OTel traces / Loki logs to root-cause QA failures |
 | `/qa-simulate` | User journey simulation — generates realistic user flows and executes them end-to-end |
 | `/qa-audit` | Methodology audit — scores test suite across pyramid balance, isolation, flakiness, naming, CI |

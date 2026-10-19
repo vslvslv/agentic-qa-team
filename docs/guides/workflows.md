@@ -105,10 +105,12 @@ When a PR fails CI with broken selectors, `/qa-heal` classifies and fixes them a
   run: claude -p "/qa-heal"
 ```
 
-The skill classifies the failure type (broken-selector, assertion-drift, timing-issue, etc.) and routes the fix:
-- Confidence ≥ 0.87 → auto-commits a fix commit
-- Confidence 0.62–0.87 → opens a review PR
-- Confidence < 0.62 → files a GitHub issue
+The skill classifies the failure type (broken-selector, assertion-drift, timing-issue, etc.), repairs the tests and recommends a route by confidence:
+- Confidence ≥ 0.87 → commit (on a `qa-heal/*` branch, never main)
+- Confidence 0.62–0.87 → review PR
+- Confidence < 0.62 → GitHub issue
+
+Each route runs only with approval: interactively it asks; in CI (`claude -p`) it needs the matching key (`ALLOW_COMMIT`, `ALLOW_PR`, `ALLOW_ISSUE`) and otherwise only reports. It commits only files it changed itself.
 
 ---
 
