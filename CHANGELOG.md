@@ -5,6 +5,34 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.17.0.0 — 2026-10-19 — safety and correctness overhaul
+
+Fixes from a full review of the suite. Upgrade note: re-run `bash bin/setup` (it now creates `~/.claude/qa-agentic-team`, which every hook and agent uses).
+
+### Guardrails
+- Skill and agent hooks now run. They pointed at `${CLAUDE_SKILL_DIR}`, which hook processes never receive, so the rm guard and typecheck failed silently. They now use `~/.claude/qa-agentic-team/bin/hooks/`.
+- `qa-pre-bash-safety.sh` parses commands and blocks recursive `rm` of broad paths (the old regex missed 17 of 28 dangerous forms); `qa-post-write-typecheck.sh` reads stdin. 42 table tests in `tests/hooks.test.sh`.
+- Approval gates: risky steps need a key — `TARGET=<url>`, `ALLOW_ACTIVE_SCAN`, `ALLOW_FORM_SUBMIT`, `ALLOW_DB_WRITE`, `ALLOW_INSTALL`, `ALLOW_COMMIT`, `ALLOW_PR`, `ALLOW_ISSUE`. Interactive runs ask; subagents read the brief. Nothing is granted by default.
+- qa-heal commits only files it changed, on a `qa-heal/*` branch, with approval. qa-seed uses `TEST_DATABASE_URL` only, never `DATABASE_URL`. qa-security is passive unless active scanning is approved. qa-explore/qa-simulate confirm the target and skip destructive forms. qa-secrets redacts before the model reads anything.
+
+### /qa-team
+- Dispatches the installed subagents (`subagent_type: qa-<domain>`) in waves of at most 4, after one approval question. The old dispatch called skills that refuse model invocation.
+- Shell state no longer assumed to persist between Bash calls; every agent is classed core / proposed / on request.
+
+### Agents
+- Agent bodies are generated from the skill templates (`scripts/gen-skill-docs.sh`); they had drifted and lost safety rules. CI checks freshness.
+
+### Reference guides
+- The nightly loop grew 22 guides to 40–52k lines each (~1M lines, ~600k tokens per guide) with contradictory version claims. Guides are restored to their pre-loop versions, orphaned forks removed, and CI caps guides at 3,000 lines.
+- Refine skills are manual-only, replace instead of append, require a fetched source for version claims, and no longer edit skill templates. The nightly loop is disabled.
+
+### Install
+- `bin/setup` never deletes existing files (`--force` backs them up), does not edit `settings.json` unattended, and `--namespaced` is removed. New `bin/uninstall`.
+- The update prompt shows incoming commits and pulls this repo (it used to run `git pull` in the user's project). `QA_TEAM_NO_UPDATE_CHECK=1` disables the check.
+- Removed: references to another project's `gstack` telemetry, `/investigate`, `preamble-tier`, the duplicate `qa-team-precheck`, stray `agent.md` copies, silent `pip install` in `cloak-fetch.sh`.
+
+---
+
 ## v1.16.1.0 — 2026-05-14 — skill/agent metadata improvements
 
 ### All skills (38)
