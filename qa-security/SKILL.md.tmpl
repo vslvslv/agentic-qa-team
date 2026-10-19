@@ -2,11 +2,12 @@
 name: qa-security
 version: 1.0.0
 description: |
-  Security testing skill. Two modes: Mode A (full DAST) drives OWASP ZAP via CLI —
-  spider, active scan, Claude OWASP Top 10 / CWE triage. Mode B (lightweight, always
-  available) probes security headers, exposed sensitive files, CORS config, and JWT
-  weaknesses via curl. Nuclei runs as a second pass when installed. All probes are
-  read-only
+  Security testing skill. Passive/baseline by default: a ZAP baseline scan (spider +
+  passive response analysis, no attack payloads), non-intrusive Nuclei templates, and
+  lightweight curl probes of security headers, exposed sensitive files, CORS config and
+  JWT weaknesses, with Claude OWASP Top 10 / CWE triage. Active scanning, fuzzing and
+  Burp authenticated injection testing are gated behind an explicit ALLOW_ACTIVE_SCAN
+  approval and must target a staging/dev host only. Probes only a confirmed target.
 when_to_use: |
   Use when asked to "security test", "run ZAP", "DAST scan", "check security
   headers", "pentest staging", or "find vulnerabilities".
@@ -81,18 +82,30 @@ grep -q 'flask' requirements.txt 2>/dev/null && _STACK="flask"
 [ -f go.mod ] && _STACK="golang"
 echo "STACK: $_STACK"
 
-# Base URL
-echo "--- BASE URL ---"
+# Target candidate (NOT yet confirmed — no probe is sent until the TARGET gate below passes)
+echo "--- TARGET CANDIDATE ---"
 _BASE_URL="${QA_BASE_URL:-}"
-[ -z "$_BASE_URL" ] && _BASE_URL=$(grep -r "baseURL\|BASE_URL" playwright.config.ts \
-  playwright.config.js .env .env.local 2>/dev/null \
-  | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+_TARGET_SOURCE="QA_BASE_URL env"
+if [ -z "$_BASE_URL" ]; then
+  _BASE_URL=$(grep -r "baseURL\|BASE_URL" playwright.config.ts \
+    playwright.config.js .env .env.local 2>/dev/null \
+    | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+  [ -n "$_BASE_URL" ] && _TARGET_SOURCE="config/.env (candidate only — must be confirmed)"
+fi
 _BASE_URL="${_BASE_URL:-http://localhost:3000}"
-echo "BASE_URL: $_BASE_URL"
+echo "TARGET_CANDIDATE: $_BASE_URL"
+echo "TARGET_SOURCE: $_TARGET_SOURCE"
 
-# Verify reachability
-_APP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$_BASE_URL" --max-time 5 2>/dev/null || echo "000")
-echo "APP_STATUS: $_APP_STATUS"
+# Classify local vs remote (a non-local target needs explicit authorisation)
+_TARGET_HOST=$(echo "$_BASE_URL" | sed -E 's#^[a-zA-Z]+://([^/:]+).*#\1#')
+_TARGET_IS_LOCAL=0
+case "$_TARGET_HOST" in
+  localhost|127.0.0.1|0.0.0.0|::1|*.local|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) _TARGET_IS_LOCAL=1 ;;
+esac
+echo "TARGET_HOST: $_TARGET_HOST"
+echo "TARGET_IS_LOCAL: $_TARGET_IS_LOCAL"
+
+# NOTE: reachability is probed in "Gate — Confirm the target", after confirmation — never here.
 
 # BurpMCP deep-dive mode detection
 echo "--- BURP ---"
@@ -105,7 +118,22 @@ find /opt /usr/local ~/tools ~/burpsuite . -name "burpsuite*.jar" \
 echo "BURP_AVAILABLE: $_BURP_AVAILABLE"
 ```
 
-If `_APP_STATUS` is `000`: warn and use `AskUserQuestion`: "App unreachable at $_BASE_URL. The lightweight probe checks (Mode B) can still run against headers. Proceed?" Options: "Yes — run Mode B probes only" | "Cancel". If proceeding, skip Phase 2 (ZAP) and continue with Mode B + Nuclei.
+## Gate — Confirm the target (run before any network probe)
+
+`$_BASE_URL` is only a candidate until this gate passes. **It is the only URL that may be contacted or probed by any phase of this skill.** Never probe a target taken silently from `.env`/config.
+
+**Gate (TARGET=$_BASE_URL):** every request this skill sends will go to `$_BASE_URL`, and only that host. Interactive: confirm the exact target with `AskUserQuestion` before any request leaves the machine — "Security-probe `$_BASE_URL` (source: $_TARGET_SOURCE)? This is the only host that will be contacted." Options: "Yes — probe this target" | "No — enter a different target / cancel"; proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains `TARGET=$_BASE_URL` (the URL must match exactly); otherwise skip every network phase and list the target under "Needs a decision" in the report.
+
+**Non-local target (`TARGET_IS_LOCAL=0`):** do not proceed on confirmation alone. Interactive: additionally require the user to state that they own or are authorised to test `$_TARGET_HOST` — `AskUserQuestion`: "`$_TARGET_HOST` is a remote host. Confirm you own it or are explicitly authorised to security-test it." Options: "Yes — I am authorised" | "No — cancel"; proceed only on yes. As a subagent: a non-local host is authorised only when the brief's `APPROVALS:` line names it exactly as `TARGET=$_BASE_URL`; if it does not, refuse and list it under "Needs a decision". Never probe a non-local host that was not explicitly named.
+
+Once the target is confirmed, probe reachability (this is the first request allowed to leave the machine):
+
+```bash
+_APP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$_BASE_URL" --max-time 5 2>/dev/null || echo "000")
+echo "APP_STATUS: $_APP_STATUS"
+```
+
+If `_APP_STATUS` is `000`: warn and use `AskUserQuestion` (interactive) or note it (subagent): "App unreachable at $_BASE_URL. The lightweight probe checks (Phase 2b) can still run against headers. Proceed?" Options: "Yes — run Phase 2b probes only" | "Cancel". If proceeding, skip Phase 2 (ZAP) and continue with Phase 2b + Nuclei.
 
 ## Phase 1 — Mode Selection
 
@@ -115,18 +143,22 @@ Determine execution mode from Preamble results:
 
 Notify user of mode selected before running.
 
-## Phase 2 — Mode A: ZAP DAST (skip if `_ZAP=0`)
+## Phase 2 — Mode A: ZAP baseline (passive) DAST (skip if `_ZAP=0`)
+
+**Default mode is passive.** The ZAP *baseline* scan spiders the target and inspects the responses it receives; it sends **no** attack payloads. It is safe to run against the confirmed target without further approval. Active scanning (which sends attacks) lives in Phase 2a and is gated.
+
+If `zap-baseline.py` is already available (native or an already-pulled Docker image, per `_ZAP` in the preamble), run it without further approval. If neither is present, the `docker run` below would **pull** the scanner image — that is an install step gated by `ALLOW_INSTALL` (Interactive: ask with `AskUserQuestion`; subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_INSTALL`). Without it, skip ZAP and report the tool as missing; Phase 2b + Nuclei still run.
 
 ```bash
-echo "=== ZAP: SPIDER ==="
-# Use Docker if zap.sh not in PATH
-if command -v zap.sh >/dev/null 2>&1; then
-  zap.sh -cmd -quickurl "$_BASE_URL" -quickout "$_TMP/zap-spider.xml" \
-    -silent 2>/dev/null | tail -5 || echo "ZAP_SPIDER: failed"
+echo "=== ZAP: PASSIVE BASELINE SCAN ==="
+# zap-baseline.py = passive only (spider + passive rules). Never the active quickurl/full scan here.
+if command -v zap-baseline.py >/dev/null 2>&1; then
+  zap-baseline.py -t "$_BASE_URL" -J "$_TMP/zap-alerts.json" -m 5 2>&1 | tail -20 \
+    || echo "ZAP_BASELINE: failed"
 else
   docker run --rm -v "$_TMP:/zap/results" softwaresecurityproject/zap-stable \
-    zap-baseline.py -t "$_BASE_URL" -J /zap/results/zap-alerts.json \
-    -m 5 -z "-config scanner.strength=Medium" 2>&1 | tail -20
+    zap-baseline.py -t "$_BASE_URL" -J /zap/results/zap-alerts.json -m 5 2>&1 | tail -20 \
+    || echo "ZAP_BASELINE: failed (docker/zap-baseline unavailable)"
 fi
 
 echo "=== ZAP: ALERTS ==="
@@ -155,7 +187,27 @@ except Exception as e:
 
 Claude triage: for each `High`/`Medium` alert, map to OWASP Top 10 category (A01–A10) and estimate CVSS score range.
 
+## Phase 2a — ZAP active scan (gated — skip unless explicitly approved)
+
+**Gate (ALLOW_ACTIVE_SCAN):** run an **active** ZAP scan (`zap-full-scan.py`) against `$_BASE_URL`. This sends live attack traffic (injection, fuzzing) and can modify data or trigger side effects, so it must target a **staging/dev** host only — never production. Interactive: ask with `AskUserQuestion`, stating plainly that this sends attack payloads and should only run against a disposable staging target, and proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_ACTIVE_SCAN`; otherwise skip this phase and list it under "Needs a decision" in the report.
+
+```bash
+echo "=== ZAP: ACTIVE FULL SCAN (approved) ==="
+if command -v zap-full-scan.py >/dev/null 2>&1; then
+  zap-full-scan.py -t "$_BASE_URL" -J "$_TMP/zap-alerts.json" -m 5 2>&1 | tail -20 \
+    || echo "ZAP_ACTIVE: failed"
+else
+  docker run --rm -v "$_TMP:/zap/results" softwaresecurityproject/zap-stable \
+    zap-full-scan.py -t "$_BASE_URL" -J /zap/results/zap-alerts.json -m 5 2>&1 | tail -20 \
+    || echo "ZAP_ACTIVE: failed (docker/zap-full-scan unavailable)"
+fi
+```
+
+Re-run the ZAP alert parse above against the refreshed `zap-alerts.json` after an active scan.
+
 ## Phase 2b — Mode B: Lightweight Security Probes (always runs)
+
+These are read-only `GET`/`HEAD`/`OPTIONS` requests only — no attack payloads — so they are part of the passive default.
 
 ```bash
 echo "=== SECURITY HEADER PROBES ==="
@@ -204,10 +256,13 @@ echo "ALLOWED_METHODS: ${_OPTIONS:-unknown}"
 
 ## Phase 3 — Nuclei (skip if `_NUCLEI=0`)
 
+By default Nuclei runs **non-intrusive** templates only (misconfig, exposure, SSL, tech fingerprint). The intrusive/fuzzing/injection template sets (`owasp,cve,sqli,xss,fuzzing`) send attack traffic and may be added **only** under Gate `ALLOW_ACTIVE_SCAN` (see Phase 2a) against a staging target; otherwise keep the `-exclude-tags` guard below.
+
 ```bash
-echo "=== NUCLEI SCAN ==="
+echo "=== NUCLEI SCAN (non-intrusive) ==="
 nuclei -u "$_BASE_URL" \
-  -tags "${_STACK},owasp,cve,misconfig,exposure,token" \
+  -tags "misconfig,exposure,ssl,tech,${_STACK}" \
+  -exclude-tags "intrusive,fuzz,dos,sqli,xss,rce" \
   -severity high,medium \
   -rate-limit 10 \
   -timeout 5 \
@@ -235,23 +290,21 @@ print(f'NUCLEI_SUMMARY: high={high} medium={medium}')
 " 2>/dev/null
 ```
 
-## Phase 3.5 — BurpMCP Authenticated Session Security Testing (BL-021)
+## Phase 3.5 — Burp MCP Authenticated Session Security Testing (gated, optional)
 
-Skip if `_BURP_AVAILABLE=0` or `QA_SKIP_BURP=1`.
+Skip this phase entirely if `_BURP_AVAILABLE=0`, if `QA_SKIP_BURP=1`, **or if no Burp MCP tool is present in your tool list** (and no `QA_BURP_EXPORT` file is set).
 
-This phase operates in **deep-dive mode**: it uses Burp Suite's captured HTTP traffic
-to test authenticated endpoints that ZAP and curl probes cannot reach without session tokens.
+This phase is **active injection testing**: it crafts and replays attack payloads (IDOR/BOLA, privilege escalation, injection, SSRF) against authenticated endpoints that ZAP and curl probes cannot reach without session tokens.
+
+**Gate (ALLOW_ACTIVE_SCAN):** craft and replay attack payloads against `$_BASE_URL` using Burp's captured session token. This sends live attack traffic as an authenticated user, so it must target a **staging/dev** host only — never production. Interactive: ask with `AskUserQuestion`, stating that it replays attacks with the captured session, and proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_ACTIVE_SCAN`; otherwise skip this phase and list it under "Needs a decision" in the report.
+
+**Burp MCP tools:** MCP tools are named `mcp__<server>__<tool>`. This phase uses the Burp MCP server's tools (e.g. `mcp__burp__send_request`, `mcp__burp__get_proxy_history` — **check the actual names in your tool list; do not assume these exact names**). If no such tool is present, skip the MCP steps and use the file-export / curl fallbacks below.
 
 **Step 1 — Retrieve captured requests from Burp:**
 
-Use the BurpMCP MCP tool calls to retrieve HTTP requests captured during a manual session or
-a previous automated run:
+Use the Burp MCP server's request-retrieval tool (the `mcp__<server>__*` tool in your list that returns captured proxy history) to retrieve HTTP requests captured during a manual session or a previous automated run, scoped to `$_BASE_URL`.
 
-```
-burp_retrieve_requests(scope: "_BASE_URL", limit: 50)
-```
-
-If BurpMCP MCP tools are not available (MCP server not configured), fall back to reading
+If no Burp MCP tool is available (MCP server not configured), fall back to reading
 Burp's exported XML file if `QA_BURP_EXPORT` env var points to one:
 
 ```bash
@@ -275,13 +328,9 @@ INJECTION_TARGET: POST /api/login  body.username (SQLi candidate)
 
 **Step 3 — Craft and replay payloads:**
 
-For each injection target (up to 10), craft a test payload and replay using BurpMCP:
+For each injection target (up to 10), craft a test payload and replay using the Burp MCP server's request-sending tool (e.g. `mcp__burp__send_request` — use the actual name in your tool list), passing the modified request.
 
-```
-burp_send_request(request: <modified_request_with_payload>)
-```
-
-Or via curl if BurpMCP replay is unavailable:
+Or via curl if the Burp MCP replay tool is unavailable:
 
 ```bash
 # Example: IDOR probe — replace numeric ID with another user's ID
@@ -414,15 +463,19 @@ Write `$_TMP/qa-security-report.md`:
 <prioritized remediation list>
 
 ---
-*All probes were read-only. No POST fuzzing or auth bypass attempts were made.*
+*Mode: state passive/baseline, or active (ALLOW_ACTIVE_SCAN) if approved. For a passive run, note that all probes were read-only and no fuzzing or auth-bypass attempts were made; for an active run, list which gated phases ran and against which staging target.*
 ```
 
 ## Important Rules
 
-- **Read-only probes only** — never POST malicious payloads, attempt SQL injection, or exploit vulnerabilities
-- **Staging environments only** — do not run against production without explicit confirmation
-- **Rate limiting** — probe at most 10 req/s; never flood with concurrent requests
-- **False positive awareness** — ZAP alerts require human confirmation before treating as confirmed vulnerabilities
+- **Passive by default** — the default run sends no attack payloads: ZAP *baseline* scan, non-intrusive Nuclei templates, and read-only `GET`/`HEAD`/`OPTIONS` header and exposure probes. No injection, fuzzing or active scanning happens without approval.
+- **Active scanning is gated** — active ZAP (`zap-full-scan.py`), intrusive Nuclei tags, and Burp authenticated injection/replay run **only** behind Gate `ALLOW_ACTIVE_SCAN`, and **only** against a staging/dev host you are authorised to test. Never POST malicious payloads, attempt SQL injection, or exploit vulnerabilities without that approval.
+- **Confirm the target; never take it from `.env` silently** — probe only the confirmed `TARGET=$_BASE_URL`, the single host any phase may contact. Refuse a non-local host unless the user explicitly confirms (interactive) or the brief names it exactly as `TARGET=` (subagent).
+- **Staging environments only for active work** — do not run active/injection phases against production under any circumstances; passive probes against production need explicit confirmation.
+- **Rate limiting** — probe at most 10 req/s; never flood with concurrent requests.
+- **False positive awareness** — ZAP alerts require human confirmation before treating as confirmed vulnerabilities.
+- **Installing tools is gated** — if a scanner (ZAP image, Nuclei, httpx, Burp) is not already present, installing or pulling it (brew/pip/npm install, `npx --yes`, `docker pull`) requires Gate `ALLOW_INSTALL`; otherwise report the tool as missing and skip its phase. Tools already present are used without the gate.
+- **Report/CTRF paths** — interactive runs keep the default `$_TMP` names; as a subagent, write the report and CTRF JSON to the brief's `REPORT:` / `CTRF:` paths when given.
 
 ## Agent Memory
 

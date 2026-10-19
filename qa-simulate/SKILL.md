@@ -64,12 +64,26 @@ _PW=0
 ls playwright.config.ts playwright.config.js playwright.config.mts 2>/dev/null && _PW=1
 echo "PLAYWRIGHT: $_PW"
 
+# Target candidate (NOT yet confirmed — see the TARGET gate before Phase 4)
 _BASE_URL="${QA_BASE_URL:-}"
-[ -z "$_BASE_URL" ] && _BASE_URL=$(grep -r "baseURL\|BASE_URL" playwright.config.ts \
-  playwright.config.js .env .env.local 2>/dev/null \
-  | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+_TARGET_SOURCE="QA_BASE_URL env"
+if [ -z "$_BASE_URL" ]; then
+  _BASE_URL=$(grep -r "baseURL\|BASE_URL" playwright.config.ts \
+    playwright.config.js .env .env.local 2>/dev/null \
+    | grep -o 'http[s]*://[^"'"'"' ]*' | head -1)
+  [ -n "$_BASE_URL" ] && _TARGET_SOURCE="config/.env (candidate only — must be confirmed)"
+fi
 _BASE_URL="${_BASE_URL:-http://localhost:3000}"
-echo "BASE_URL: $_BASE_URL"
+echo "TARGET_CANDIDATE: $_BASE_URL"
+echo "TARGET_SOURCE: $_TARGET_SOURCE"
+
+# Classify local vs remote (a non-local target needs explicit authorisation)
+_TARGET_HOST=$(echo "$_BASE_URL" | sed -E 's#^[a-zA-Z]+://([^/:]+).*#\1#')
+_TARGET_IS_LOCAL=0
+case "$_TARGET_HOST" in
+  localhost|127.0.0.1|0.0.0.0|::1|*.local|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) _TARGET_IS_LOCAL=1 ;;
+esac
+echo "TARGET_HOST: $_TARGET_HOST  TARGET_IS_LOCAL: $_TARGET_IS_LOCAL"
 
 _REDTEAM="${QA_REDTEAM:-0}"
 echo "REDTEAM_MODE: $_REDTEAM"
@@ -112,7 +126,9 @@ ls "$_CACHE_FILE" 2>/dev/null && echo "CACHE_HIT: yes" || echo "CACHE_HIT: no"
 
 If cache file exists and `QA_REGEN=0` (default): load from cache and skip generation. Otherwise:
 
-Generate 2–3 user personas for `_FEATURE_DESC`. For each persona, generate a multi-turn scenario:
+Generate 2–3 user personas for `_FEATURE_DESC`. For each persona, generate a multi-turn scenario.
+
+**Destructive-action exclusion (applies to all generated scenarios):** do not generate turns that delete/remove/destroy data, make payments / checkout / purchase / subscribe, send/invite/email/SMS real messages, delete or deactivate accounts, change passwords, or alter admin/roles/permissions. Keep scenarios to navigation, reading, and safe form entry. If the feature under test is itself one of these, generate the scenario only up to the final confirmation step and stop before the irreversible action.
 
 **Persona types** (select contextually appropriate ones):
 - **New User**: first time using the feature, may need guidance, lower privilege
@@ -158,6 +174,10 @@ mkdir -p "$_CACHE_DIR"
 
 ## Phase 3 — Red Team Mode (skip if `_REDTEAM=0`)
 
+Red-team mode replays adversarial payloads (injection, XSS, auth bypass, race, CSRF) against the live target, so it is active attack traffic.
+
+**Gate (ALLOW_ACTIVE_SCAN):** generate and execute adversarial variants against `$_BASE_URL` — this sends attack payloads and must target a **staging/dev** host only, never production. Interactive: this requires both `QA_REDTEAM=1` and confirmation via `AskUserQuestion` (warn it sends live attack traffic); proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_ACTIVE_SCAN`; otherwise skip red-team generation and execution entirely and list it under "Needs a decision" in the report.
+
 Generate adversarial variants of the normal scenarios. For each normal scenario, create adversarial turns:
 
 **Attack categories to test**:
@@ -174,9 +194,19 @@ For each adversarial turn, the expected outcome is **rejection** (4xx response, 
 
 Save to `$_CACHE_DIR/<feature-slug>-redteam.json`.
 
+## Gate — Target and live execution (run before Phase 4)
+
+Phase 4 drives a real browser against `$_BASE_URL`, filling and submitting forms and creating/altering data. `$_BASE_URL` is a candidate until confirmed, and is the only host any spec may contact. Never execute against a target taken silently from `.env`/config.
+
+**Gate (TARGET=$_BASE_URL):** scenario specs will run against `$_BASE_URL`, and only that host. Interactive: confirm the exact target with `AskUserQuestion` — "Run simulations against `$_BASE_URL` (source: $_TARGET_SOURCE)?" Options: "Yes" | "No — change target / cancel"; proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains `TARGET=$_BASE_URL` (exact match); otherwise skip Phase 4 and list the target under "Needs a decision" in the report.
+
+**Non-local target (`TARGET_IS_LOCAL=0`):** interactive — additionally require the user to confirm they own or are authorised to test `$_TARGET_HOST`. Subagent — a non-local host is authorised only when the brief names it exactly as `TARGET=$_BASE_URL`; otherwise refuse and list it under "Needs a decision".
+
+**Gate (ALLOW_FORM_SUBMIT):** scenario turns that submit forms, or send any state-changing request (POST/PUT/PATCH/DELETE), to `$_BASE_URL`. Interactive: ask with `AskUserQuestion` and proceed only on yes. As a subagent: run submit/state-changing turns only if the brief's `APPROVALS:` line contains `ALLOW_FORM_SUBMIT`; otherwise execute only the read-only turns (goto/expect/read), skip every `fill`/`click`-to-submit and any POST/PUT/PATCH/DELETE turn, and list form submission under "Needs a decision" in the report. The destructive-action exclusion from Phase 2 always applies, even when `ALLOW_FORM_SUBMIT` is granted.
+
 ## Phase 4 — Playwright Execution
 
-For each scenario (normal + red-team), generate a Playwright spec file and execute it:
+For each scenario (normal + red-team), generate a Playwright spec file and execute it. If Playwright is not already installed, do not install it ungated — that is an `ALLOW_INSTALL` step (see Important Rules); report it as missing and skip execution instead.
 
 ```bash
 mkdir -p "$_TMP/qa-simulate-specs"
@@ -309,8 +339,13 @@ Write `$_TMP/qa-simulate-report.md`:
 
 - **Scenarios before execution** — always generate and review scenario JSON before writing Playwright specs
 - **Cache by default** — reuse cached scenarios in CI to avoid LLM cost per run; set `QA_REGEN=1` to force regeneration
-- **Red team is opt-in** — never run adversarial attacks unless `QA_REDTEAM=1` is explicitly set
-- **Staging only for red team** — red-team mode must only run against non-production environments
+- **Confirm the target; never take it from `.env` silently** — run only against the confirmed `TARGET=$_BASE_URL`. Refuse a non-local host unless the user explicitly confirms (interactive) or the brief names it exactly as `TARGET=` (subagent).
+- **Form submission / state change is gated** — turns that submit forms or send POST/PUT/PATCH/DELETE run only under Gate `ALLOW_FORM_SUBMIT`; otherwise execute read-only turns only.
+- **No destructive scenarios** — never generate or execute turns that delete data, pay/checkout/subscribe, send real messages, delete accounts, change passwords, or alter admin/roles — even under `ALLOW_FORM_SUBMIT`.
+- **Red team is opt-in and gated** — never run adversarial attacks unless `QA_REDTEAM=1` **and** Gate `ALLOW_ACTIVE_SCAN` are both satisfied.
+- **Staging only for red team and any state-changing run** — adversarial and data-changing execution must only run against non-production environments.
+- **Installing tools is gated** — if Playwright (or any scanner/package) is not already present, installing it (npm/pip/brew install, `npx --yes`, docker pull) requires Gate `ALLOW_INSTALL`; otherwise report the tool as missing and skip, rather than installing.
+- **Report/CTRF paths** — interactive runs keep the default `$_TMP` names; as a subagent, write the report and CTRF JSON to the brief's `REPORT:` / `CTRF:` paths when given.
 
 ## Agent Memory
 

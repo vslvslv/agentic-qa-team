@@ -121,13 +121,22 @@ if echo "$_TRUFFLEHOG_MODE" | grep -qE "staged|both"; then
 fi
 ```
 
-### Combine into unified findings file:
+### Combine and redact into unified findings file:
+
+This step is the redaction boundary. It reads the raw TruffleHog output **in bash/python only** (never into the model's context), writes a findings file that contains **only masked** secret values, and then deletes the raw detector output. Nothing downstream — and no later phase — ever reads a raw secret.
 
 ```bash
 python3 - << 'PYEOF'
 import json, os
 
 tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+
+def redact(raw):
+    """Mask to first 4 chars + length. The full value is never retained."""
+    s = str(raw or '')
+    if len(s) <= 4:
+        return '…(%d)' % len(s)
+    return s[:4] + '…(%d)' % len(s)
 
 def load_jsonl(path):
     items = []
@@ -143,25 +152,43 @@ def load_jsonl(path):
                     pass
     return items
 
-history = load_jsonl(os.path.join(tmp, 'qa-secrets-history.json'))
-staged  = load_jsonl(os.path.join(tmp, 'qa-secrets-staged.json'))
-for item in history:
-    item['_source'] = 'history'
-for item in staged:
-    item['_source'] = 'staged'
+def to_record(item, source):
+    is_ver   = item.get('Verified') is True or item.get('VerificationResult') == 'Verified'
+    detector = item.get('DetectorName') or item.get('detector_name') or 'Unknown'
+    raw      = item.get('Raw') or item.get('raw') or ''
+    meta = item.get('SourceMetadata') or item.get('source_metadata') or {}
+    data = meta.get('Data') or meta.get('data') or {}
+    git_data = (data.get('Git') or data.get('git') or {}) if isinstance(data, dict) else {}
+    file_p   = git_data.get('file') or (data.get('file') if isinstance(data, dict) else '') or ''
+    line_n   = git_data.get('line') or (data.get('line') if isinstance(data, dict) else '') or ''
+    commit   = str(git_data.get('commit') or '')[:12]
+    return {'detector': detector, 'raw_redacted': redact(raw), 'verified': bool(is_ver),
+            'file': file_p, 'line': line_n, 'commit': commit, 'source': source}
+
+history = [to_record(i, 'history') for i in load_jsonl(os.path.join(tmp, 'qa-secrets-history.json'))]
+staged  = [to_record(i, 'staged')  for i in load_jsonl(os.path.join(tmp, 'qa-secrets-staged.json'))]
 
 all_findings = history + staged
-out = os.path.join(tmp, 'qa-secrets-all.json')
+out = os.path.join(tmp, 'qa-secrets-all.json')   # redacted — safe for the model to read
 with open(out, 'w', encoding='utf-8') as fh:
     json.dump(all_findings, fh, indent=2)
+
+# Delete the raw, unredacted detector output now that masked records exist.
+for raw_path in ('qa-secrets-history.json', 'qa-secrets-staged.json',
+                 'qa-secrets-history-fallback.txt', 'qa-secrets-staged-fallback.txt'):
+    try:
+        os.remove(os.path.join(tmp, raw_path))
+    except OSError:
+        pass
+
 print(f'COMBINED_FINDINGS: {len(all_findings)} (history={len(history)}, staged={len(staged)})')
-print(f'COMBINED_PATH: {out}')
+print(f'COMBINED_PATH: {out} (redacted; raw detector output deleted)')
 PYEOF
 ```
 
 ## Phase 2 — Classify
 
-Read `$_TMP/qa-secrets-all.json`, group findings by verification status, and emit counts. Extract DetectorName, redacted Raw value, and SourceMetadata File/Line for each finding.
+Read the **already-redacted** `$_TMP/qa-secrets-all.json` (produced by the combine-and-redact step; it holds only masked values, detector, file, line, commit and verified flag), group findings by verification status, and emit counts. Do not attempt to re-read any raw TruffleHog output — it has been deleted.
 
 ```bash
 python3 - << 'PYEOF'
@@ -169,31 +196,17 @@ import json, os
 
 tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
 
-def redact(raw):
-    """Redact secret to first 4 + last 4 chars. Never expose the full value."""
-    s = str(raw or '')
-    if len(s) < 10:
-        return '****'
-    return s[:4] + ('*' * (len(s) - 8)) + s[-4:]
-
 path = os.path.join(tmp, 'qa-secrets-all.json')
 findings = json.load(open(path, encoding='utf-8')) if os.path.exists(path) else []
 
 verified, unverified = [], []
-for item in findings:
-    is_ver = item.get('Verified') is True or item.get('VerificationResult') == 'Verified'
-    detector = item.get('DetectorName') or item.get('detector_name') or 'Unknown'
-    raw = item.get('Raw') or item.get('raw') or ''
-    meta = item.get('SourceMetadata') or item.get('source_metadata') or {}
-    data = meta.get('Data') or meta.get('data') or {}
-    git_data = (data.get('Git') or data.get('git') or {}) if isinstance(data, dict) else {}
-    file_p  = git_data.get('file') or (data.get('file') if isinstance(data, dict) else '') or ''
-    line_n  = git_data.get('line') or (data.get('line') if isinstance(data, dict) else '') or ''
-    commit  = str(git_data.get('commit') or '')[:12]
-    rec = {'detector': detector, 'raw_redacted': redact(raw),
-           'file': file_p, 'line': line_n, 'commit': commit,
-           'source': item.get('_source', 'unknown')}
-    (verified if is_ver else unverified).append(rec)
+for rec in findings:
+    is_ver = bool(rec.get('verified'))
+    out_rec = {'detector': rec.get('detector', 'Unknown'),
+               'raw_redacted': rec.get('raw_redacted', '…'),
+               'file': rec.get('file', ''), 'line': rec.get('line', ''),
+               'commit': rec.get('commit', ''), 'source': rec.get('source', 'unknown')}
+    (verified if is_ver else unverified).append(out_rec)
 
 print(f'VERIFIED_COUNT: {len(verified)}')
 print(f'UNVERIFIED_COUNT: {len(unverified)}')
@@ -348,14 +361,28 @@ PYEOF
 
 After writing reports, print a concise console summary: verified count, unverified count, report path, CTRF path, and gate status.
 
+### Cleanup (run at the end, and also if any earlier phase failed)
+
+Delete any raw, unredacted detector output that may still be on disk. The combine-and-redact step already removes these on the happy path; run this unconditionally so a failure before that step never leaves raw secrets behind:
+
+```bash
+rm -f "$_TMP/qa-secrets-history.json" "$_TMP/qa-secrets-staged.json" \
+      "$_TMP/qa-secrets-history-fallback.txt" "$_TMP/qa-secrets-staged-fallback.txt"
+echo "RAW_SCAN_OUTPUT_CLEANED: ok"
+```
+
+The files that remain (`qa-secrets-all.json`, `qa-secrets-parsed.json`, the Markdown report, the CTRF JSON) contain only masked values.
+
 ## Important Rules
 
-- **Never print full secret values** — always redact to first 4 + last 4 chars; applies to console output, reports, and all tool outputs
+- **Redact before the model reads anything** — raw TruffleHog output is parsed in bash/python only; the model reads only the masked `qa-secrets-all.json`. The raw `--json` output and any regex-fallback matches are deleted in the combine-and-redact step and again in Cleanup, including on failure.
+- **Never print full secret values** — always mask to first 4 chars + length; applies to console output, reports, and all tool outputs. No step may `cat`/`head` a raw scan file into the model's context.
 - **Verified secrets always fail** regardless of detector type when `SECRETS_FAIL_ON_VERIFIED=1` (the default)
 - **Unverified findings are warnings only** — marked `skipped` in CTRF; require manual review but do not block CI
 - **Run on every PR as a blocking gate** — use `SECRETS_FAIL_ON_VERIFIED=1` in all CI environments
 - **Never commit false positive suppressions** without a documented comment — use `# trufflehog:ignore` inline only for provably non-secret values (test fixtures, example placeholders)
-- **Degrade gracefully** — if TruffleHog is not installed, run regex fallback and report `TRUFFLEHOG_AVAILABLE=0` in CTRF environment block
+- **Degrade gracefully** — if TruffleHog is not installed, run regex fallback and report `TRUFFLEHOG_AVAILABLE=0` in CTRF environment block. Do **not** install TruffleHog on your own: the install hint is printed for the user, and actually running it (brew/go/pip install, docker pull) requires Gate `ALLOW_INSTALL` (subagent: only if the brief's `APPROVALS:` line contains `ALLOW_INSTALL`).
+- **Report/CTRF paths** — interactive runs keep the default dated `$_TMP` names; as a subagent, write the report and CTRF JSON to the brief's `REPORT:` / `CTRF:` paths when given.
 
 ## Agent Memory
 
