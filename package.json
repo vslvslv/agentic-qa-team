@@ -1,10 +1,12 @@
 {
   "name": "qa-agentic-team",
-  "version": "1.0.0",
-  "description": "Agentic QA team — Claude Code skills for web, API, mobile, performance and visual testing",
+  "private": true,
+  "description": "Agentic QA team — Claude Code skills for web, API, mobile, performance and visual testing. Version: see VERSION.",
   "scripts": {
     "gen:skill-docs": "bash scripts/gen-skill-docs.sh",
-    "check:skill-docs": "bash scripts/check-skill-docs.sh"
+    "check:skill-docs": "bash scripts/check-skill-docs.sh",
+    "check:guides": "bash scripts/check-guide-size.sh",
+    "test:hooks": "bash tests/hooks.test.sh"
   },
   "license": "MIT"
 }

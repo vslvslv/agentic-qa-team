@@ -211,6 +211,6 @@ Run the chaos + load test in a dedicated nightly job, not on every PR:
 The repo's own CI enforces that every skill content change bumps `VERSION` and adds a `CHANGELOG` entry. If you're running qa-agentic-team in CI as part of another project, this gate only applies to contributors of the qa-agentic-team repo itself.
 
 ```yaml
-# Enforced by .github/workflows/version-gate.yml and skill-docs.yml
+# Enforced by .github/workflows/version-gate.yml and checks.yml
 # Contributors: see docs/contributing/contributing.md
 ```

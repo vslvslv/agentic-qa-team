@@ -187,9 +187,9 @@ export QA_META_TARGET=qa-heal
 
 ---
 
-## Learning sources update (nightly)
+## Learning sources update (manual)
 
-Keep the best-practice catalogs fresh by searching for new sources across all domains.
+Run by hand when you want to refresh the catalogs (it is not scheduled) by searching for new sources across all domains.
 
 ```
 /learning-sources-refinement
@@ -201,7 +201,7 @@ Searches for new official docs, GitHub repos, and high-quality blog posts across
 - Programming languages
 - Security, accessibility, AI testing
 
-New sources are appended to `learning-sources/*.md`; stale entries are flagged.
+Verified new sources are added to `learning-sources/*.md`; dead, superseded or duplicate entries are removed and unverifiable ones marked stale. Review the diff before committing.
 
 Run after to regenerate the reference guides with the new sources:
 ```

@@ -1,0 +1,32 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Generated files, guide size, hooks, shell syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generated SKILL.md and agent bodies are up to date
+        run: bash scripts/check-skill-docs.sh
+
+      - name: Reference guides are within the size cap
+        run: bash scripts/check-guide-size.sh
+
+      - name: Hook tests
+        run: bash tests/hooks.test.sh
+
+      - name: Shell syntax
+        run: |
+          for f in bin/setup bin/uninstall bin/dev-setup bin/dev-teardown bin/dev-nightly-refine \
+                   bin/hooks/*.sh bin/qa-* bin/cloak-fetch.sh scripts/*.sh tests/*.sh; do
+            bash -n "$f" || { echo "syntax error: $f"; exit 1; }
+          done
