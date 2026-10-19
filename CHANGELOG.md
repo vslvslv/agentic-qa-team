@@ -5,6 +5,30 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.18.0.0 — 2026-10-19 — Claude Code plugin
+
+The suite is now the **`qa` plugin** with this repo as its marketplace.
+
+### Install / upgrade
+- Install: `/plugin marketplace add vslvslv/agentic-qa-team` then `/plugin install qa@agentic-qa-team`. Updates come through `/plugin` (version-gated by `plugin.json`).
+- Upgrading from the symlink install: run `bash bin/uninstall` in the old clone first.
+- Removed: `bin/setup`, `bin/dev-setup`, `bin/dev-teardown`, the per-skill GitHub version check (`qa-version-check-inline.sh`, `qa-team-update-check`) and the `~/.claude/qa-agentic-team` link.
+
+### Renames
+- Skills `/qa-<name>` → `/qa:<name>` (e.g. `/qa:team`, `/qa:web`); agents `qa-<name>` → `qa:<name>`. Report and CTRF file names are unchanged (`qa-<name>-report.md`).
+- Layout: `qa-<name>/` → `skills/<name>/`, `.claude/agents/qa-<name>.md` → `agents/<name>.md`.
+
+### Hooks
+- Plugin agents cannot carry hooks, so the rm guard and typecheck run from `hooks/hooks.json`, scoped with `--plugin-agents-only` to `qa:*` agents (plugin hooks fire in every session). Skill-level hooks still cover `/qa:*` runs. The Stop re-run nudge ships with the plugin; nothing is written to `settings.json`.
+
+### Maintainer skills
+- `/qa-refine`, `/lang-refine`, `/qa-methodology-refine`, `/learning-sources-refinement` moved to `.claude/skills/`: available only inside a clone of this repo, writing to the repo (an installed plugin is a cached copy).
+
+### Development
+- `claude --plugin-dir .` loads the checkout in place. `npm run gen:skill-docs` also syncs `plugin.json`'s version from `VERSION`; CI checks it and validates the manifests.
+
+---
+
 ## v1.17.0.0 — 2026-10-19 — safety and correctness overhaul
 
 Fixes from a full review of the suite. Upgrade note: re-run `bash bin/setup` (it now creates `~/.claude/qa-agentic-team`, which every hook and agent uses).

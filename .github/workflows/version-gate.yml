@@ -6,6 +6,7 @@ on:
       - VERSION
       - CHANGELOG.md
       - package.json
+      - .claude-plugin/plugin.json
 
 jobs:
   version-gate:

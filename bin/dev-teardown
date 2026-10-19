@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# bin/dev-teardown — Alias for bin/uninstall (kept for conductor.json and old docs).
-set -euo pipefail
-exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/uninstall" "$@"

@@ -1,0 +1,13 @@
+{
+  "name": "qa",
+  "version": "1.18.0.0",
+  "description": "Agentic QA team: /qa:team orchestrates web, API, mobile, performance, visual, accessibility, security and test-quality agents. Risky actions (commits, scans, DB writes, installs) run only with your approval.",
+  "author": {
+    "name": "vslvslv",
+    "url": "https://github.com/vslvslv"
+  },
+  "homepage": "https://github.com/vslvslv/agentic-qa-team",
+  "repository": "https://github.com/vslvslv/agentic-qa-team",
+  "license": "MIT",
+  "keywords": ["qa", "testing", "playwright", "e2e", "api-testing", "security", "accessibility", "performance"]
+}

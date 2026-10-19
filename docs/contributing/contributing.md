@@ -7,12 +7,10 @@ Thanks for improving qa-agentic-team. This guide covers the workflow, versioning
 ```bash
 git clone https://github.com/vslvslv/agentic-qa-team
 cd agentic-qa-team
-bash bin/setup --no-hook   # links every skill and agent to this checkout; edits are live
+claude --plugin-dir .      # loads this checkout as the qa plugin for the session
 ```
 
-Dev mode uses a single namespace symlink so every skill is available as `/qa-agentic-team:<skill-name>`. Edits to `.tmpl` files take effect after regenerating docs — no reinstall needed.
-
-When finished: `bash bin/dev-teardown`
+`--plugin-dir` loads the plugin in place (no copy), so edits are live after `npm run gen:skill-docs` and `/reload-plugins`. If the marketplace version is also installed, disable it while developing. The maintainer skills (`/qa-refine`, `/lang-refine`, `/qa-methodology-refine`, `/learning-sources-refinement`) are project skills in `.claude/skills/` and appear only when Claude Code runs inside this repo. Check the plugin with `claude plugin validate .`.
 
 ## Editing an existing skill
 

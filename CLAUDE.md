@@ -1,41 +1,46 @@
-# qa-agentic-team — Developer Notes
+# agentic-qa-team — Developer Notes
 
-## Architecture
+This repo is the **`qa` Claude Code plugin** and its own marketplace (`agentic-qa-team`). Users install it with `/plugin install qa@agentic-qa-team`; skills are `/qa:<name>`, agents are `qa:<name>`.
 
-- **Skills** (`*/SKILL.md.tmpl`): user-facing slash commands. The `.tmpl` is the single source of truth; `SKILL.md` is a generated copy. Every QA skill has `disable-model-invocation: true` (run only when the user types it).
-- **Subagents** (`.claude/agents/<skill>.md`): what `/qa-team` dispatches (`Agent` tool, `subagent_type: "<skill>"`). The frontmatter is hand-maintained; the **body is generated** from `<skill>/SKILL.md.tmpl` by `scripts/gen-skill-docs.sh` (adds a "Running as a subagent" preamble, drops the version check, maps `${CLAUDE_SKILL_DIR}` to `$HOME/.claude/qa-agentic-team/<skill>`). Never edit an agent body by hand. `learning-sources-refinement.md` has no template and is hand-maintained.
-- **Gates**: risky steps are written as `**Gate (KEY):**`. Interactively the skill asks with AskUserQuestion; as a subagent it proceeds only if the brief's `APPROVALS:` line contains the key. Keys: `TARGET=<url>` (the only URL that may be probed), `ALLOW_ACTIVE_SCAN` (intrusive security scans, chaos), `ALLOW_FORM_SUBMIT` (forms or POST/PUT/PATCH/DELETE to TARGET), `ALLOW_DB_WRITE` (writes to `TEST_DATABASE_URL` only), `ALLOW_INSTALL` (install packages/tools), `ALLOW_COMMIT`, `ALLOW_PR`, `ALLOW_ISSUE`. Nothing is granted by default.
-- **Stable path**: `bin/setup` links the repo at `~/.claude/qa-agentic-team`. Hooks and agents reach scripts only through it, because Claude Code does not expose `${CLAUDE_SKILL_DIR}` to hook processes or agents.
-- **Hook scripts** (`bin/hooks/`): `qa-pre-bash-safety.sh` blocks recursive `rm` of broad paths; `qa-post-write-typecheck.sh` runs the project's `tsc --noEmit` after a TS spec is written. Both read the hook JSON on stdin. Tests: `tests/hooks.test.sh`.
-- **Version check** (`bin/qa-version-check-inline.sh`): run by the `!` line at the top of each skill. `QA_TEAM_NO_UPDATE_CHECK=1` disables it.
-- **Reference guides** (`*/references/`, `*/tools/`): capped at 3,000 lines by CI (`scripts/check-guide-size.sh`). Skills grep headings and read sections, never whole files. The refine skills replace and condense guides; they never append, and they never edit skill templates.
+## Layout
 
-## Build and check
+| Path | What |
+|---|---|
+| `.claude-plugin/plugin.json` | Plugin manifest (`name: qa`; `version` must equal `VERSION`) |
+| `.claude-plugin/marketplace.json` | Marketplace manifest; the plugin source is the repo root |
+| `skills/<name>/SKILL.md.tmpl` | **Source of truth** for skill `/qa:<name>`; `SKILL.md` is a generated copy |
+| `agents/<name>.md` | Plugin subagent `qa:<name>`: frontmatter hand-maintained, **body generated** from `skills/<name>/SKILL.md.tmpl` |
+| `hooks/hooks.json` | Plugin hooks: rm guard + typecheck (scoped to `qa:*` agents), Stop re-run nudge |
+| `bin/hooks/` | Hook scripts; tests in `tests/hooks.test.sh` |
+| `qa-methodology/`, `qa-refine-workspace/`, `learning-sources/` | Shared data shipped with the plugin |
+| `.claude/skills/`, `.claude/agents/` | Maintainer-only skills (refine guides, learning sources) — loaded only when working in this repo, never shipped as plugin skills |
+
+## Rules
+
+- Paths: in skill bodies use `${CLAUDE_SKILL_DIR}` (the skill's own folder) or `${CLAUDE_PLUGIN_ROOT}` (plugin root). Both are substituted by Claude Code in skill text; agents get `${CLAUDE_PLUGIN_ROOT}/skills/<name>` from the generator. Neither is set in the environment of Bash tool calls, so never rely on them as shell variables.
+- Plugin agents ignore `hooks`, `mcpServers` and `permissionMode` frontmatter. Agent guardrails live in `hooks/hooks.json`, which fires in every session, so hook scripts called from there get `--plugin-agents-only` and act only when `agent_type` is `qa:*`. Skill frontmatter hooks call the same scripts without the flag.
+- Every QA skill has `disable-model-invocation: true`. `/qa:team` dispatches the agents with `subagent_type: "qa:<name>"`.
+- **Gates**: risky steps are written as `**Gate (KEY):**`. Interactively the skill asks; as a subagent it proceeds only if the brief's `APPROVALS:` line has the key. Keys: `TARGET=<url>` (the only URL that may be probed), `ALLOW_ACTIVE_SCAN`, `ALLOW_FORM_SUBMIT` (forms or POST/PUT/PATCH/DELETE to TARGET), `ALLOW_DB_WRITE` (`$TEST_DATABASE_URL` only), `ALLOW_INSTALL`, `ALLOW_COMMIT`, `ALLOW_PR`, `ALLOW_ISSUE`. Nothing is granted by default.
+- Reference guides (`*/references/`, `*/tools/`) are capped at 3,000 lines (`scripts/check-guide-size.sh`). Skills grep headings and read sections, never whole files. The maintainer refine skills replace and condense guides and never edit skill templates.
+
+## Develop
 
 ```bash
-npm run gen:skill-docs    # regenerate SKILL.md and agent bodies from .tmpl
-npm run check:skill-docs  # CI: generated files are fresh
-npm run check:guides      # CI: guide size cap
-npm run test:hooks        # CI: hook table tests
+claude --plugin-dir .      # load this checkout as the plugin (in place; /reload-plugins after edits)
+npm run gen:skill-docs     # regenerate SKILL.md + agent bodies; syncs plugin.json version from VERSION
+npm run check:skill-docs   # CI: generated files fresh, plugin.json version = VERSION
+npm run check:guides       # CI: guide size cap
+npm run test:hooks         # CI: hook table tests
+claude plugin validate .   # manifest + component validation
 ```
-
-## Installation
-
-```bash
-bash bin/setup             # link skills + agents; asks before adding the Stop hook
-bash bin/setup --with-hook # unattended, with the Stop hook
-bash bin/uninstall         # remove every link into this repo + the Stop hook
-```
-
-`bin/setup` never deletes existing files; `--force` moves conflicting ones to a backup folder.
 
 ## Version bumping
 
-Edit `VERSION`, add an entry to `CHANGELOG.md`. Format: `MAJOR.MINOR.PATCH.MICRO`.
-- **Minor** (1.5 → 1.6): architectural changes, new features
-- **Patch** (1.5.x): content improvements, bug fixes
-- **Micro** (1.5.10.x): guide-only refreshes
+Edit `VERSION` (then `npm run gen:skill-docs` copies it into `plugin.json`) and add a `CHANGELOG.md` entry. Format `MAJOR.MINOR.PATCH.MICRO`. Installed users only receive an update when the version changes.
+- **Minor**: architectural changes, new skills
+- **Patch**: content improvements, bug fixes
+- **Micro**: guide-only refreshes
 
-## Adding a new skill/agent
+## Adding a skill
 
-See `docs/contributing/adding-a-skill.md`. In short: write `qa-<domain>/SKILL.md.tmpl` (gates for anything risky), create `.claude/agents/qa-<domain>.md` with **frontmatter only**, decide whether `/qa-team` should propose it, then `npm run gen:skill-docs`.
+See `docs/contributing/adding-a-skill.md`.

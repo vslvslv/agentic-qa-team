@@ -1,6 +1,6 @@
 # QA Agentic Team
 
-A suite of Claude Code skills that give any project an autonomous QA team. One command launches specialized agents for web, API, mobile, performance, visual, accessibility, security, and more — each discovering your app's structure, generating test specs, executing them, and reporting results.
+A Claude Code plugin (`qa`) that gives any project an autonomous QA team. One command launches specialized agents for web, API, mobile, performance, visual, accessibility, security, and more — each discovering your app's structure, generating test specs, executing them, and reporting results.
 
 > **Version:** see [VERSION](VERSION) · **Full docs:** [docs/](docs/index.md)
 
@@ -10,26 +10,23 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 | Command | What it does |
 |---------|--------------|
-| `/qa-team` | Orchestrator — auto-detects project type, spawns all relevant agents in parallel, aggregates results |
-| `/qa-web` | Web E2E — Playwright, Cypress, or Selenium; discovers routes, writes specs, executes |
-| `/qa-api` | API contract tests — language-driven (JS/TS, Java, Python, C#, Ruby); REST + GraphQL + OpenAPI |
-| `/qa-mobile` | Mobile tests — Detox (RN/Expo), Appium+WebDriverIO (native), or Maestro (cross-platform) |
-| `/qa-perf` | Performance — k6, JMeter, or Locust; ramp-up profiles, p50/p95/p99 thresholds |
-| `/qa-visual` | Visual regression — Playwright screenshots diffed against baselines; masks dynamic content |
-| `/qa-a11y` | Accessibility — axe-core + Playwright ARIA assertions + WCAG 2.2 AA reporting |
-| `/qa-security` | Security — OWASP ZAP DAST + Nuclei CVE scanning; auth bypass + injection checks |
-| `/qa-explore` | Exploratory testing — parallel swarm agents autonomously navigate and probe the app |
-| `/qa-component` | Component tests — Storybook interaction tests + React Testing Library unit coverage |
-| `/qa-seed` | Test data seeding — schema-aware (DDL / Prisma / TypeORM); clean or chaos mode |
-| `/qa-heal` | Self-healing — classifies CI failures (broken selector, timing, logic) and proposes fixes; commits, PRs and issues only with your approval |
-| `/qa-observability` | Observability RCA — reads OTel traces / Loki logs to root-cause QA failures |
-| `/qa-simulate` | User journey simulation — generates realistic user flows and executes them end-to-end |
-| `/qa-audit` | Methodology audit — scores test suite across pyramid balance, isolation, flakiness, naming, CI |
-| `/qa-refine` | Tool research — generates scored best-practice guides for Playwright, Cypress, k6, Appium, etc. |
-| `/qa-methodology-refine` | Methodology research — generates guides for TDD, BDD, test pyramid, contract testing, etc. |
-| `/lang-refine` | Language best practices — GoF patterns, SOLID, Clean Code for TS, Java, Python, C#, Ruby |
-| `/qa-meta-eval` | Adversarial eval — red-teams QA skill outputs using UserSimulatorAgent + JudgeAgent |
-| `/qa-manager` | Requirements bridge — Epic → Playwright skeletons (Mode A) · Figma → TCMS test cases (Mode B) |
+| `/qa:team` | Orchestrator — auto-detects project type, spawns all relevant agents in parallel, aggregates results |
+| `/qa:web` | Web E2E — Playwright, Cypress, or Selenium; discovers routes, writes specs, executes |
+| `/qa:api` | API contract tests — language-driven (JS/TS, Java, Python, C#, Ruby); REST + GraphQL + OpenAPI |
+| `/qa:mobile` | Mobile tests — Detox (RN/Expo), Appium+WebDriverIO (native), or Maestro (cross-platform) |
+| `/qa:perf` | Performance — k6, JMeter, or Locust; ramp-up profiles, p50/p95/p99 thresholds |
+| `/qa:visual` | Visual regression — Playwright screenshots diffed against baselines; masks dynamic content |
+| `/qa:a11y` | Accessibility — axe-core + Playwright ARIA assertions + WCAG 2.2 AA reporting |
+| `/qa:security` | Security — OWASP ZAP DAST + Nuclei CVE scanning; auth bypass + injection checks |
+| `/qa:explore` | Exploratory testing — parallel swarm agents autonomously navigate and probe the app |
+| `/qa:component` | Component tests — Storybook interaction tests + React Testing Library unit coverage |
+| `/qa:seed` | Test data seeding — schema-aware (DDL / Prisma / TypeORM); clean or chaos mode |
+| `/qa:heal` | Self-healing — classifies CI failures (broken selector, timing, logic) and proposes fixes; commits, PRs and issues only with your approval |
+| `/qa:observability` | Observability RCA — reads OTel traces / Loki logs to root-cause QA failures |
+| `/qa:simulate` | User journey simulation — generates realistic user flows and executes them end-to-end |
+| `/qa:audit` | Methodology audit — scores test suite across pyramid balance, isolation, flakiness, naming, CI |
+| `/qa:meta-eval` | Adversarial eval — red-teams QA skill outputs using UserSimulatorAgent + JudgeAgent |
+| `/qa:manager` | Requirements bridge — Epic → Playwright skeletons (Mode A) · Figma → TCMS test cases (Mode B) |
 
 ---
 
@@ -37,10 +34,10 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 | Command | What it does |
 |---------|--------------|
-| `/qa-secrets` | Secrets scanning — TruffleHog git history + staged diff; verified secrets = FAIL |
-| `/qa-sca` | Software composition analysis — Syft SBOM + Grype CVE + license compliance; delta mode |
-| `/qa-slsa` | SLSA provenance attestation — verifies build artifacts via `gh attestation verify` |
-| `/qa-env-parity` | Env var drift — detects required-missing / stale-orphaned keys across dev/staging/prod |
+| `/qa:secrets` | Secrets scanning — TruffleHog git history + staged diff; verified secrets = FAIL |
+| `/qa:sca` | Software composition analysis — Syft SBOM + Grype CVE + license compliance; delta mode |
+| `/qa:slsa` | SLSA provenance attestation — verifies build artifacts via `gh attestation verify` |
+| `/qa:env-parity` | Env var drift — detects required-missing / stale-orphaned keys across dev/staging/prod |
 
 ---
 
@@ -48,10 +45,10 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 | Command | What it does |
 |---------|--------------|
-| `/qa-test-lint` | Static test smell scanner — sleep(), assertion-free, permanent skips, magic numbers |
-| `/qa-test-order` | Randomized test order — detects order-dependent failures (shared global state) |
-| `/qa-test-docs` | Test documentation generator — LLM reads test files → human-readable Markdown docs |
-| `/qa-coverage-gate` | Per-file coverage delta gate; LLM stub suggestions for uncovered lines |
+| `/qa:test-lint` | Static test smell scanner — sleep(), assertion-free, permanent skips, magic numbers |
+| `/qa:test-order` | Randomized test order — detects order-dependent failures (shared global state) |
+| `/qa:test-docs` | Test documentation generator — LLM reads test files → human-readable Markdown docs |
+| `/qa:coverage-gate` | Per-file coverage delta gate; LLM stub suggestions for uncovered lines |
 
 ---
 
@@ -59,10 +56,10 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 | Command | What it does |
 |---------|--------------|
-| `/qa-report` | Unified QA dashboard — aggregates all CTRF files → sprint/PR report with LLM risk narrative |
-| `/qa-cost` | Token cost tracking across QA runs; optional CI budget gate |
-| `/qa-eval-gate` | Eval-driven CI gate — evals/ pass-rate must meet threshold before merge |
-| `/qa-intent-assert` | NL code property assertions — `*.intent.yaml` evaluated by LLM judge |
+| `/qa:report` | Unified QA dashboard — aggregates all CTRF files → sprint/PR report with LLM risk narrative |
+| `/qa:cost` | Token cost tracking across QA runs; optional CI budget gate |
+| `/qa:eval-gate` | Eval-driven CI gate — evals/ pass-rate must meet threshold before merge |
+| `/qa:intent-assert` | NL code property assertions — `*.intent.yaml` evaluated by LLM judge |
 
 ---
 
@@ -70,35 +67,40 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 | Command | What it does |
 |---------|--------------|
-| `/qa-geo` | Playwright timezone + geolocation simulation matrix — catches locale/DST bugs |
-| `/qa-deeplinks` | Deep link validator — parses AASA, assetlinks.json, AndroidManifest; cold-start + in-app |
-| `/qa-deps` | Service dependency smoke test — docker-compose health checks before integration tests |
-| `/qa-ci-trace` | CI build trace analysis (OTel/Honeycomb) → ranked optimization recommendations |
-| `/qa-spec-to-test` | Markdown PRD/spec → YAML test plan → Playwright skeleton spec files |
+| `/qa:geo` | Playwright timezone + geolocation simulation matrix — catches locale/DST bugs |
+| `/qa:deeplinks` | Deep link validator — parses AASA, assetlinks.json, AndroidManifest; cold-start + in-app |
+| `/qa:deps` | Service dependency smoke test — docker-compose health checks before integration tests |
+| `/qa:ci-trace` | CI build trace analysis (OTel/Honeycomb) → ranked optimization recommendations |
+| `/qa:spec-to-test` | Markdown PRD/spec → YAML test plan → Playwright skeleton spec files |
 
 ---
 
 ## Install
 
-```bash
-git clone https://github.com/vslvslv/agentic-qa-team
-cd agentic-qa-team
-bash bin/setup
+```
+/plugin marketplace add vslvslv/agentic-qa-team
+/plugin install qa@agentic-qa-team
 ```
 
-Skills are installed as symlinks in `~/.claude/skills/`, agents in `~/.claude/agents/`, and the repo itself at `~/.claude/qa-agentic-team` (the stable path hooks use). Existing files with the same names are never overwritten (pass `--force` to back them up and replace them). Remove everything with `bash bin/uninstall`.
+or in one step on Claude Code 2.1.275+: `/plugin install qa --marketplace vslvslv/agentic-qa-team`. From a shell: `claude plugin marketplace add vslvslv/agentic-qa-team && claude plugin install qa@agentic-qa-team`.
+
+The plugin adds the `/qa:*` skills, the `qa:*` subagents that `/qa:team` dispatches, and three hooks: an `rm` guard and a TypeScript typecheck that act only inside the plugin's own skills and agents, and a Stop hook that suggests a re-run when test files changed since the last QA run. Updates: `/plugin marketplace update agentic-qa-team` (or enable auto-update for the marketplace in `/plugin`). Remove with `/plugin uninstall qa@agentic-qa-team`.
+
+**Upgrading from the symlink install (v1.17 and earlier):** run `bash bin/uninstall` from your old clone first, then install the plugin.
 
 ## Quick start
 
 Open Claude Code in your project and type:
 
 ```
-/qa-team
+/qa:team
 ```
 
-The orchestrator auto-detects your stack and spawns the relevant agents. Or invoke individual skills directly (`/qa-web`, `/qa-api`, `/qa-perf`, etc.).
+The orchestrator auto-detects your stack and spawns the relevant agents. Or invoke individual skills directly (`/qa:web`, `/qa:api`, `/qa:perf`, etc.).
 
 ---
+
+Maintainers refresh the bundled reference guides with project skills that load only inside this repo (`/qa-refine`, `/qa-methodology-refine`, `/lang-refine`, `/learning-sources-refinement`); see [CLAUDE.md](CLAUDE.md).
 
 ## Documentation
 

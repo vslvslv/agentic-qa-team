@@ -6,10 +6,29 @@
 # . / .. / * / .* , a bare variable that may be empty, or --no-preserve-root.
 # No qa-* skill needs a recursive rm, so anything ambiguous is blocked.
 #
+# Wiring (qa plugin):
+#   skill frontmatter hooks  → no argument: always enforce (registered when a /qa:* skill runs)
+#   hooks/hooks.json         → --plugin-agents-only: plugin hooks fire in every session, so
+#                              enforce only inside this plugin's subagents (agent_type "qa:*").
+#                              Plugin agents cannot carry their own hooks.
+#
 # Exit codes: 0 allow · 2 block (stderr is shown to the model)
 set -u
 
 INPUT=$(cat)
+
+if [ "${1:-}" = "--plugin-agents-only" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    AGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
+  else
+    AGENT_TYPE=$(printf '%s' "$INPUT" | python3 -I -c \
+      'import json,sys; print(json.load(sys.stdin).get("agent_type") or "")' 2>/dev/null)
+  fi
+  case "$AGENT_TYPE" in
+    qa:*) ;;
+    *) exit 0 ;;
+  esac
+fi
 
 _extract_command() {
   if command -v jq >/dev/null 2>&1; then

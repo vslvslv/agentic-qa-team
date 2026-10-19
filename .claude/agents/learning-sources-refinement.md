@@ -26,26 +26,25 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-pre-bash-safety.sh"'
+          command: 'bash "${CLAUDE_PLUGIN_ROOT}/bin/hooks/qa-pre-bash-safety.sh"'
   PostToolUse:
     - matcher: "Write|Edit"
       hooks:
         - type: command
-          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-post-write-typecheck.sh"'
+          command: 'bash "${CLAUDE_PLUGIN_ROOT}/bin/hooks/qa-post-write-typecheck.sh"'
           async: true
 ---
 
-<!-- GENERATED from learning-sources-refinement/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
+<!-- GENERATED from .claude/skills/learning-sources-refinement/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
 
 ## Running as a subagent
 
-You were started by `/qa-team` (or another orchestrator) with a brief. In this mode:
+You were started by `/qa:team` (or another orchestrator) with a brief. In this mode:
 
 - You cannot ask the user anything and cannot start other agents. Wherever this procedure says to use AskUserQuestion, use what the brief says instead.
 - A gated step (`**Gate (KEY):**`) runs only if the brief's `APPROVALS:` line contains that KEY. Otherwise skip it and list it under **Needs a decision** in your report.
 - Probe only the `TARGET=` URL given in the brief, if any. Never pick a target URL from `.env` or config files on your own.
 - Where this procedure says to spawn sub-agents, do that work yourself, sequentially.
-- Paths starting with `$HOME/.claude/qa-agentic-team` point at this suite's install. The Read tool does not expand `$HOME`: run `echo "$HOME"` once and pass absolute paths.
 - Write your report and CTRF file to the brief's `REPORT:` and `CTRF:` paths, even where this procedure names other (e.g. dated) paths. With no `TARGET=`, run nothing against an app: write or review tests only. End your reply with the report path, a one-line status, and the **Needs a decision** list (or "none").
 
 ## Preamble
@@ -54,20 +53,16 @@ You are a knowledge catalog manager. Your job is to keep the shared `learning-so
 catalog current and small enough to be useful: verified, deduplicated sources, with dead
 and superseded entries removed or marked.
 
-### Version Check
-
-!`bash "$HOME/.claude/qa-agentic-team/bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
-
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: first show what would change with `git -C "$HOME/.claude/qa-agentic-team" fetch -q && git -C "$HOME/.claude/qa-agentic-team" log --oneline HEAD..@{u} | head -20`, then run `git -C "$HOME/.claude/qa-agentic-team" pull --ff-only && bash "$HOME/.claude/qa-agentic-team/bin/setup" --no-hook`. Continue regardless.
 
 ### Step 0 — Locate catalog
 
-The catalog lives in the qa-agentic-team repo, **never** in the project you are standing in.
+The catalog lives in the agentic-qa-team repo (the plugin source). This is a maintainer skill, available only inside a clone of that repo.
 
 ```bash
 _DATE=$(date +%Y-%m-%d)
-_QA_ROOT="$HOME/.claude/qa-agentic-team"   # stable link created by bin/setup
-[ -f "$_QA_ROOT/VERSION" ] || _QA_ROOT="$(cd "$HOME/.claude/qa-agentic-team" 2>/dev/null && pwd -P)"
+# Maintainer skill: runs inside a clone of the agentic-qa-team repo (the plugin source).
+_QA_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -f "${_QA_ROOT:-/nonexistent}/.claude-plugin/plugin.json" ] || _QA_ROOT=""
 [ -f "${_QA_ROOT:-/nonexistent}/VERSION" ] && _QA_ROOT="$(cd "$_QA_ROOT" && pwd -P)" || _QA_ROOT=""
 _LS_DIR="${_QA_ROOT:+$_QA_ROOT/learning-sources}"
 _LS_EXISTS=0
@@ -88,7 +83,7 @@ fi
 echo "--- DONE ---"
 ```
 
-- `QA_ROOT: NOT_FOUND` → stop: "qa-agentic-team repo not found — run `bin/setup` from your clone."
+- `QA_ROOT: NOT_FOUND` → stop: "not inside the agentic-qa-team repo — open Claude Code in a clone of it (these are maintainer skills of that repo)."
 - `CATALOG_EXISTS=0` with a repo found → ask: "learning-sources/ catalog not found at
   `<QA_ROOT>/learning-sources`. Create it with entries seeded from the refine skills' source
   lists?" Options: "Yes — create catalog" | "Cancel". On cancel, stop.

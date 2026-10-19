@@ -4,9 +4,24 @@
 # Reads the hook JSON on stdin. When the written file is a *.spec|test.ts(x), runs
 # the project's own tsc (--noEmit) from the nearest directory holding a tsconfig.json
 # and prints the first errors. Never blocks: always exits 0. Runs async.
+# With --plugin-agents-only (hooks/hooks.json) it acts only inside the qa plugin's
+# subagents (agent_type "qa:*"); skill frontmatter hooks call it without the flag.
 set -u
 
 INPUT=$(cat)
+
+if [ "${1:-}" = "--plugin-agents-only" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    AGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
+  else
+    AGENT_TYPE=$(printf '%s' "$INPUT" | python3 -I -c \
+      'import json,sys; print(json.load(sys.stdin).get("agent_type") or "")' 2>/dev/null)
+  fi
+  case "$AGENT_TYPE" in
+    qa:*) ;;
+    *) exit 0 ;;
+  esac
+fi
 
 if command -v jq >/dev/null 2>&1; then
   FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)

@@ -1,0 +1,15 @@
+{
+  "name": "agentic-qa-team",
+  "owner": {
+    "name": "vslvslv",
+    "url": "https://github.com/vslvslv"
+  },
+  "description": "Agentic QA team plugin for Claude Code.",
+  "plugins": [
+    {
+      "name": "qa",
+      "source": "./",
+      "description": "Agentic QA team: /qa:team orchestrates web, API, mobile, performance, visual, accessibility, security and test-quality agents, with approval gates for anything risky."
+    }
+  ]
+}

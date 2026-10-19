@@ -1,6 +1,6 @@
 # Skills Overview
 
-All 38 skills grouped by category. Each runs as a Claude Code slash command and/or as a sub-agent spawned by `/qa-team`.
+All 38 skills grouped by category. Each runs as a Claude Code slash command and/or as a sub-agent spawned by `/qa:team`.
 
 ---
 
@@ -8,7 +8,7 @@ All 38 skills grouped by category. Each runs as a Claude Code slash command and/
 
 These skills actively run tests, generate specs, or probe your application.
 
-### `/qa-team` — Orchestrator
+### `/qa:team` — Orchestrator
 Auto-detects your project stack, scores complexity (hardness 0–7), and spawns the right set of sub-agents in parallel. Aggregates all domain reports into a unified quality report with CTRF output.
 
 - **Complexity routing**: score < 3 → smoke only; 3–5 → full suite; ≥ 6 → full suite + forced audit + explore
@@ -18,7 +18,7 @@ Auto-detects your project stack, scores complexity (hardness 0–7), and spawns 
 
 ---
 
-### `/qa-web` — Web E2E
+### `/qa:web` — Web E2E
 Discovers pages/routes, generates specs, executes, reports coverage with CI-grounding and anti-sycophancy quality gate.
 
 - **Tools**: Playwright (default), Cypress, Selenium WebDriver — auto-detected
@@ -31,7 +31,7 @@ Discovers pages/routes, generates specs, executes, reports coverage with CI-grou
 
 ---
 
-### `/qa-api` — API Testing
+### `/qa:api` — API Testing
 Language-driven REST/GraphQL/gRPC contract and integration testing pipeline.
 
 - **Spec validation**: Spectral lint → Dredd contract drift → before any endpoint tests run
@@ -48,7 +48,7 @@ Language-driven REST/GraphQL/gRPC contract and integration testing pipeline.
 
 ---
 
-### `/qa-mobile` — Mobile Testing
+### `/qa:mobile` — Mobile Testing
 iOS/Android test generation and execution with VLM fallback layers.
 
 - **Tools**: Detox (RN/Expo), Appium+WebDriverIO (native), Maestro (cross-platform YAML) — auto-detected
@@ -60,7 +60,7 @@ iOS/Android test generation and execution with VLM fallback layers.
 
 ---
 
-### `/qa-perf` — Performance Testing
+### `/qa:perf` — Performance Testing
 Load test generation, execution, and trend analysis.
 
 - **Tools**: k6 (default), Artillery (via MCP), JMeter, Locust — auto-detected
@@ -73,7 +73,7 @@ Load test generation, execution, and trend analysis.
 
 ---
 
-### `/qa-visual` — Visual Regression
+### `/qa:visual` — Visual Regression
 Three-layer visual pipeline with AI consensus and cost-efficient DOM metrics.
 
 - **Layer 1**: Playwright `toHaveScreenshot()` at `[375, 768, 1440]` viewports + dark mode
@@ -87,7 +87,7 @@ Three-layer visual pipeline with AI consensus and cost-efficient DOM metrics.
 
 ---
 
-### `/qa-a11y` — Accessibility Testing
+### `/qa:a11y` — Accessibility Testing
 WCAG 2.1 AA audit with AI-generated remediation and per-branch baseline diffing.
 
 - **Phase 1**: `@axe-core/playwright` — 35% of WCAG 2.1 AA issues, zero false positives
@@ -98,7 +98,7 @@ WCAG 2.1 AA audit with AI-generated remediation and per-branch baseline diffing.
 
 ---
 
-### `/qa-security` — Security Testing
+### `/qa:security` — Security Testing
 DAST scanning with safe-mode default for staging environments.
 
 - **Mode A** (full DAST): ZAP MCP add-on — spider → active scan (OWASP Top 10 policy) → Claude triage
@@ -110,7 +110,7 @@ DAST scanning with safe-mode default for staging environments.
 
 ---
 
-### `/qa-explore` — Exploratory Testing
+### `/qa:explore` — Exploratory Testing
 Parallel freeform smoke testing — no test scripts required.
 
 - Spawns N agents (configurable) to autonomously explore the running app
@@ -121,7 +121,7 @@ Parallel freeform smoke testing — no test scripts required.
 
 ---
 
-### `/qa-component` — Component Testing
+### `/qa:component` — Component Testing
 Storybook + Vitest pipeline with mutation quality gate.
 
 - Runs `storybook test --coverage` — interaction tests + accessibility + smoke from stories
@@ -132,7 +132,7 @@ Storybook + Vitest pipeline with mutation quality gate.
 
 ---
 
-### `/qa-simulate` — Scenario Simulation
+### `/qa:simulate` — Scenario Simulation
 AI-driven user journey simulation and red-team testing.
 
 - `UserSimulatorAgent` generates contextually appropriate multi-turn interactions from a feature description
@@ -143,7 +143,7 @@ AI-driven user journey simulation and red-team testing.
 
 ---
 
-### `/qa-seed` — Test Data Generation
+### `/qa:seed` — Test Data Generation
 Schema-aware synthetic test data with chaos mode.
 
 - Reads Prisma schema, SQL DDL, or TypeORM migrations → generates relationship-aware test data
@@ -156,7 +156,7 @@ Schema-aware synthetic test data with chaos mode.
 
 ## Quality gate skills
 
-### `/qa-audit` — Methodology Audit
+### `/qa:audit` — Methodology Audit
 Scores the existing test suite across 5 dimensions with risk-weighted coverage gap analysis.
 
 - **Dimensions**: pyramid balance, test isolation, test data strategy, naming quality, CI/coverage
@@ -171,7 +171,7 @@ Scores the existing test suite across 5 dimensions with risk-weighted coverage g
 
 ## Maintenance skills
 
-### `/qa-heal` — Self-Healing Tests
+### `/qa:heal` — Self-Healing Tests
 CI failure classification and repair pipeline with confidence-gated routing.
 
 - **6-type taxonomy**: broken-selector, stale-element, moved-element, assertion-drift, navigation-change, timing-issue
@@ -182,7 +182,7 @@ CI failure classification and repair pipeline with confidence-gated routing.
 
 ---
 
-### `/qa-observability` — Failure RCA
+### `/qa:observability` — Failure RCA
 HolmesGPT-style root cause analysis from distributed traces and logs.
 
 - Fetches OTel spans from Jaeger or Tempo; queries Loki logs in ±30s window around failure timestamp
@@ -193,7 +193,7 @@ HolmesGPT-style root cause analysis from distributed traces and logs.
 
 ---
 
-### `/qa-meta-eval` — Adversarial Eval
+### `/qa:meta-eval` — Adversarial Eval
 Red-teaming harness that turns the QA system inward.
 
 - Runs 8 adversarial scenarios × UserSimulatorAgent + JudgeAgent
@@ -205,7 +205,7 @@ Red-teaming harness that turns the QA system inward.
 
 ## Planning / management skills
 
-### `/qa-manager` — Requirements to Tests Bridge
+### `/qa:manager` — Requirements to Tests Bridge
 Two modes for connecting requirements to Playwright specs.
 
 - **Mode A (Epic → Playwright)**: JIRA Epic → Features → User Stories → Test Plan → Playwright skeletons; versioned JSON artifacts at each stage; AskUserQuestion confirmation gates; traceability matrix
@@ -215,22 +215,24 @@ Two modes for connecting requirements to Playwright specs.
 
 ---
 
-## Knowledge refinement skills
+## Knowledge refinement skills (maintainers only)
 
-These skills research the web and update the reference guides consumed by the testing agents. Run them periodically to keep best-practice guides current.
+These are project skills of the plugin repo (`.claude/skills/`): they appear only when Claude Code runs inside a clone of agentic-qa-team, and they update the guides that ship with the next plugin release.
+
+These skills research the web and update the reference guides consumed by the testing agents. Run them by hand and review the diff before committing.
 
 | Skill | Updates | Sources |
 |-------|---------|---------|
-| `/qa-refine` | `qa-web/references/`, `qa-mobile/references/`, `qa-perf/references/` | Official docs + GitHub top repos |
+| `/qa-refine` | `skills/web/references/`, `skills/mobile/references/`, `skills/perf/references/` | Official docs + GitHub top repos |
 | `/qa-methodology-refine` | `qa-methodology/references/` | ISTQB, research papers, OWASP, W3C |
-| `/lang-refine` | `lang-refine/references/` | Language docs, style guides, design pattern repos |
+| `/lang-refine` | `.claude/skills/lang-refine/references/` | Language docs, style guides, design pattern repos |
 | `/learning-sources-refinement` | `learning-sources/` catalog | Searches for new official docs, GitHub repos, blogs across 4 domains |
 
 ---
 
 ## Security & supply-chain skills
 
-### `/qa-secrets` — Secrets Scanning
+### `/qa:secrets` — Secrets Scanning
 TruffleHog-based secrets gate that scans git history and staged diffs.
 
 - **Scan modes**: `TRUFFLEHOG_MODE=history|staged|both` (default: both)
@@ -241,7 +243,7 @@ TruffleHog-based secrets gate that scans git history and staged diffs.
 
 ---
 
-### `/qa-sca` — Software Composition Analysis
+### `/qa:sca` — Software Composition Analysis
 Syft SBOM generation + Grype CVE scanning + license compliance gate.
 
 - **SBOM**: generates CycloneDX JSON via Syft; fallback to `npm list --json` / `pip list`
@@ -252,7 +254,7 @@ Syft SBOM generation + Grype CVE scanning + license compliance gate.
 
 ---
 
-### `/qa-slsa` — SLSA Provenance Verification
+### `/qa:slsa` — SLSA Provenance Verification
 Verifies build artifact attestations chain to a trusted CI environment.
 
 - Discovers artifacts: `dist/*.tgz`, Docker images, release binaries via `gh release list`
@@ -262,7 +264,7 @@ Verifies build artifact attestations chain to a trusted CI environment.
 
 ---
 
-### `/qa-env-parity` — Environment Parity Checker
+### `/qa:env-parity` — Environment Parity Checker
 Detects configuration drift across dev/staging/prod environment files.
 
 - Parses all `.env*` files; extracts key sets per environment (values never stored)
@@ -274,7 +276,7 @@ Detects configuration drift across dev/staging/prod environment files.
 
 ## Test quality DX skills
 
-### `/qa-test-lint` — Test Smell Linter
+### `/qa:test-lint` — Test Smell Linter
 Static scanner for test anti-patterns with LLM-generated fix suggestions.
 
 - **Smells detected**: `sleep()`/hardcoded waits, assertion-free tests, permanent skips (`describe.skip`, `pytest.mark.skip`), empty describe blocks, `console.log` leakage, magic numbers, duplicate test bodies, overly-broad assertions (`.toBe(true)`)
@@ -283,7 +285,7 @@ Static scanner for test anti-patterns with LLM-generated fix suggestions.
 
 ---
 
-### `/qa-test-order` — Test Order Dependency Detector
+### `/qa:test-order` — Test Order Dependency Detector
 Runs the test suite N times with different random seeds to detect order-dependent failures.
 
 - **Runners**: Jest `--randomize --randomizeOrderSeed=N`, Vitest `--sequence.shuffle`, pytest `pytest-randomly`, Go `go test -shuffle=on`
@@ -293,7 +295,7 @@ Runs the test suite N times with different random seeds to detect order-dependen
 
 ---
 
-### `/qa-test-docs` — Test Documentation Generator
+### `/qa:test-docs` — Test Documentation Generator
 Reads test files and generates human-readable Markdown documentation per feature domain.
 
 - Clusters test files by parent directory / feature name
@@ -304,7 +306,7 @@ Reads test files and generates human-readable Markdown documentation per feature
 
 ---
 
-### `/qa-coverage-gate` — Coverage Delta Gate
+### `/qa:coverage-gate` — Coverage Delta Gate
 Runs coverage tooling and gates CI on per-file delta vs base branch.
 
 - Only gates on files changed in the PR (not entire codebase)
@@ -316,7 +318,7 @@ Runs coverage tooling and gates CI on per-file delta vs base branch.
 
 ## Reporting & AI gate skills
 
-### `/qa-report` — Unified QA Dashboard
+### `/qa:report` — Unified QA Dashboard
 Aggregates all CTRF files from a CI run or sprint into a single executive report.
 
 - Loads all `$TMP/qa-*-ctrf.json` files; enriches with flaky-registry and coverage delta
@@ -325,7 +327,7 @@ Aggregates all CTRF files from a CI run or sprint into a single executive report
 
 ---
 
-### `/qa-cost` — Token Cost Tracker
+### `/qa:cost` — Token Cost Tracker
 Reads CTRF token metadata and computes per-skill AI API cost.
 
 - Model pricing map: claude-sonnet-4-6 $3/$15 per MTok in/out; claude-haiku-4-5 $0.80/$4; claude-opus-4-7 $15/$75
@@ -335,7 +337,7 @@ Reads CTRF token metadata and computes per-skill AI API cost.
 
 ---
 
-### `/qa-eval-gate` — Eval-Driven CI Gate
+### `/qa:eval-gate` — Eval-Driven CI Gate
 Enforces that AI features have passing evaluation harnesses before merging.
 
 - Discovers `evals/`, `tests/evals/`, or `src/evals/` directories
@@ -345,7 +347,7 @@ Enforces that AI features have passing evaluation harnesses before merging.
 
 ---
 
-### `/qa-intent-assert` — NL Code Property Assertions
+### `/qa:intent-assert` — NL Code Property Assertions
 Evaluates plain-English code properties defined in `*.intent.yaml` files via LLM judge.
 
 - Assertion format: `{ assertion: "This function must never return negative balance", target: "src/billing.ts:calculateBalance" }`
@@ -357,7 +359,7 @@ Evaluates plain-English code properties defined in `*.intent.yaml` files via LLM
 
 ## Web / mobile / infra skills
 
-### `/qa-geo` — Geo & Timezone Simulation
+### `/qa:geo` — Geo & Timezone Simulation
 Playwright matrix across timezones and geolocations to catch locale and DST bugs.
 
 - Default matrix: America/New_York (en-US), Europe/London (en-GB), Asia/Tokyo (ja-JP), Australia/Sydney (en-AU)
@@ -367,7 +369,7 @@ Playwright matrix across timezones and geolocations to catch locale and DST bugs
 
 ---
 
-### `/qa-deeplinks` — Deep Link Validator
+### `/qa:deeplinks` — Deep Link Validator
 Enumerates and tests all declared deep links and universal links.
 
 - Parses: `apple-app-site-association` (AASA), `assetlinks.json`, `AndroidManifest.xml` intent filters, `app.json`/Expo config
@@ -377,7 +379,7 @@ Enumerates and tests all declared deep links and universal links.
 
 ---
 
-### `/qa-deps` — Service Dependency Smoke Test
+### `/qa:deps` — Service Dependency Smoke Test
 Spins up docker-compose services and runs type-aware health checks before integration tests.
 
 - Discovers compose file: `docker-compose.yml`, `test-env.yml`, `compose.yml`, etc.
@@ -387,7 +389,7 @@ Spins up docker-compose services and runs type-aware health checks before integr
 
 ---
 
-### `/qa-ci-trace` — CI Build Intelligence
+### `/qa:ci-trace` — CI Build Intelligence
 Analyzes OTel build traces to produce ranked CI optimization recommendations.
 
 - **Sources**: Honeycomb API (`BUILDEVENTS_APIKEY` + `HONEYCOMB_TEAM` + `HONEYCOMB_DATASET`), local `*.otlp.json` files, GitHub Actions run history
@@ -397,7 +399,7 @@ Analyzes OTel build traces to produce ranked CI optimization recommendations.
 
 ---
 
-### `/qa-spec-to-test` — Spec-to-Test Generator
+### `/qa:spec-to-test` — Spec-to-Test Generator
 Converts Markdown PRD/spec documents into YAML test plans and Playwright skeletons.
 
 - Auto-discovers `PRD*.md`, `SPEC*.md`, `requirements*.md`, `docs/`, `specs/` directories

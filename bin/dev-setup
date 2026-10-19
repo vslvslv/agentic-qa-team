@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# bin/dev-setup — Developer mode. The normal install already links every skill and agent
-# into this checkout, so edits (after `bash scripts/gen-skill-docs.sh`) are live at once.
-# Kept as an alias so existing docs and conductor.json keep working.
-set -euo pipefail
-exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup" --no-hook "$@"

@@ -12,8 +12,8 @@ Set these in your project's `.env.local` (or export before running Claude Code).
 
 | Variable | Default | Used by |
 |----------|---------|---------|
-| `WEB_URL` | `http://localhost:3000` | `/qa-web`, `/qa-visual`, `/qa-perf`, `/qa-a11y`, `/qa-explore` |
-| `API_URL` | `http://localhost:3001` | `/qa-api`, `/qa-perf`, `/qa-security` |
+| `WEB_URL` | `http://localhost:3000` | `/qa:web`, `/qa:visual`, `/qa:perf`, `/qa:a11y`, `/qa:explore` |
+| `API_URL` | `http://localhost:3001` | `/qa:api`, `/qa:perf`, `/qa:security` |
 | `E2E_USER_EMAIL` | `admin@example.com` | All agents with auth flows |
 | `E2E_USER_PASSWORD` | `password123` | All agents with auth flows |
 
@@ -23,19 +23,19 @@ Set these in your project's `.env.local` (or export before running Claude Code).
 |----------|--------|---------|--------|
 | `QA_FAST_MODE` | `0` / `1` | `0` | Skip deep phases; smoke tests only |
 | `QA_DEEP_MODE` | `0` / `1` | `0` | Force all agents + audit + explore |
-| `QA_DEEP_FUZZ` | `0` / `1` | `0` | Enable RESTler stateful REST fuzzing (`/qa-api`) |
-| `QA_SECURITY` | `0` / `1` | `0` | Enable OWASP OFFAT security fuzzing (`/qa-api`, `/qa-security`) |
-| `QA_CHAOS` | `0` / `1` | `0` | Enable LitmusChaos concurrent resilience test (`/qa-perf`) |
-| `QA_BROWSERS` | `chromium`, `firefox`, `webkit` or comma-separated | `chromium,firefox,webkit` | Which browsers to run (`/qa-web`) |
-| `QA_EXTRA_PATHS` | Comma-separated paths | (none) | Additional project directories for multi-repo setups (`/qa-team`) |
-| `QA_META_TARGET` | Skill name | `all` | Scope adversarial eval to one skill (`/qa-meta-eval`) |
+| `QA_DEEP_FUZZ` | `0` / `1` | `0` | Enable RESTler stateful REST fuzzing (`/qa:api`) |
+| `QA_SECURITY` | `0` / `1` | `0` | Enable OWASP OFFAT security fuzzing (`/qa:api`, `/qa:security`) |
+| `QA_CHAOS` | `0` / `1` | `0` | Enable LitmusChaos concurrent resilience test (`/qa:perf`) |
+| `QA_BROWSERS` | `chromium`, `firefox`, `webkit` or comma-separated | `chromium,firefox,webkit` | Which browsers to run (`/qa:web`) |
+| `QA_EXTRA_PATHS` | Comma-separated paths | (none) | Additional project directories for multi-repo setups (`/qa:team`) |
+| `QA_META_TARGET` | Skill name | `all` | Scope adversarial eval to one skill (`/qa:meta-eval`) |
 
 ### Test data
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `TEST_DATABASE_URL` | (none) | Database connection string (`/qa-seed`, `/qa-api`) |
-| `QA_SEED_ROWS` | `100` | Rows to generate per table (`/qa-seed`) |
+| `TEST_DATABASE_URL` | (none) | Database connection string (`/qa:seed`, `/qa:api`) |
+| `QA_SEED_ROWS` | `100` | Rows to generate per table (`/qa:seed`) |
 | `QA_SEED_MODE` | `clean` | `clean` or `chaos` — chaos injects nulls/duplicates/bad dates |
 
 ---
@@ -49,7 +49,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://your-otel-collector:4318
 export OTEL_SERVICE_NAME=qa-suite
 ```
 
-When set: `/qa-web` and `/qa-api` inject `traceparent` headers; `/qa-observability` RCA sub-agent auto-activates on failures.
+When set: `/qa:web` and `/qa:api` inject `traceparent` headers; `/qa:observability` RCA sub-agent auto-activates on failures.
 
 ### Jaeger / Tempo / Loki
 
@@ -68,11 +68,11 @@ export BENCHER_API_TOKEN=your-token
 export BENCHER_PROJECT=my-project
 ```
 
-When set: `/qa-perf` pushes k6 results after each run and fetches trend history for regression narrative.
+When set: `/qa:perf` pushes k6 results after each run and fetches trend history for regression narrative.
 
 ---
 
-## JIRA integration (`/qa-manager` Mode A)
+## JIRA integration (`/qa:manager` Mode A)
 
 ```bash
 export JIRA_URL=https://yourorg.atlassian.net
@@ -80,11 +80,11 @@ export JIRA_TOKEN=your-api-token          # Personal API token from id.atlassian
 export JIRA_EPIC_ID=PROJ-100             # Optional: pass at skill invocation instead
 ```
 
-Without these, `/qa-manager` falls back to manual input via `AskUserQuestion`.
+Without these, `/qa:manager` falls back to manual input via `AskUserQuestion`.
 
 ---
 
-## Figma integration (`/qa-manager` Mode B)
+## Figma integration (`/qa:manager` Mode B)
 
 ```bash
 export FIGMA_TOKEN=your-figma-personal-access-token  # From figma.com/settings
@@ -94,7 +94,7 @@ Without this, the skill prompts you to share screenshots manually.
 
 ---
 
-## TestRail / Xray TCMS (`/qa-manager`)
+## TestRail / Xray TCMS (`/qa:manager`)
 
 ```bash
 # TestRail
@@ -109,7 +109,7 @@ export XRAY_CLIENT_ID=your-client-id
 export XRAY_CLIENT_SECRET=your-client-secret
 ```
 
-Without TCMS config: `/qa-manager` saves test cases as Markdown to `test-specs/`.
+Without TCMS config: `/qa:manager` saves test cases as Markdown to `test-specs/`.
 
 ---
 
@@ -228,7 +228,7 @@ services:
       - 6379
 ```
 
-When detected by `/qa-team`, each sub-agent receives isolated `DB_URL` and `REDIS_URL` env vars.
+When detected by `/qa:team`, each sub-agent receives isolated `DB_URL` and `REDIS_URL` env vars.
 
 ---
 
@@ -236,15 +236,4 @@ When detected by `/qa-team`, each sub-agent receives isolated `DB_URL` and `REDI
 
 The Stop hook fires at the end of each Claude Code session. If test files changed since the last QA run, it prints a passive nudge.
 
-Install (or re-install if schema was wrong):
-
-```bash
-bash bin/setup --hook-only
-```
-
-To verify it's correctly installed:
-
-```bash
-jq '.hooks.Stop' ~/.claude/settings.json
-# Should show: [{ "matcher": "main-agent", "hooks": [{ "type": "command", "command": "..." }] }]
-```
+It ships with the plugin (`hooks/hooks.json`) — there is nothing to install. It runs `bin/qa-team-suggest-rerun`, which only prints when the current repo has a `.qa-team/` history folder.

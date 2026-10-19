@@ -43,6 +43,23 @@ do _expect 0 "$c"; done
 # 'echo "rm -rf /"' is a known false-positive risk; it is allowed because the
 # segment's program is echo, not rm. Keep it in the allow list as a regression check.
 
+# --- plugin-level scoping (--plugin-agents-only) ------------------------------
+_scoped() {  # _scoped <want_exit> <agent_type or ""> <command>
+  local want="$1" at="$2" cmd="$3" got
+  python3 -I -c 'import json,sys
+d={"tool_input":{"command":sys.argv[2]}}
+if sys.argv[1]: d["agent_type"]=sys.argv[1]
+print(json.dumps(d))' "$at" "$cmd" | bash "$GUARD" --plugin-agents-only 2>/dev/null
+  got=$?
+  if [ "$got" = "$want" ]; then PASS=$((PASS + 1)); else
+    FAIL=$((FAIL + 1)); echo "  FAIL scoped: want $want got $got: agent_type='$at' $cmd"; fi
+}
+_scoped 2 'qa:web' 'rm -rf /'          # inside a qa plugin agent: enforced
+_scoped 2 'qa:heal' 'rm -rf ~'
+_scoped 0 'qa:web' 'rm -rf node_modules'
+_scoped 0 '' 'rm -rf ./build-old'      # main session: left to the skill-level hook
+_scoped 0 'other:agent' 'rm -rf /tmp'  # someone else's agent: not ours to police
+
 # --- typecheck hook: never blocks, ignores non-spec files ---------------------
 printf '{"tool_input":{"file_path":"/nonexistent/a.ts"}}' | bash "$TYPECHECK" >/dev/null 2>&1
 [ $? = 0 ] && PASS=$((PASS + 1)) || { FAIL=$((FAIL + 1)); echo "  FAIL typecheck: non-spec"; }

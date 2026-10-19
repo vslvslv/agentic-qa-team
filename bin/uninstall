@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# bin/uninstall — Remove every symlink bin/setup created that points into this repo,
-# and the Stop hook entry. Never removes a real file or directory.
+# bin/uninstall — Migration helper: remove a pre-plugin (v1.17 and earlier) symlink install.
+# Removes every symlink the old bin/setup created that points into this repo, and its
+# Stop hook entry in ~/.claude/settings.json. Never removes a real file or directory.
+# The plugin itself is managed with /plugin (install, update, uninstall).
 #
 # Usage: bash bin/uninstall [--keep-hook]
 set -euo pipefail

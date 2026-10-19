@@ -15,7 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generated SKILL.md and agent bodies are up to date
+      - name: Plugin manifests are valid JSON
+        run: |
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
+            python3 -m json.tool "$f" > /dev/null || { echo "invalid JSON: $f"; exit 1; }
+          done
+
+      - name: Generated SKILL.md and agent bodies are up to date (and plugin.json version = VERSION)
         run: bash scripts/check-skill-docs.sh
 
       - name: Reference guides are within the size cap
@@ -26,7 +32,7 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in bin/setup bin/uninstall bin/dev-setup bin/dev-teardown bin/dev-nightly-refine \
+          for f in bin/uninstall bin/dev-nightly-refine \
                    bin/hooks/*.sh bin/qa-* bin/cloak-fetch.sh scripts/*.sh tests/*.sh; do
             bash -n "$f" || { echo "syntax error: $f"; exit 1; }
           done
