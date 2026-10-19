@@ -92,6 +92,10 @@ For each loaded scenario, log: `[S00N] <name> → <target_skill> (<edge_case>)`.
 
 For each scenario (process one at a time — do not parallelise; each scenario is independent):
 
+If you are running as a subagent (no Agent tool), run the simulator and judge roles yourself
+sequentially: write the simulated output (Step B) from the context file alone, finish it, then judge
+it (Step C) against the judge file — never revise the simulated output after reading the criteria.
+
 ### Step A — Build Input Context
 
 Write `$_TMP/meta-eval-context-{id}.md`:
@@ -111,6 +115,17 @@ Write `$_TMP/meta-eval-context-{id}.md`:
 {expected_behavior}
 ```
 
+Write the grading material separately to `$_TMP/meta-eval-judge-{id}.md` — the simulator must not
+see it:
+
+```markdown
+## Scenario {id}: Judge Criteria
+{judge_criteria as a numbered list, keeping each criterion's id}
+
+## Anti-Patterns
+{anti_patterns as a bullet list}
+```
+
 ### Step B — UserSimulatorAgent
 
 Spawn an Agent sub-agent with this prompt (substitute `{id}`, `{target_skill}`, context path):
@@ -126,8 +141,9 @@ Spawn an Agent sub-agent with this prompt (substitute `{id}`, `{target_skill}`, 
 Spawn an Agent sub-agent with this prompt:
 
 > You are judging the output quality of a simulated QA skill run. Read:
-> 1. `$_TMP/meta-eval-context-{id}.md` — the scenario (target skill, edge case, expected behavior, judge_criteria, anti_patterns)
-> 2. `$_TMP/meta-eval-output-{id}.md` — the simulated skill output to judge
+> 1. `$_TMP/meta-eval-context-{id}.md` — the scenario (target skill, edge case, expected behavior)
+> 2. `$_TMP/meta-eval-judge-{id}.md` — the `judge_criteria` and `anti_patterns` to apply
+> 3. `$_TMP/meta-eval-output-{id}.md` — the simulated skill output to judge
 >
 > For each criterion in `judge_criteria`, score PASS or FAIL with a one-sentence reason.
 > Check for each anti-pattern in `anti_patterns` — report FOUND or NOT_FOUND.

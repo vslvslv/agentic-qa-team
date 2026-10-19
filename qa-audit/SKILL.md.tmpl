@@ -436,22 +436,33 @@ Add classification column to the report's flakiness section:
 
 ## Phase 3 — Load Methodology Guides
 
-Check for pre-generated methodology guides:
+The methodology guides ship with the skill suite, not with the project under audit:
 
 ```bash
-ls qa-methodology/references/ 2>/dev/null || echo "No methodology guides found"
+ls -d "${CLAUDE_SKILL_DIR}/../qa-methodology/references/"*.md 2>/dev/null || echo "No methodology guides found"
 ```
 
-For each relevant guide present, read its "Anti-Patterns" and "Real-World Gotchas"
-sections. Use these to enrich recommendations with specific, sourced callouts.
+Consult only the guides that match a finding (mapping below), and never read a whole guide —
+they run to ~1,000+ lines. For each relevant guide present, list its headings first:
 
-Relevant guide mapping:
-- Pyramid issues → `qa-methodology/references/test-pyramid-guide.md`
-- Sleep/timing issues → `qa-methodology/references/flakiness-guide.md`
-- Hardcoded data → `qa-methodology/references/test-data-guide.md`
-- Isolation issues → `qa-methodology/references/test-isolation-guide.md`
-- Coverage issues → `qa-methodology/references/coverage-guide.md`
-- CI issues → `qa-methodology/references/ci-cd-testing-guide.md`
+```bash
+_GUIDE="${CLAUDE_SKILL_DIR}/../qa-methodology/references/<topic>-guide.md"
+ls "$_GUIDE" && grep -n '^## ' "$_GUIDE"   # prints the absolute path to pass to Read, then the headings
+```
+
+Then Read (at the path printed above) only the sections whose heading starts with "Anti-Patterns"
+or "Real-World Gotchas" (heading text may carry a suffix such as `[community]`), using the Read
+tool's `offset`/`limit` from the heading line numbers (a section ends at the next `## ` heading). If a guide has neither
+heading, skip it — do not fall back to reading the whole file. Use what you read to enrich
+recommendations with specific, sourced callouts.
+
+Relevant guide mapping (files under `${CLAUDE_SKILL_DIR}/../qa-methodology/references/`):
+- Pyramid issues → `test-pyramid-guide.md`
+- Sleep/timing issues → `flakiness-guide.md`
+- Hardcoded data → `test-data-guide.md`
+- Isolation issues → `test-isolation-guide.md`
+- Coverage issues → `coverage-guide.md`
+- CI issues → `ci-cd-testing-guide.md`
 
 If no guides exist, use built-in methodology knowledge and note:
 "Run `/qa-methodology-refine <topic>` to generate richer guidance for this finding."
@@ -749,7 +760,7 @@ Ranked by impact (CRITICAL → IMPORTANT → NICE-TO-HAVE):
 // After:
 <corrected code using best practice>
 ```
-**Guide:** `qa-methodology/references/<topic>-guide.md`
+**Guide:** `qa-methodology/references/<topic>-guide.md` (in the qa-agentic-team install)
 
 ... (up to 5 recommendations) ...
 
@@ -766,7 +777,7 @@ Ranked by impact (CRITICAL → IMPORTANT → NICE-TO-HAVE):
 - AAA/GWT markers: N occurrences
 
 ## Methodology Guides Available
-<list qa-methodology/references/*.md with one-line descriptions>
+<list the methodology guides found in Phase 3 with one-line descriptions>
 OR
 "No methodology guides generated yet. Run `/qa-methodology-refine <topic>` to enrich future audits."
 ```

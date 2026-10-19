@@ -293,10 +293,10 @@ Use the CI grounding output when generating tests in Phase 2:
 
 ## Phase 2 — Load Tool Patterns & Generate Tests
 
-Read the tool-specific patterns file for the selected `_WEB_TOOL`:
+Read the tool-specific patterns file for the selected `_WEB_TOOL` (short, read it whole):
 
 ```
-Read qa-web/tools/<_WEB_TOOL>.md
+Read ${CLAUDE_SKILL_DIR}/tools/<_WEB_TOOL>.md
 ```
 
 ### Multi-Browser Configuration
@@ -446,12 +446,21 @@ generate standard Playwright tests from the Gherkin `Given/When/Then` steps.
 
 **On PR changing user-facing behavior**: update `Then` clauses in `.feature` files based on PR diff — the Gherkin stays stable, Hercules re-discovers selectors on next run.
 
-Then select and read the language-appropriate reference guide based on `_WEB_TOOL` and `_TARGET_LANG`:
+Then consult the reference guide for `_WEB_TOOL` / `_TARGET_LANG` (listed below). Guides are long
+(up to ~3,000 lines) — do NOT read a whole guide. First list its section headings, then Read only the
+sections relevant to the pages and flows in scope (for example auth, locators, network mocking), using
+the Read tool's `offset`/`limit` taken from the heading line numbers:
+
+```bash
+_GUIDE="${CLAUDE_SKILL_DIR}/references/<guide-file>.md"   # <guide-file> = file named in the Reference link
+ls "$_GUIDE" && grep -nE '^#{2,3} ' "$_GUIDE"            # prints the absolute path to pass to Read, then the headings
+```
+
+If the guide is missing, continue with the key patterns listed below.
 
 **Playwright — TypeScript** (when `_TARGET_LANG` is not `csharp`):
 > Reference: [Playwright patterns guide (TypeScript)](references/playwright-patterns.md)
-> Key patterns: POM + fixture injection · storageState auth (single/multi-role/API-based/worker-scoped) · IndexedDB in storageState (v1.51+) · OAuth + MFA + magic link auth · locator rank · web-first assertions · soft assertions · network mocking + HAR recording + network-cache · test sharding · visual regression · `expect.poll`/`toPass` · accessibility with axe-core · aria snapshots (`toMatchAriaSnapshot` + `locator.ariaSnapshot()` + `mode: 'ai'`) · test annotations/tagging · global setup via project deps · custom reporters (HTML `title` v1.53+) · multi-environment projects · custom matchers · keyboard/focus testing · browser storage manipulation · performance timing · mobile emulation · clock mocking · geolocation · test attachments · debug workflow · TypeScript config + ESLint · typed POM factory · WebSocket testing + `routeWebSocket` · pure API test suites · `addLocatorHandler` overlay dismissal · post-facto inspection APIs (`consoleMessages`/`pageErrors`/`requests`) · `locator.normalize()` · `locator.describe()` · Screencast API + `showActions()` · Docker deployment · auto-fixture suite scaling · `browser.bind()` multi-client · Playwright Test Agents (Planner/Generator/Healer v1.56+) · `launchPersistentContext` session reuse · `maxRedirects` APIRequestContext · `snapshotPath({ kind })` · cloud scaling (Currents/Moon/remote server) · breaking changes reference (v1.45–v1.59) · `pressSequentially()` for autocomplete/OTP · `locator.all()` + `allTextContents()` · `filter({ hasNot, hasNotText })` exclusion · `toHaveCSS()` computed style assertions · `toBeInViewport({ ratio })` scroll visibility · `page.pdf()` PDF generation testing
-> Breaking changes: `page.accessibility` removed (v1.57) → use `toMatchAriaSnapshot` / axe-core · Chrome for Testing replaces Chromium builds (v1.57) · React 16/17 CT support removed (v1.57) · `@playwright/experimental-ct-svelte` removed (v1.59) · macOS 14 WebKit dropped (v1.59)
+> Key patterns: POM + fixture injection · storageState auth (single/multi-role/API-based/worker-scoped) · locator rank · web-first assertions · soft assertions · network mocking + HAR recording · test sharding · visual regression · `expect.poll`/`toPass` · accessibility with axe-core · aria snapshots (`toMatchAriaSnapshot`) · test annotations/tagging · global setup via project deps · multi-environment projects · clock mocking · `addLocatorHandler` overlay dismissal · WebSocket testing · pure API test suites
 
 **Playwright — C#** (when `_TARGET_LANG=csharp`):
 > Reference: [Playwright patterns guide (C#)](references/playwright-patterns-csharp.md)
@@ -460,7 +469,7 @@ Then select and read the language-appropriate reference guide based on `_WEB_TOO
 
 **Cypress**:
 > Reference: [Cypress patterns guide](references/cypress-patterns.md)
-> Key patterns: cy.session() auth (role-keyed validate callback) · cy.intercept() routeMatcher object form + RouteHandler (spy/modify/delay/req.alias dynamic aliasing) · cy.intercept() times option · data-cy selectors + typed selector maps (as const) · custom commands + Commands.overwrite() + Commands.addQuery() · cy.request() seeding + form/multipart · cy.spy() + sinon.match · Component Testing (React Context + Redux providers) · cy.fixture() with TypeScript generics · test isolation · cy.origin() OAuth/SSO · cy.task() typed with generics · cy.within() scoping · cy.selectFile() file uploads · cy.clock()/cy.tick() timer control · cy.exec() shell commands · cy.all() v13.4+ parallel assertions · CDP network throttling (Cypress.automation) · Shadow DOM (includeShadowDom + .shadow()) · iframe testing (cypress-iframe) · chai-subset API assertions · download testing (readFile + downloadsFolder) · localStorage (getAllLocalStorage/onBeforeLoad) · cy.focused() accessibility · cookie management · GraphQL intercept by operationName · multi-alias cy.wait([]) · spec-level config overrides · multi-step wizard pattern · conditional testing anti-pattern · experimentalWebKitSupport · experimentalModifyObstructiveThirdPartyCode · Cypress Cloud Smart Orchestration · Module API programmatic runs · CI parallelization + Cypress Cloud flaky detection · a11y (cypress-axe) · visual regression (@percy/cypress) · test tagging with @cypress/grep
+> Key patterns: cy.session() auth (validate callback) · cy.intercept() RouteHandler (spy/modify/delay) · data-cy selectors · custom commands + Commands.overwrite() + Commands.addQuery() · cy.request() seeding · cy.spy() · Component Testing · cy.fixture() with TypeScript generics · test isolation · cy.origin() OAuth/SSO · cy.task() for DB ops · cy.within() scoping · cy.selectFile() uploads · cy.clock()/cy.tick() · GraphQL intercept by operationName · conditional testing anti-pattern · CI parallelization · a11y (cypress-axe) · visual regression (@percy/cypress) · test tagging with @cypress/grep
 
 **Selenium**:
 > Reference: [Selenium patterns guide](references/selenium-patterns.md)

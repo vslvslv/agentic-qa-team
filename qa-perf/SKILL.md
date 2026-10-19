@@ -214,19 +214,27 @@ Default SLA profiles if no docs exist:
 
 ## Phase 2 — Load Tool Patterns & Generate Scripts
 
-Read the tool-specific patterns file for the selected `_PERF_TOOL`:
+Read the tool-specific patterns file for the selected `_PERF_TOOL` (short, read it whole):
 
 ```
-Read qa-perf/tools/<_PERF_TOOL>.md
+Read ${CLAUDE_SKILL_DIR}/tools/<_PERF_TOOL>.md
 ```
 
-Also check the detailed reference guide:
+Also consult the detailed reference guide for the tool (listed below). Guides are long (up to
+~3,000 lines) — do NOT read a whole guide. First list its section headings, then Read only the
+sections relevant to the test types and protocols in scope (for example executors, thresholds, auth,
+WebSocket/gRPC), using the Read tool's `offset`/`limit` taken from the heading line numbers:
+
+```bash
+_GUIDE="${CLAUDE_SKILL_DIR}/references/<guide-file>.md"   # <guide-file> = file named in the Reference link
+ls "$_GUIDE" && grep -nE '^#{2,3} ' "$_GUIDE"            # prints the absolute path to pass to Read, then the headings
+```
+
+If the guide is missing, continue with the key patterns listed below.
 
 **k6**:
 > Reference: [k6 patterns guide](references/k6-patterns.md)
-> Key patterns: test type taxonomy · scenarios/executors (`ramping-vus`, `constant-arrival-rate`, `ramping-arrival-rate`) · thresholds + `abortOnFail` · `check()` · `setup()`/`teardown()` auth · custom metrics (Trend/Rate/Counter/Gauge) · `handleSummary` (JUnit/JSON/HTML) · `http.batch()` · `group()` · browser module (getBy* locators, CPU/network throttling, `waitForEvent`, locator filtering, `page.on('requestfailed'/'requestfinished')` sub-resource events) · gRPC (unary + streaming + metadata Bearer auth + connection reuse) · WebSocket (stable `k6/websockets` module, multiple concurrent connections per VU, `binaryType="arraybuffer"` for binary frames, close code/reason tracking in `onclose` handler) · GraphQL (200-response error detection) · HMAC signing (`k6/crypto` deprecated → use `crypto.subtle` WebCrypto + PBKDF2) · secrets management (`k6/secrets`, `K6_SECRET_SOURCE` env var) · MFA/TOTP auth · distributed tracing (`http-instrumentation-tempo`) · SharedArray · CSV data with papaparse · `k6/experimental/csv` native parser (`csv.parse()` with `asObjects: true`/`skipFirstLine: true`, `csv.Parser` streaming for large files) · `k6/experimental/fs` memory-mapped file sharing across VUs · per-environment thresholds · `http.setResponseCallback` for custom failure definitions · error codes (1000-1699 ranges) · `exec.vu.metrics.tags` for dynamic per-VU tagging · `K6_WEB_DASHBOARD` built-in real-time UI (use `K6_WEB_DASHBOARD_PORT=-1` in CI to prevent hang) · `K6_DEPENDENCY_MANIFEST` for extension version pinning · `--new-machine-readable-summary` flag · `xk6-kv` for cross-VU shared mutable state · `k6 x mcp` AI-assisted script writing · `options.dns` / `K6_DNS` for load-balanced backend DNS · `K6_LOG_OUTPUT` Loki log routing · `K6_NO_THRESHOLDS` dry runs · GitLab CI + Docker k6 patterns · `summaryTrendStats` + `K6_COMPATIBILITY_MODE` · OS tuning (Linux + macOS) · k6 Studio (Record→Generate→Validate workflow, HAR import, browser recording, Grafana Cloud integration) · k6 v2.0.0 migration (removed: `externally-controlled`, `--no-summary`, `--upload-only`, `options.ext.loadimpact`, `browser_web_vital_fid`; `--stack` now mandatory for all cloud commands; new exit code 97 for cloud aborts) · environment variable precedence (`-e` script-only vs `K6_` system env for option config) · extension ecosystem (xk6-faker synthetic data, xk6-sql DB validation in teardown(), xk6-dns DNS pinning for blue/green)
-> See also: `qa-perf/references/k6-patterns-baseline.md` (original baseline for comparison)
-<!-- See also: qa-perf/references/k6-patterns.md — verified against k6 v1.7.1; iteration 29 (2026-05-12) adds: WebSocket close code/reason tracking in onclose handler (k6 v1.5+), csv.parse() asObjects option with header-row auto-skip, csv.Parser skipFirstLine option, environment variable -e vs K6_ precedence gotcha, extension ecosystem patterns (xk6-faker/xk6-sql/xk6-dns), community gotchas 48 (csv.parse in default loop), 49 (browser.type missing), 50 (K6_CLOUD_STACK_ID multi-org), 51 (xk6-disruptor RBAC), 52 (-e K6_ silent option miss); 52 community gotchas total; 8310+ lines -->
+> Key patterns: test type taxonomy · scenarios/executors (`ramping-vus`, `constant-arrival-rate`, `ramping-arrival-rate`) · thresholds + `abortOnFail` · `check()` · `setup()`/`teardown()` auth · custom metrics (Trend/Rate/Counter/Gauge) · `handleSummary` (JUnit/JSON/HTML) · `http.batch()` · `group()` · browser module · gRPC · WebSocket · GraphQL (200-response error detection) · SharedArray · CSV data · per-environment thresholds · `http.setResponseCallback` for custom failure definitions · secrets via environment, never hard-coded
 
 **NBomber** (C# native — use when `_TARGET_LANG=csharp`):
 > Reference: [NBomber patterns guide (C#)](references/nbomber-patterns.md)
@@ -248,6 +256,7 @@ Read existing perf test files first — append missing scenarios, never overwrit
 Only runs when Artillery is detected (`_PERF_TOOL` contains `artillery`). Skip otherwise.
 Uses 3-phase escalating approach: smoke → baseline → soak.
 Each phase only runs if the previous phase passes all thresholds.
+These phases send real load: run the target classification and **TARGET gate from Phase 3** first.
 
 **Phase A — Smoke (10 arrivals, 30s)**
 
@@ -289,14 +298,47 @@ Collect all phase results for Phase 4 report under `### Artillery Phase Results`
 
 ## Phase 3 — Execute Tests
 
+Before any load leaves the machine, classify the target host (the URL the scripts hit —
+`$_API_URL`, or `$_WEB_URL` for browser-module scenarios):
+
+```bash
+_PERF_TARGET="$_API_URL"   # or "$_WEB_URL" when the scripts drive the web app
+_PERF_HOST=$(echo "$_PERF_TARGET" | sed -E 's#^[a-zA-Z]+://(\[[^]]+\]|[^/:]+).*#\1#')
+case "$_PERF_HOST" in
+  localhost|127.0.0.1|0.0.0.0|"[::1]"|host.docker.internal) _TARGET_IS_LOCAL=1 ;;
+  *) _TARGET_IS_LOCAL=0 ;;
+esac
+echo "PERF_TARGET: $_PERF_TARGET  TARGET_IS_LOCAL: $_TARGET_IS_LOCAL"
+```
+
+**Gate (TARGET=$_PERF_TARGET)** — applies when `TARGET_IS_LOCAL=0`: a load test against a remote
+host can degrade or take down a shared environment. Interactive: confirm with `AskUserQuestion` —
+"Load-test `$_PERF_TARGET` (peak N VUs, duration D)? Never production." Options: "Yes — this is a
+staging/dev target I may load" | "No — enter a different target / cancel"; proceed only on yes. As a
+subagent: proceed only if the brief's `APPROVALS:` line contains `TARGET=$_PERF_TARGET` (exact
+match); otherwise do not execute — keep the generated scripts, and list the target under "Needs a
+decision". Scenarios that send POST/PUT/PATCH/DELETE to a remote target additionally need
+`ALLOW_FORM_SUBMIT` (same ask/APPROVALS rule); without it, run only the read-only scenarios.
+Local targets (`TARGET_IS_LOCAL=1`) run without this gate.
+
 Dispatch to the correct runner based on `_PERF_TOOL` — the execute block is in
-`qa-perf/tools/<_PERF_TOOL>.md`. Run it now.
+`${CLAUDE_SKILL_DIR}/tools/<_PERF_TOOL>.md`. Run it now.
 
 ## Phase 3.5 — Chaos Resilience (BL-039) + Production Traffic Replay (BL-041)
 
 ### LitmusChaos Concurrent Resilience Testing (BL-039)
 
 Skip if `QA_CHAOS!=1` OR `_LITMUS_AVAILABLE=0`.
+
+**Gate (ALLOW_ACTIVE_SCAN):** the experiment deletes pods in a live Kubernetes cluster. Before
+asking, show the target: `kubectl config current-context`, and the ChaosEngine's `appns` and
+`applabel` (fill both from the detected k8s labels — never leave the `default` placeholder). It must
+be a disposable dev/staging cluster, never production. Interactive: ask with `AskUserQuestion` —
+"Run pod-delete chaos in context `<context>`, namespace `<appns>`, label `<applabel>`?" Options:
+"Yes — disposable cluster" | "No — skip chaos"; proceed only on yes. As a subagent: proceed only if
+the brief's `APPROVALS:` line contains `ALLOW_ACTIVE_SCAN` (in addition to `QA_CHAOS=1`); otherwise
+skip this section and list it — with the context/namespace — under "Needs a decision". The
+concurrent load run is also subject to the Phase 3 TARGET gate.
 
 ```bash
 if [ "${QA_CHAOS:-0}" = "1" ] && [ "$_LITMUS_AVAILABLE" = "1" ]; then
@@ -342,7 +384,18 @@ spec:
 
 ### GoReplay Production Traffic Replay (BL-041)
 
-Skip if `QA_REPLAY_MODE!=1`. Requires production access — **confirm URL before executing**.
+Skip if `QA_REPLAY_MODE!=1`.
+
+**Capture** records real production traffic (it may contain personal data and credentials) on the
+host it runs on. Interactive only: ask with `AskUserQuestion` before starting it. As a subagent: never
+capture — list it under "Needs a decision".
+
+**Gate (TARGET=$_API_URL) for replay:** replay sends the recorded production requests, writes
+included, to `$_API_URL` — staging/dev only, never production. Interactive: confirm the exact URL with
+`AskUserQuestion` — "Replay `requests.gor` against `$_API_URL`? Recorded writes (POST/PUT/PATCH/DELETE)
+will be re-sent." Options: "Yes — staging/dev target" | "No — cancel"; proceed only on yes. As a
+subagent: proceed only if the brief's `APPROVALS:` line contains `TARGET=$_API_URL` (exact match) and
+`ALLOW_FORM_SUBMIT`; otherwise skip replay and list it under "Needs a decision".
 
 **Capture mode** (run once on production):
 ```bash
@@ -423,7 +476,7 @@ For each threshold (e.g., `http_req_duration: ['p(99)<500']`):
 
 ## Important Rules
 
-- **Never run against production** — always target localhost/staging; confirm URL before executing
+- **Never run against production** — always target localhost/staging; remote targets go through the Phase 3 TARGET gate
 - **Ramp-up before full load** — always use staged load profiles (ramp-up → sustain → ramp-down)
 - **Auth in setup, not per iteration** — obtain tokens once to avoid auth endpoint overload
 - **Conservative defaults** — default to 50 VUs/threads max; ask user before going above 200

@@ -32,6 +32,19 @@ hooks:
           async: true
 ---
 
+<!-- GENERATED from qa-mobile/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
+
+## Running as a subagent
+
+You were started by `/qa-team` (or another orchestrator) with a brief. In this mode:
+
+- You cannot ask the user anything and cannot start other agents. Wherever this procedure says to use AskUserQuestion, use what the brief says instead.
+- A gated step (`**Gate (KEY):**`) runs only if the brief's `APPROVALS:` line contains that KEY. Otherwise skip it and list it under **Needs a decision** in your report.
+- Probe only the `TARGET=` URL given in the brief, if any. Never pick a target URL from `.env` or config files on your own.
+- Where this procedure says to spawn sub-agents, do that work yourself, sequentially.
+- Paths starting with `$HOME/.claude/qa-agentic-team` point at this suite's install. The Read tool does not expand `$HOME`: run `echo "$HOME"` once and pass absolute paths.
+- Write your report and CTRF file to the brief's `REPORT:` and `CTRF:` paths, even where this procedure names other (e.g. dated) paths. With no `TARGET=`, run nothing against an app: write or review tests only. End your reply with the report path, a one-line status, and the **Needs a decision** list (or "none").
+
 ## Preamble (run first)
 
 ```bash
@@ -109,7 +122,18 @@ fi
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
 
-### Tool Selection Gate
+```bash
+# Midscene VLM fallback detection (BL-045)
+_MIDSCENE_AVAILABLE=0
+grep -q '"@midscene/android"\|"@midscene/ios-client"\|"@midscene/web"' package.json 2>/dev/null && _MIDSCENE_AVAILABLE=1
+command -v midscene >/dev/null 2>&1 && _MIDSCENE_AVAILABLE=1
+echo "MIDSCENE_AVAILABLE: $_MIDSCENE_AVAILABLE"
+
+# OmniParser detection (BL-046)
+_OMNIPARSER_AVAILABLE=0
+curl -s --max-time 2 http://localhost:8000/health 2>/dev/null | grep -q 'ok\|healthy' && _OMNIPARSER_AVAILABLE=1
+echo "OMNIPARSER_AVAILABLE: $_OMNIPARSER_AVAILABLE"
+```
 
 Count detected tools from `DETOX_PRESENT`, `APPIUM_PRESENT`, `MAESTRO_PRESENT`.
 
@@ -194,14 +218,63 @@ Build a **screen inventory**:
 - Key interactions (text input, button tap, scroll, swipe)
 - Priority: `critical` | `important` | `nice-to-have`
 
+## Phase 2.5 — AndroidWorld Template Matching (BL-048)
+
+When the detected app targets Android (either `_DETOX=1` with `android/` dir, `_APPIUM=1`,
+or `_MAESTRO=1`), map discovered screens from Phase 2 to the 20 AndroidWorld task categories.
+This accelerates test authoring by starting from battle-tested real-world task patterns rather
+than blank specs.
+
+| Category | Typical screen names | Template scope |
+|----------|---------------------|----------------|
+| Clock / Alarms | AlarmScreen, ClockScreen, TimerScreen | Set alarm, delete alarm, toggle |
+| Calendar / Events | CalendarScreen, EventScreen, AgendaScreen | Create event, view agenda, delete |
+| Contacts | ContactsScreen, ContactDetailScreen | Add contact, search, call/message |
+| File Manager | FileScreen, FolderScreen, DownloadsScreen | Create folder, rename, delete file |
+| Settings | SettingsScreen, PreferencesScreen | Toggle option, change language, reset |
+| Browser / WebView | BrowserScreen, WebViewScreen | Navigate URL, bookmark, back/forward |
+| Messaging / Chat | ChatScreen, MessageScreen, ConversationScreen | Send message, attach media, delete |
+| Email | EmailScreen, InboxScreen, ComposeScreen | Compose, reply, delete, search |
+| Maps / Navigation | MapScreen, NavigationScreen, LocationScreen | Search location, get directions |
+| Camera / Photos | CameraScreen, GalleryScreen, PhotoScreen | Take photo, edit, share |
+| Notes | NoteScreen, EditorScreen, ListScreen | Create, edit, delete, search |
+| Tasks / To-do | TaskScreen, TodoScreen, ChecklistScreen | Add task, complete, reorder |
+| Shopping / Cart | CartScreen, CheckoutScreen, ProductScreen | Add to cart, checkout, search |
+| Media / Player | PlayerScreen, MusicScreen, VideoScreen | Play, pause, seek, playlist |
+| Health / Fitness | HealthScreen, WorkoutScreen, StepsScreen | Log workout, view stats, set goal |
+| Finance / Banking | AccountScreen, TransactionScreen, TransferScreen | View balance, transfer, pay |
+| Auth / Profile | LoginScreen, SignupScreen, ProfileScreen | Login, logout, update profile |
+| Search / Filter | SearchScreen, ResultsScreen, FilterScreen | Search, filter, sort results |
+| Notifications | NotificationScreen, AlertScreen | Clear, manage settings, permissions |
+| Forms / Onboarding | FormScreen, RegistrationScreen, OnboardingScreen | Fill form, validate, submit |
+
+**For each screen in your Phase 2 inventory:**
+1. Identify the closest AndroidWorld category.
+2. Adapt the template scope to the app's actual screen and interactions.
+3. Generate tests using those task patterns (in Maestro YAML or Detox/Appium).
+
+This grounds test authoring in real-world usage patterns — not just "screen renders" checks.
+
 ## Phase 3 — Generate Test Cases
 
 Read existing test files first — append missing `describe`/flow blocks, never delete.
 
+Consult the reference guide for the detected framework (listed below for each). Guides are long (up to
+~3,000 lines) — do NOT read a whole guide. First list its section headings, then Read only the
+sections relevant to the flows in scope (for example selectors, waits, auth bypass, gestures), using
+the Read tool's `offset`/`limit` taken from the heading line numbers:
+
+```bash
+_GUIDE="$HOME/.claude/qa-agentic-team/qa-mobile/references/<guide-file>.md"   # <guide-file> = file named in the Reference link
+ls "$_GUIDE" && grep -nE '^#{2,3} ' "$_GUIDE"            # prints the absolute path to pass to Read, then the headings
+```
+
+If the guide is missing, continue with the key patterns listed below.
+
 **Detox tests (React Native / Expo):**
 
 > Reference: [Detox patterns guide](references/detox-patterns.md)
-> Key patterns: testID selectors · waitFor idioms (toBeVisible/toHaveValue/toHaveLabel/toExist) · CI-aware timeouts · disableSynchronization (narrow scope with try/finally) · artifact collection · setURLBlacklist for analytics · deep link testing · push notification simulation · platform-conditional logic · parallel sharding · element.getAttributes() · biometrics simulation (matchFace/unmatchFace) · Expo-specific setup · React Navigation ghost screen · WebSocket sync · Android lock screen · orientation testing · by.system() for runtime permission dialogs · device.clearKeychain() for auth isolation (Detox 20+) · Metro config RN 0.73+ · jest-circus required (Detox 20+) · flakiness decision tree · device.setStatusBar() for screenshot visual consistency · replaceText() over typeText() for performance · afterAll cleanup to prevent state leak between test files · env var forwarding via launchArgs (not process.env) · timeline artifact for performance profiling (--record-timeline)
+> Key patterns: testID selectors · waitFor idioms (toBeVisible/toHaveValue/toHaveLabel/toExist) · CI-aware timeouts · disableSynchronization (narrow scope with try/finally) · artifact collection · setURLBlacklist for analytics · deep link testing · push notification simulation · platform-conditional logic · parallel sharding · by.system() for runtime permission dialogs · device.clearKeychain() for auth isolation · replaceText() over typeText() · env var forwarding via launchArgs (not process.env) · afterAll cleanup to prevent state leak between test files
 
 ```javascript
 // e2e/login.test.js
@@ -229,11 +302,11 @@ describe("Login Flow", () => {
 
 **Appium / WebDriverIO tests (Native iOS/Android):**
 
-Select the reference guide based on `_TARGET_LANG`:
+Select the reference guide based on `_TARGET_LANG` (read it section by section as above):
 
 **TypeScript** (default):
 > Reference: [Appium/WebDriverIO patterns guide (TypeScript)](references/appium-wdio-patterns.md)
-> Key patterns: TypeScript POM with BasePage · accessibility-id selector hierarchy · explicit waits (waitForDisplayed/waitUntil/waitForStable) · mobile gestures (swipe/long-press/double-tap/pinch-zoom/drag-and-drop W3C Actions API) · parallel device execution with typed capabilities · auth bypass via API token + deep-link · network mock (browser.mock) · beforeEach app reset (terminateApp/activateApp) · CI Appium 2 driver installation + pin + wait-on · GitHub Actions matrix (iOS + Android parallel) · spec sharding (SHARD_INDEX/SHARD_TOTAL) · animation disable · performance tuning (snapshotMaxDepth + disableIdLocatorAutocompletion) · visual regression (@wdio/visual-service) · device farm integration (BrowserStack/Sauce Labs) · Cucumber BDD option · retry/flake quarantine · WebDriverIO v9 migration (tsx loader, bundled expect, no @wdio/sync) · Appium plugin system (relaxed-caps, wait-plugin, images) · browser vs driver disambiguation · Appium Inspector workflow · scrollIntoView() shorthand · Expo dev client requirement · scoped child queries (element.$$()) · geolocation simulation (setGeoLocation/mobile:setSimulatedLocation) · orientation testing · runtime permission dialogs (acceptAlert/grantAndroidPermission) · appium:permissions capability · lock/unlock device · keyboard dismissal (hideKeyboard) · file push/pull (pushFile/pullFile) · device log capture (getLogs logcat/syslog) · dark mode simulation · deep link testing (mobile:deepLink) · app state assertions (queryAppState) · screen recording (startRecordingScreen/stopRecordingScreen) · TypeScript path aliases (@pages/@helpers tsconfig paths) · typed capability builder (buildIosCaps/buildAndroidCaps) · appium-doctor CI pre-flight · getDeviceInfo session introspection · system interruption handling (clearSystemAlerts) · iOS class chain selectors · React Native Fabric/FlatList/Hermes patterns · enforceAppInstall for CI freshness · advanced expect-webdriverio matchers (toHaveAttribute/toHaveChildren/toHaveValue) · iOS mobile:swipe with momentum · Allure TestOps live reporting
+> Key patterns: TypeScript POM with BasePage · accessibility-id selector hierarchy · explicit waits (waitForDisplayed/waitUntil) · mobile gestures (W3C Actions API) · parallel device execution with typed capabilities · auth bypass via API token + deep-link · beforeEach app reset (terminateApp/activateApp) · runtime permission dialogs · keyboard dismissal · deep link testing · device log capture · screen recording on failure · CI Appium driver installation + version pin · spec sharding · retry/flake quarantine
 
 **Java**:
 > Reference: [Appium patterns guide (Java)](references/appium-patterns-java.md)
@@ -408,6 +481,103 @@ print(json.dumps({"passed": passed, "failed": failed, "raw_summary": content[-50
 PYEOF
 ```
 
+## Phase 4.5 — AI-Augmented Execution Fallbacks
+
+### Midscene.js VLM Fallback (BL-045)
+
+When `_MIDSCENE_AVAILABLE=1`, use Midscene as a fallback executor when primary selectors fail.
+Midscene uses VLM (Qwen3-VL, UI-TARS) to locate elements via screenshot reasoning — zero selector maintenance.
+
+**In generated test code**, wrap critical taps with a Midscene fallback:
+```typescript
+// Generated Detox test with Midscene fallback
+try {
+  await element(by.id('login-button')).tap();
+} catch (selectorErr) {
+  // Midscene fallback — works even when testID is absent
+  const mid = new MidsceneAndroid();
+  await mid.aiAction('tap the Login button');
+}
+```
+
+**Maestro integration**: generate a `.midscene.yaml` alongside each Maestro flow:
+```yaml
+# .maestro/login.midscene.yaml — AI fallback for login.yaml
+- aiAction: "tap the Email input field"
+- aiType: "${EMAIL:-admin@example.com}"
+- aiAction: "tap the Password field"
+- aiType: "${PASSWORD:-password123}"
+- aiAction: "tap the Log In button"
+- aiAssert: "Welcome text is visible"
+```
+
+**On selector failure** in Phase 4: automatically switch to Midscene for that step. Add
+`MIDSCENE_FALLBACK: <step>` annotation to the test report.
+
+### OmniParser Perception Layer (BL-046)
+
+When `_OMNIPARSER_AVAILABLE=1` (Docker service at `localhost:8000`), use OmniParser as a
+last-resort perception layer when the accessibility tree yields 0 interactive elements
+(Flutter canvas, games, custom-drawn UIs).
+
+**Trigger condition**: after standard selector/accessibility scan returns `_ELEMENTS_FOUND=0`.
+
+```bash
+if [ "$_ELEMENTS_FOUND" = "0" ] && [ "$_OMNIPARSER_AVAILABLE" = "1" ]; then
+  echo "OMNIPARSER: accessibility tree empty — falling back to OmniParser"
+  # 1. Capture device screenshot
+  adb exec-out screencap -p > "$_TMP/device-screenshot.png" 2>/dev/null || \
+    xcrun simctl io booted screenshot "$_TMP/device-screenshot.png" 2>/dev/null
+  # 2. Send to OmniParser
+  curl -s -X POST http://localhost:8000/parse \
+    -F "image=@$_TMP/device-screenshot.png" \
+    -o "$_TMP/omniparser-elements.json" 2>/dev/null
+  echo "OMNIPARSER_ELEMENTS: $(python3 -c "import json; d=json.load(open('$_TMP/omniparser-elements.json')); print(len(d.get('elements', [])))" 2>/dev/null || echo 0)"
+fi
+```
+
+Claude then reads `$_TMP/omniparser-elements.json` to generate element interactions:
+- Each element: `{ label, type, boundingBox, confidence }` → map to ADB tap coordinates or XCUITest click
+- Particularly useful for Flutter apps and canvas-based games
+
+### Mobile-Agent Reflector (BL-047)
+
+**On any step failure** during Phase 4 execution, trigger a reflection loop before marking the test as failed.
+
+**Reflection hook** (add to test runner wrapper):
+```typescript
+// On step failure — max 2 retries
+async function withReflection(step: () => Promise<void>, stepName: string, page?: any) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await step();
+      return; // success
+    } catch (err) {
+      if (attempt >= 2) throw err; // give up after 2 reflections
+      // Capture screenshot and ask Claude for alternative action
+      const screenshot = await captureDeviceScreenshot();
+      const reflection = await claudeReflect({
+        prompt: `Step "${stepName}" failed: ${err.message}. Current screenshot attached. What alternative action achieves the same goal? Respond with a single action: tap(selector), type(text), swipe(direction), or scroll(direction).`,
+        image: screenshot,
+      });
+      console.log(`REFLECTION[${attempt + 1}]: ${stepName} → ${reflection.action}`);
+      await executeReflectedAction(reflection.action);
+    }
+  }
+}
+```
+
+**Reflection rate tracking**: after Phase 4 completes, count reflection events per test.
+- Tests with `reflectionRate > 1` per run → **flakiness candidates** (feed to `qa-heal`)
+- Add `REFLECTION_RATE: N` annotation to each test result
+
+In Phase 5 report, add `### Reflection Events` table:
+```
+| Test | Steps | Reflections | Outcome |
+|------|-------|-------------|---------|
+| login_test | 5 | 1 (step 3) | ✅ recovered |
+```
+
 ## Phase 5 — Report
 
 Write report to `$_TMP/qa-mobile-report.md`:
@@ -459,6 +629,61 @@ Write report to `$_TMP/qa-mobile-report.md`:
 - **Clean state** — use `device.launchApp({ newInstance: true })` or `launchApp` (Maestro) for fresh state
 - **Report even if build fails** — document what was blocked and why
 - **Never run `adb root` or modify system settings** on physical devices without explicit confirmation
+
+## CTRF Output
+
+After writing the report, write `$_TMP/qa-mobile-ctrf.json`:
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+output_file = os.path.join(tmp, 'qa-mobile-runner-output.txt')
+output = open(output_file, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(output_file) else ''
+
+tests = []
+for line in output.splitlines():
+    m_pass = re.match(r'\s*[✓✅PASS]\s+(.+)', line)
+    m_fail = re.match(r'\s*[✕×FAIL]\s+(.+)', line)
+    if m_pass:
+        tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'mobile'})
+    elif m_fail:
+        tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'mobile',
+                      'message': 'See qa-mobile-report.md for details'})
+
+if not tests:
+    p = len(re.findall(r'passed|PASS|\d+ passing', output))
+    f = len(re.findall(r'failed|FAIL|\d+ failing', output))
+    if p: tests.append({'name': f'{p} tests passed', 'status': 'passed', 'duration': 0, 'suite': 'mobile'})
+    if f: tests.append({'name': f'{f} tests failed', 'status': 'failed', 'duration': 0, 'suite': 'mobile',
+                        'message': 'See qa-mobile-report.md for details'})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+s = sum(1 for t in tests if t['status'] == 'skipped')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': os.environ.get('_MOBILE_TOOL', 'detox')},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': s, 'other': 0,
+            'start': now_ms - 5000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {'reportName': 'qa-mobile'},
+    }
+}
+
+out = os.path.join(tmp, 'qa-mobile-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f} skipped={s}')
+PYEOF
+```
 
 ## Agent Memory
 

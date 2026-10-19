@@ -203,13 +203,28 @@ Run Spectral lint before executing any tests. Skip if no OpenAPI/Swagger spec fo
 _SPEC_FILE=$(ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -1)
 if [ -n "$_SPEC_FILE" ]; then
   echo "SPEC_FILE: $_SPEC_FILE"
-  if ! command -v spectral >/dev/null 2>&1; then
-    npx --yes @stoplight/spectral-cli lint "$_SPEC_FILE" 2>&1 | tail -30
-  else
+  if command -v spectral >/dev/null 2>&1; then
     spectral lint "$_SPEC_FILE" 2>&1 | tail -30
+  elif npx --no-install spectral --version >/dev/null 2>&1; then
+    npx --no-install spectral lint "$_SPEC_FILE" 2>&1 | tail -30
+  else
+    echo "SPECTRAL_UNAVAILABLE"
   fi
 fi
 ```
+
+**On-demand tools — Gate (ALLOW_INSTALL):** this skill can use Spectral (`@stoplight/spectral-cli`),
+Dredd (`dredd`), GraphQL Inspector (`@graphql-inspector/cli`) and Schemathesis (`pip install
+schemathesis`). A tool that is already installed (on `PATH` or in the project's `node_modules`) runs
+without this gate. Fetching or installing a missing one (`npx --yes <pkg>`, `pip install <pkg>`)
+needs approval. Interactive: ask once, with `AskUserQuestion`, listing the missing tools and the exact
+commands; proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains
+`ALLOW_INSTALL`; otherwise skip the phases that need the missing tool and list them under "Needs a
+decision". Never fall back to `npx --yes` silently.
+
+If `SPECTRAL_UNAVAILABLE` and the gate was granted, run
+`npx --yes @stoplight/spectral-cli lint "$_SPEC_FILE" 2>&1 | tail -30`; otherwise skip the lint and
+note "Spectral not installed — lint skipped" in the report.
 
 Parse output:
 - `error` severity lines → **BLOCKING**: halt execution and report; do not run tests against a broken spec
@@ -222,16 +237,27 @@ If Spectral exits non-zero due to errors: abort with message "Spectral found spe
 Skip if `_SPEC_FILE` is empty. Validates that the running API matches its declared OpenAPI contract —
 flags schema drift before functional tests run.
 
+**Gate (ALLOW_FORM_SUBMIT + TARGET=$_API_URL):** Dredd replays every transaction in the spec —
+including POST/PUT/PATCH/DELETE — against `$_API_URL`, so it creates, changes or deletes data there.
+Interactive: ask with `AskUserQuestion` — "Run Dredd against `$_API_URL`? It sends the spec's write
+requests (POST/PUT/PATCH/DELETE) to that host." Options: "Yes — it is a disposable dev/staging API" |
+"No — skip contract replay"; proceed only on yes. As a subagent: proceed only if the brief's
+`APPROVALS:` line contains `ALLOW_FORM_SUBMIT` **and** `TARGET=$_API_URL` (the URL must match
+exactly); otherwise skip Dredd, write "Contract replay skipped — needs ALLOW_FORM_SUBMIT and a
+confirmed TARGET" in the Contract Testing section, and list it under "Needs a decision". If Dredd is
+not installed, the on-demand ALLOW_INSTALL gate (Phase 0.5) applies as well.
+
 ```bash
+# Only after the gate above was granted
 if [ -n "$_SPEC_FILE" ] && [ -n "$_API_URL" ]; then
-  # Dredd: zero-config spec validation
-  if command -v dredd >/dev/null 2>&1 || npx --yes @dredd/dredd --version >/dev/null 2>&1; then
-    npx @dredd/dredd "$_SPEC_FILE" "$_API_URL" \
+  if command -v dredd >/dev/null 2>&1; then _DREDD="dredd"
+  elif npx --no-install dredd --version >/dev/null 2>&1; then _DREDD="npx --no-install dredd"
+  else _DREDD=""; echo "DREDD_UNAVAILABLE"; fi   # with ALLOW_INSTALL: _DREDD="npx --yes dredd"
+  if [ -n "$_DREDD" ]; then
+    $_DREDD "$_SPEC_FILE" "$_API_URL" \
       --no-color --reporter=markdown \
       2>&1 | tee "$_TMP/qa-api-dredd.txt" | tail -30
     echo "DREDD_EXIT: $?"
-  else
-    echo "DREDD_UNAVAILABLE: install with npm install -g dredd"
   fi
 fi
 ```
@@ -329,9 +355,13 @@ if [ -n "$_GQL_SCHEMA" ]; then
 fi
 ```
 
-If baseline obtained:
+If baseline obtained (an installed `graphql-inspector` runs directly; fetching it with `npx --yes`
+needs the ALLOW_INSTALL gate from Phase 0.5 — without it, skip the diff and note it in the report):
 ```bash
-npx --yes @graphql-inspector/cli diff /tmp/qa-gql-baseline.graphql "$_GQL_SCHEMA" 2>&1
+if command -v graphql-inspector >/dev/null 2>&1; then _GQLI="graphql-inspector"
+elif npx --no-install graphql-inspector --version >/dev/null 2>&1; then _GQLI="npx --no-install graphql-inspector"
+else _GQLI=""; echo "GRAPHQL_INSPECTOR_UNAVAILABLE"; fi   # with ALLOW_INSTALL: _GQLI="npx --yes @graphql-inspector/cli"
+[ -n "$_GQLI" ] && $_GQLI diff /tmp/qa-gql-baseline.graphql "$_GQL_SCHEMA" 2>&1
 ```
 
 Classify changes:
@@ -520,7 +550,17 @@ Every test that creates data **must** clean it up:
 
 ### Load language patterns file
 
-Select and read the language-appropriate reference guide for `_API_TOOL`:
+Select the language-appropriate reference guide for `_API_TOOL` (listed below). Do NOT read the
+whole guide. First list its section headings, then Read only the sections relevant to this task (client
+wrapper, auth, cleanup/teardown, and the `CS_TEST_FW` / `CS_RESTSHARP` sub-sections for C#), using the
+Read tool's `offset`/`limit` taken from the heading line numbers:
+
+```bash
+_GUIDE="${CLAUDE_SKILL_DIR}/references/<guide-file>.md"   # <guide-file> = file named in the Reference link
+ls "$_GUIDE" && grep -nE '^#{2,3} ' "$_GUIDE"            # prints the absolute path to pass to Read, then the headings
+```
+
+If the guide is missing, continue with the key patterns listed below.
 
 **TypeScript (Playwright request context)**:
 > Reference: [API patterns — TypeScript](references/api-patterns-typescript.md)
@@ -546,7 +586,7 @@ Select and read the language-appropriate reference guide for `_API_TOOL`:
 
 For `_API_TOOL=csharp`, also note `CS_TEST_FW` and `CS_RESTSHARP` — use the RestSharp section of the patterns file when `CS_RESTSHARP=1`, otherwise use the HttpClient section; within each HTTP-client section, focus on the sub-section matching `CS_TEST_FW`.
 
-Follow the patterns in that file to generate tests. Read existing test files before
+Follow the patterns in those sections to generate tests. Read existing test files before
 writing — append missing test blocks, never overwrite existing ones.
 
 **Coverage targets per endpoint:**
@@ -638,10 +678,19 @@ command -v rspec &>/dev/null && \
 
 Skip if: no OpenAPI spec found (`_SPEC_FILE` is empty), or `QA_SKIP_SCHEMATHESIS=1` env var set.
 
+Stateful fuzzing sends generated POST/PUT/PATCH/DELETE requests, so it runs under the same
+**ALLOW_FORM_SUBMIT + TARGET=$_API_URL** gate as Dredd (Phase 0.75); without it, skip this phase and
+list it under "Needs a decision". Installing Schemathesis when it is missing additionally needs the
+ALLOW_INSTALL gate (Phase 0.5); set `_ALLOW_INSTALL=1` only when that gate was granted.
+
 ```bash
 if [ -n "$_SPEC_FILE" ] && [ "${QA_SKIP_SCHEMATHESIS:-0}" != "1" ]; then
   if ! command -v schemathesis >/dev/null 2>&1 && ! command -v st >/dev/null 2>&1; then
-    pip install schemathesis --quiet 2>/dev/null || echo "SCHEMATHESIS_UNAVAILABLE"
+    if [ "${_ALLOW_INSTALL:-0}" = "1" ]; then
+      pip install schemathesis --quiet 2>/dev/null || echo "SCHEMATHESIS_UNAVAILABLE"
+    else
+      echo "SCHEMATHESIS_UNAVAILABLE: not installed and ALLOW_INSTALL not granted"
+    fi
   fi
   if command -v st >/dev/null 2>&1 || command -v schemathesis >/dev/null 2>&1; then
     _ST_CMD=$(command -v st 2>/dev/null || echo schemathesis)
@@ -682,7 +731,13 @@ command -v offat >/dev/null 2>&1 && _OFFAT=1
 echo "OFFAT_AVAILABLE: $_OFFAT"
 ```
 
-**Run (opt-in: `QA_SECURITY=1` AND `_OFFAT=1` AND OpenAPI spec present):**
+**Gate (ALLOW_ACTIVE_SCAN + TARGET=$_API_URL):** OFFAT sends attack payloads (injection, BOLA,
+mass assignment) to `$_API_URL` — staging/dev only, never production. Interactive: ask with
+`AskUserQuestion`, stating that it sends attack traffic to that host; proceed only on yes. As a
+subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_ACTIVE_SCAN` and
+`TARGET=$_API_URL` (exact match); otherwise skip this phase and list it under "Needs a decision".
+
+**Run (opt-in: `QA_SECURITY=1` AND `_OFFAT=1` AND OpenAPI spec present AND the gate granted):**
 
 ```bash
 if [ "${QA_SECURITY:-0}" = "1" ] && [ "$_OFFAT" = "1" ] && \

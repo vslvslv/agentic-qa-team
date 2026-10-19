@@ -32,6 +32,19 @@ hooks:
           async: true
 ---
 
+<!-- GENERATED from qa-api/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
+
+## Running as a subagent
+
+You were started by `/qa-team` (or another orchestrator) with a brief. In this mode:
+
+- You cannot ask the user anything and cannot start other agents. Wherever this procedure says to use AskUserQuestion, use what the brief says instead.
+- A gated step (`**Gate (KEY):**`) runs only if the brief's `APPROVALS:` line contains that KEY. Otherwise skip it and list it under **Needs a decision** in your report.
+- Probe only the `TARGET=` URL given in the brief, if any. Never pick a target URL from `.env` or config files on your own.
+- Where this procedure says to spawn sub-agents, do that work yourself, sequentially.
+- Paths starting with `$HOME/.claude/qa-agentic-team` point at this suite's install. The Read tool does not expand `$HOME`: run `echo "$HOME"` once and pass absolute paths.
+- Write your report and CTRF file to the brief's `REPORT:` and `CTRF:` paths, even where this procedure names other (e.g. dated) paths. With no `TARGET=`, run nothing against an app: write or review tests only. End your reply with the report path, a one-line status, and the **Needs a decision** list (or "none").
+
 ## Preamble (run first)
 
 ```bash
@@ -110,6 +123,18 @@ find . \( -name "schema.graphql" -o -name "*.graphql" \) \
 grep -r "graphql\|ApolloServer\|type Query" --include="*.ts" -l \
   ! -path "*/node_modules/*" 2>/dev/null | head -5
 
+# gRPC detection
+echo "--- GRPC ---"
+_GRPC_HOST=""
+_GRPC_PORT=""
+for port in 50051 9090 8081; do
+  nc -z localhost $port 2>/dev/null && _GRPC_HOST="localhost" && _GRPC_PORT=$port && break
+done
+echo "GRPC: ${_GRPC_HOST:+$_GRPC_HOST:$_GRPC_PORT}"
+_PROTO_FILES=$(find . -name "*.proto" ! -path "*/node_modules/*" 2>/dev/null | head -5)
+echo "PROTO_FILES: $(echo "$_PROTO_FILES" | wc -l | tr -d ' ')"
+echo "$_PROTO_FILES"
+
 # --- MULTI-REPO SUPPORT ---
 # Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
 # e.g.: export QA_EXTRA_PATHS="/path/to/api-tests-repo /path/to/integration-tests"
@@ -124,6 +149,43 @@ if [ -n "$QA_EXTRA_PATHS" ]; then
     echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
   done
 fi
+
+# Chaos seed mode detection (BL-023)
+_SEED_MODE="${QA_SEED_MODE:-clean}"
+echo "SEED_MODE: $_SEED_MODE"
+[ "$_SEED_MODE" = "chaos" ] && \
+  echo "CHAOS_MODE: active — tests running against chaos-seeded data; new failures may indicate data-handling regressions"
+
+# OTel traceparent injection detection (BL-055)
+_OTEL_AVAILABLE=0
+[ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ] && _OTEL_AVAILABLE=1
+echo "OTEL_AVAILABLE: $_OTEL_AVAILABLE"
+
+# aimock API record/replay detection (BL-025)
+_AIMOCK_AVAILABLE=0
+command -v aimock >/dev/null 2>&1 && _AIMOCK_AVAILABLE=1
+_AIMOCK_FIXTURES=0
+[ -d "fixtures" ] && ls fixtures/*.json 2>/dev/null | grep -q '.' && _AIMOCK_FIXTURES=1
+echo "AIMOCK_AVAILABLE: $_AIMOCK_AVAILABLE"
+echo "AIMOCK_FIXTURES: $_AIMOCK_FIXTURES"
+
+# Keploy eBPF recording detection (BL-064)
+_KEPLOY_AVAILABLE=0
+command -v keploy >/dev/null 2>&1 && _KEPLOY_AVAILABLE=1
+_KEPLOY_FIXTURES=0
+[ -d "keploy" ] && ls keploy/*.yaml 2>/dev/null | grep -q '.' && _KEPLOY_FIXTURES=1
+echo "KEPLOY_AVAILABLE: $_KEPLOY_AVAILABLE"
+echo "KEPLOY_FIXTURES: $_KEPLOY_FIXTURES"
+
+# Pact contract detection (BL-031)
+_PACT_FILES=$(find . \( -name "*.pact.json" -o -path "*/pacts/*.json" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+echo "PACT_FILES: $_PACT_FILES"
+
+# Tracetest detection (BL-056)
+_TRACETEST_AVAILABLE=0
+command -v tracetest >/dev/null 2>&1 && _TRACETEST_AVAILABLE=1
+echo "TRACETEST_AVAILABLE: $_TRACETEST_AVAILABLE"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -131,6 +193,88 @@ If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent ph
 If `API_HEALTH` is `000`: warn the user. Ask whether to:
 1. Start the API first (provide the start command)
 2. Proceed in write-only mode (generate tests without executing them)
+
+## Phase 0.5 — Spectral OpenAPI Lint
+
+Run Spectral lint before executing any tests. Skip if no OpenAPI/Swagger spec found.
+
+```bash
+_SPEC_FILE=$(ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -1)
+if [ -n "$_SPEC_FILE" ]; then
+  echo "SPEC_FILE: $_SPEC_FILE"
+  if command -v spectral >/dev/null 2>&1; then
+    spectral lint "$_SPEC_FILE" 2>&1 | tail -30
+  elif npx --no-install spectral --version >/dev/null 2>&1; then
+    npx --no-install spectral lint "$_SPEC_FILE" 2>&1 | tail -30
+  else
+    echo "SPECTRAL_UNAVAILABLE"
+  fi
+fi
+```
+
+**On-demand tools — Gate (ALLOW_INSTALL):** this skill can use Spectral (`@stoplight/spectral-cli`),
+Dredd (`dredd`), GraphQL Inspector (`@graphql-inspector/cli`) and Schemathesis (`pip install
+schemathesis`). A tool that is already installed (on `PATH` or in the project's `node_modules`) runs
+without this gate. Fetching or installing a missing one (`npx --yes <pkg>`, `pip install <pkg>`)
+needs approval. Interactive: ask once, with `AskUserQuestion`, listing the missing tools and the exact
+commands; proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains
+`ALLOW_INSTALL`; otherwise skip the phases that need the missing tool and list them under "Needs a
+decision". Never fall back to `npx --yes` silently.
+
+If `SPECTRAL_UNAVAILABLE` and the gate was granted, run
+`npx --yes @stoplight/spectral-cli lint "$_SPEC_FILE" 2>&1 | tail -30`; otherwise skip the lint and
+note "Spectral not installed — lint skipped" in the report.
+
+Parse output:
+- `error` severity lines → **BLOCKING**: halt execution and report; do not run tests against a broken spec
+- `warning` severity lines → collect into `$_TMP/qa-api-spectral-warnings.txt`; surface in Phase 5 report
+
+If Spectral exits non-zero due to errors: abort with message "Spectral found spec errors — fix before running API tests."
+
+## Phase 0.75 — OpenAPI Contract Testing (BL-010)
+
+Skip if `_SPEC_FILE` is empty. Validates that the running API matches its declared OpenAPI contract —
+flags schema drift before functional tests run.
+
+**Gate (ALLOW_FORM_SUBMIT + TARGET=$_API_URL):** Dredd replays every transaction in the spec —
+including POST/PUT/PATCH/DELETE — against `$_API_URL`, so it creates, changes or deletes data there.
+Interactive: ask with `AskUserQuestion` — "Run Dredd against `$_API_URL`? It sends the spec's write
+requests (POST/PUT/PATCH/DELETE) to that host." Options: "Yes — it is a disposable dev/staging API" |
+"No — skip contract replay"; proceed only on yes. As a subagent: proceed only if the brief's
+`APPROVALS:` line contains `ALLOW_FORM_SUBMIT` **and** `TARGET=$_API_URL` (the URL must match
+exactly); otherwise skip Dredd, write "Contract replay skipped — needs ALLOW_FORM_SUBMIT and a
+confirmed TARGET" in the Contract Testing section, and list it under "Needs a decision". If Dredd is
+not installed, the on-demand ALLOW_INSTALL gate (Phase 0.5) applies as well.
+
+```bash
+# Only after the gate above was granted
+if [ -n "$_SPEC_FILE" ] && [ -n "$_API_URL" ]; then
+  if command -v dredd >/dev/null 2>&1; then _DREDD="dredd"
+  elif npx --no-install dredd --version >/dev/null 2>&1; then _DREDD="npx --no-install dredd"
+  else _DREDD=""; echo "DREDD_UNAVAILABLE"; fi   # with ALLOW_INSTALL: _DREDD="npx --yes dredd"
+  if [ -n "$_DREDD" ]; then
+    $_DREDD "$_SPEC_FILE" "$_API_URL" \
+      --no-color --reporter=markdown \
+      2>&1 | tee "$_TMP/qa-api-dredd.txt" | tail -30
+    echo "DREDD_EXIT: $?"
+  fi
+fi
+```
+
+Parse `$_TMP/qa-api-dredd.txt`:
+- Lines matching `fail:` → **schema drift findings** — add to Phase 5 report as `### Contract Drift` section
+- Lines matching `pass:` → contract-compliant endpoints
+- Lines matching `skip:` → endpoints with no example responses in spec (not a failure)
+
+**Schema drift findings block Phase 4 test generation for the affected endpoints** — log `CONTRACT_DRIFT: <endpoint>` and add a "Fix spec or implementation" recommendation.
+
+In Phase 5 report, add `### Contract Testing (Dredd)` section:
+```
+- Spec: <file>  Endpoints validated: N  Passing: N  Drifting: N
+| Endpoint | Method | Issue |
+|----------|--------|-------|
+| GET /api/users | GET | Response body missing required field 'createdAt' |
+```
 
 ## Phase 1 — Discover Endpoints
 
@@ -195,6 +339,37 @@ Build an **endpoint inventory**:
 - Request body schema (if POST/PUT/PATCH)
 - Priority: `critical` | `important` | `nice-to-have`
 
+## Phase 1.5 — GraphQL Schema Diff
+
+Skip if no GraphQL schema files found.
+
+```bash
+_GQL_SCHEMA=$(find . \( -name "schema.graphql" -o -name "*.graphql" \) \
+  ! -path "*/node_modules/*" 2>/dev/null | head -1)
+if [ -n "$_GQL_SCHEMA" ]; then
+  echo "GQL_SCHEMA: $_GQL_SCHEMA"
+  git show origin/main:"$_GQL_SCHEMA" > /tmp/qa-gql-baseline.graphql 2>/dev/null || \
+    git show HEAD~1:"$_GQL_SCHEMA" > /tmp/qa-gql-baseline.graphql 2>/dev/null || \
+    echo "NO_BASELINE"
+fi
+```
+
+If baseline obtained (an installed `graphql-inspector` runs directly; fetching it with `npx --yes`
+needs the ALLOW_INSTALL gate from Phase 0.5 — without it, skip the diff and note it in the report):
+```bash
+if command -v graphql-inspector >/dev/null 2>&1; then _GQLI="graphql-inspector"
+elif npx --no-install graphql-inspector --version >/dev/null 2>&1; then _GQLI="npx --no-install graphql-inspector"
+else _GQLI=""; echo "GRAPHQL_INSPECTOR_UNAVAILABLE"; fi   # with ALLOW_INSTALL: _GQLI="npx --yes @graphql-inspector/cli"
+[ -n "$_GQLI" ] && $_GQLI diff /tmp/qa-gql-baseline.graphql "$_GQL_SCHEMA" 2>&1
+```
+
+Classify changes:
+- `BREAKING` → flag in Phase 5 report as `[BREAKING CHANGE]`; add to critical failures
+- `DANGEROUS` → flag as `[WARNING]`
+- `NON_BREAKING` → informational; log to report
+
+Skip silently if GraphQL Inspector not available and no schema found.
+
 ## Phase 2 — Auth Detection
 
 ```bash
@@ -221,6 +396,31 @@ _AUTH_RESP=$(curl -s -X POST "$_API_URL/api/auth/login" \
 _TOKEN=$(echo "$_AUTH_RESP" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
 [ -n "$_TOKEN" ] && echo "AUTH: ok" || echo "AUTH: failed — proceeding with unauthenticated tests only"
 ```
+
+## Phase 2b — gRPC Smoke Tests
+
+Skip if `_GRPC_HOST` is not set (no gRPC port detected in Preamble).
+
+```bash
+if command -v grpcurl >/dev/null 2>&1 && [ -n "$_GRPC_HOST" ]; then
+  grpcurl -plaintext "$_GRPC_HOST:$_GRPC_PORT" list 2>&1
+fi
+```
+
+For each discovered service:
+```bash
+# List methods on each service
+grpcurl -plaintext "$_GRPC_HOST:$_GRPC_PORT" list "<ServiceName>" 2>&1
+# Smoke test each method with empty request
+grpcurl -plaintext -d '{}' "$_GRPC_HOST:$_GRPC_PORT" "<ServiceName>/<MethodName>" 2>&1
+```
+
+Classify response:
+- Valid response body → **PASS**
+- `UNIMPLEMENTED` / `NOT_FOUND` → **SKIP** (method not applicable for empty request)
+- `INTERNAL` / connection error → **FAIL**
+
+Add gRPC results to Phase 5 report under `### gRPC Coverage` section.
 
 ## Phase 2.5 — CI Grounding
 
@@ -260,6 +460,68 @@ Use this output in Phase 3 to:
 
 ## Phase 3 — Generate API Tests
 
+### OTel Traceparent Header (BL-055)
+
+If `_OTEL_AVAILABLE=1`, add a `traceparent` header to all generated API requests so
+backend distributed traces can be correlated to specific test runs on failure.
+
+```typescript
+// Playwright APIRequestContext — add to test setup or request helper
+const traceId = crypto.randomUUID().replace(/-/g, '');
+const spanId = Math.random().toString(16).slice(2, 18).padStart(16, '0');
+const traceparent = `00-${traceId}-${spanId}-01`;
+test.info().annotations.push({ type: 'traceId', description: traceId });
+
+const response = await request.get('/api/endpoint', {
+  headers: { traceparent },
+});
+```
+
+Include the `traceId` annotation in CTRF `message` field on failure so the backend trace
+can be retrieved from Jaeger/Tempo. Only add traceparent when `OTEL_EXPORTER_OTLP_ENDPOINT`
+is set — do not add it unconditionally.
+
+### Tracetest Span Assertions (BL-056)
+
+If `_TRACETEST_AVAILABLE=1` and `_OTEL_AVAILABLE=1`, generate Tracetest YAML definitions
+alongside standard HTTP tests. These assert on distributed trace spans, not just HTTP responses.
+
+```yaml
+# tracetest/test-checkout.yaml — generated alongside checkout API tests
+type: Test
+spec:
+  id: checkout-span-assertions
+  name: "Checkout span assertions"
+  trigger:
+    type: http
+    httpRequest:
+      method: POST
+      url: "${ENV:API_URL}/api/checkout"
+      headers:
+        - key: Content-Type
+          value: application/json
+      body: '{"items": [{"id": "test-item", "qty": 1}]}'
+  specs:
+    - selector: span[name="POST /api/checkout"]
+      assertions:
+        - attr:http.status_code = 201
+        - attr:http.response_body contains "orderId"
+    - selector: span[name="postgres/query"][db.operation="INSERT"]
+      assertions:
+        - attr:duration < 100ms
+    - selector: span[name="grpc.auth.verify"]
+      assertions:
+        - attr:rpc.grpc.status_code = 0
+```
+
+**Template rules:**
+- Every endpoint test gets a matching `tracetest/test-<endpoint>.yaml`
+- Assert: parent span status code, key DB spans `< 100ms`, auth span success
+- On Tracetest failure: fetch OTel waterfall using `traceId` from annotation, feed to Claude with prompt:
+  "Root span: `<name>` | First error span: `<name>` | Duration: <ms> | What went wrong?"
+
+In Phase 5 report, add `### Tracetest Span Assertions` section showing pass/fail per span assertion.
+
 ### DELETE endpoint policy (read before writing any test)
 
 **Never generate a bare `DELETE /api/*` test.** Calling delete on a resource that was
@@ -287,7 +549,17 @@ Every test that creates data **must** clean it up:
 
 ### Load language patterns file
 
-Select and read the language-appropriate reference guide for `_API_TOOL`:
+Select the language-appropriate reference guide for `_API_TOOL` (listed below). Do NOT read the
+whole guide. First list its section headings, then Read only the sections relevant to this task (client
+wrapper, auth, cleanup/teardown, and the `CS_TEST_FW` / `CS_RESTSHARP` sub-sections for C#), using the
+Read tool's `offset`/`limit` taken from the heading line numbers:
+
+```bash
+_GUIDE="$HOME/.claude/qa-agentic-team/qa-api/references/<guide-file>.md"   # <guide-file> = file named in the Reference link
+ls "$_GUIDE" && grep -nE '^#{2,3} ' "$_GUIDE"            # prints the absolute path to pass to Read, then the headings
+```
+
+If the guide is missing, continue with the key patterns listed below.
 
 **TypeScript (Playwright request context)**:
 > Reference: [API patterns — TypeScript](references/api-patterns-typescript.md)
@@ -313,7 +585,7 @@ Select and read the language-appropriate reference guide for `_API_TOOL`:
 
 For `_API_TOOL=csharp`, also note `CS_TEST_FW` and `CS_RESTSHARP` — use the RestSharp section of the patterns file when `CS_RESTSHARP=1`, otherwise use the HttpClient section; within each HTTP-client section, focus on the sub-section matching `CS_TEST_FW`.
 
-Follow the patterns in that file to generate tests. Read existing test files before
+Follow the patterns in those sections to generate tests. Read existing test files before
 writing — append missing test blocks, never overwrite existing ones.
 
 **Coverage targets per endpoint:**
@@ -401,9 +673,250 @@ command -v rspec &>/dev/null && \
   echo "RSPEC_EXIT_CODE: $?"
 ```
 
+## Phase 4b — Schemathesis Property-Based Fuzzing
+
+Skip if: no OpenAPI spec found (`_SPEC_FILE` is empty), or `QA_SKIP_SCHEMATHESIS=1` env var set.
+
+Stateful fuzzing sends generated POST/PUT/PATCH/DELETE requests, so it runs under the same
+**ALLOW_FORM_SUBMIT + TARGET=$_API_URL** gate as Dredd (Phase 0.75); without it, skip this phase and
+list it under "Needs a decision". Installing Schemathesis when it is missing additionally needs the
+ALLOW_INSTALL gate (Phase 0.5); set `_ALLOW_INSTALL=1` only when that gate was granted.
+
+```bash
+if [ -n "$_SPEC_FILE" ] && [ "${QA_SKIP_SCHEMATHESIS:-0}" != "1" ]; then
+  if ! command -v schemathesis >/dev/null 2>&1 && ! command -v st >/dev/null 2>&1; then
+    if [ "${_ALLOW_INSTALL:-0}" = "1" ]; then
+      pip install schemathesis --quiet 2>/dev/null || echo "SCHEMATHESIS_UNAVAILABLE"
+    else
+      echo "SCHEMATHESIS_UNAVAILABLE: not installed and ALLOW_INSTALL not granted"
+    fi
+  fi
+  if command -v st >/dev/null 2>&1 || command -v schemathesis >/dev/null 2>&1; then
+    _ST_CMD=$(command -v st 2>/dev/null || echo schemathesis)
+    "$_ST_CMD" run "$_SPEC_FILE" \
+      --checks all \
+      --stateful=links \
+      --max-examples 25 \
+      --output-truncate-responses \
+      --base-url "$_API_URL" \
+      2>&1 | tee "$_TMP/qa-api-schemathesis.txt" | tail -50
+  fi
+fi
+```
+
+Parse `$_TMP/qa-api-schemathesis.txt`:
+- `PASSED` → include in Phase 5 summary
+- `FAILED` → extract reproduction command + request/response; add to critical failures
+- `ERROR` (schema issue) → log as warning, don't block
+
+In Phase 5 report, add `### Fuzz Testing (Schemathesis)` section:
+- Total hypotheses tested
+- Properties verified (status_code_conformance, content_type_conformance, response_schema_conformance)
+- Any failures with reproduction `st run ... --hypothesis-seed=<N>`
+
+## Phase 4c — OWASP OFFAT OpenAPI Security Fuzzing (BL-033)
+
+Skip if `QA_SECURITY!=1` OR no OpenAPI spec detected in preamble.
+
+OFFAT performs OWASP API Top 10 attack-class fuzzing from the OpenAPI spec: BOLA, mass
+assignment, SQL injection, XSS, restricted HTTP method bypass. Complements Schemathesis'
+structural fuzzing with security-specific attack vectors.
+
+**Tool detection:**
+
+```bash
+_OFFAT=0
+command -v offat >/dev/null 2>&1 && _OFFAT=1
+echo "OFFAT_AVAILABLE: $_OFFAT"
+```
+
+**Gate (ALLOW_ACTIVE_SCAN + TARGET=$_API_URL):** OFFAT sends attack payloads (injection, BOLA,
+mass assignment) to `$_API_URL` — staging/dev only, never production. Interactive: ask with
+`AskUserQuestion`, stating that it sends attack traffic to that host; proceed only on yes. As a
+subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_ACTIVE_SCAN` and
+`TARGET=$_API_URL` (exact match); otherwise skip this phase and list it under "Needs a decision".
+
+**Run (opt-in: `QA_SECURITY=1` AND `_OFFAT=1` AND OpenAPI spec present AND the gate granted):**
+
+```bash
+if [ "${QA_SECURITY:-0}" = "1" ] && [ "$_OFFAT" = "1" ] && \
+   ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | grep -q '.'; then
+  _SPEC_FILE=$(ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -1)
+  echo "=== OFFAT SECURITY FUZZING ==="
+  echo "SPEC: $_SPEC_FILE  TARGET: $_API_URL"
+  _AUTH_HEADER=""
+  [ -n "$API_TOKEN" ] && _AUTH_HEADER="--headers Authorization:Bearer $API_TOKEN"
+  offat \
+    -f "$_SPEC_FILE" \
+    -u "$_API_URL" \
+    $_AUTH_HEADER \
+    -o "$_TMP/offat-results.json" \
+    --format json \
+    2>&1 | tail -30 | tee "$_TMP/offat-output.txt"
+  echo "OFFAT_EXIT: $?"
+fi
+```
+
+**Fallback when OFFAT not installed** (if `QA_SECURITY=1` but `_OFFAT=0`):
+
+```bash
+if [ "${QA_SECURITY:-0}" = "1" ] && [ "$_OFFAT" = "0" ]; then
+  echo "OFFAT_NOT_INSTALLED: install with 'pip install offat' for API security fuzzing"
+  echo "OFFAT_INSTALL_HINT: pip install offat"
+fi
+```
+
+**Parse results** (if `$_TMP/offat-results.json` exists):
+
+Read the JSON output. For each finding:
+- `severity: high` → **blocking failure** — add to CRITICAL findings in Phase 5 report
+- `severity: medium` → IMPORTANT finding
+- `severity: low` / `info` → informational
+
+Map findings to OWASP API Top 10 category:
+- BOLA findings → API1:2023 BOLA
+- Mass assignment → API6:2023 Unrestricted Access to Sensitive Business Flows
+- SQLi/XSS → API8:2023 Security Misconfiguration
+- Method bypass → API8:2023
+
+Add **OFFAT** section to Phase 5 report:
+```
+## OWASP OFFAT Security Fuzzing (Phase 4c)
+- Spec: <file>  Target: <url>  Findings: N (high: N, medium: N, low: N)
+- High-severity findings: BLOCK / PASS
+
+| Endpoint | Method | OWASP Category | Severity | Description |
+|----------|--------|---------------|----------|-------------|
+```
+
+## Phase 4d — Pact Consumer-Driven Contract Verification (BL-031)
+
+Skip if `_PACT_FILES=0` (no `.pact.json` or `pacts/*.json` found).
+
+```bash
+if [ "$_PACT_FILES" -gt 0 ]; then
+  _PACT_DIR=$(find . \( -path "*/pacts" \) ! -path "*/node_modules/*" 2>/dev/null | head -1)
+  _PACT_DIR="${_PACT_DIR:-.}"
+  if command -v npx >/dev/null 2>&1; then
+    npx @pact-foundation/pact-verifier \
+      --provider-base-url "$_API_URL" \
+      --pact-files-or-dirs "$_PACT_DIR" \
+      2>&1 | tee "$_TMP/qa-api-pact.txt" | tail -30
+    echo "PACT_EXIT: $?"
+  fi
+fi
+```
+
+Parse `$_TMP/qa-api-pact.txt` for:
+- `FAILED` lines → consumer contract violations — add to Phase 5 as `### Pact Failures` with field-level diff
+- `Verifying a pact between ... PASSED` → contract passing
+
+In Phase 5 report, add `### Consumer Contract Verification (Pact)` section:
+```
+- Contracts verified: N  Passing: N  Failing: N
+| Consumer | Provider | Interaction | Status | Diff |
+|----------|----------|-------------|--------|------|
+```
+
+## Phase 4e — RESTler Stateful REST Fuzzing (BL-032)
+
+Skip if `QA_DEEP_FUZZ!=1` OR no OpenAPI spec found. Runs via Docker — skip if Docker unavailable.
+
+```bash
+if [ "${QA_DEEP_FUZZ:-0}" = "1" ] && [ -n "$_SPEC_FILE" ]; then
+  if command -v docker >/dev/null 2>&1; then
+    echo "RESTLER_START: fuzzing $API_URL with $SPEC_FILE (this may take several minutes)"
+    docker run --rm \
+      -v "$(pwd):/app/src" \
+      -e API_BASE_URL="$_API_URL" \
+      mcr.microsoft.com/restlerfuzzer/restler:latest \
+      Fuzz --grammar_file /app/src/"$_SPEC_FILE" \
+           --settings '{"max_request_execution_time": 30}' \
+      2>&1 | tee "$_TMP/qa-api-restler.txt" | tail -40
+    echo "RESTLER_EXIT: $?"
+    # Collect bug buckets
+    _BUG_BUCKETS=$(find . -path "*/bug_buckets/*.txt" 2>/dev/null | wc -l | tr -d ' ')
+    echo "RESTLER_BUGS: $_BUG_BUCKETS buckets"
+  else
+    echo "RESTLER_SKIP: Docker not available — set QA_DEEP_FUZZ=1 in a Docker-enabled environment"
+  fi
+fi
+```
+
+Parse `bug_buckets/` output:
+- Each `.txt` = one unique bug category; read first 10 lines for reproduction command
+- Map to categories: `500_BugBuckets/` = server errors, `InternalServerError/` = unhandled exceptions, `ResourceHierarchy/` = state machine violations
+
+In Phase 5 report, add `### RESTler Stateful Fuzzing (Phase 4e)` section:
+```
+- Status: PASS / FINDINGS  Bug buckets: N
+| Category | Count | Reproduction |
+|----------|-------|-------------|
+| InternalServerError | 2 | restler Fuzz --replay bug_buckets/... |
+```
+
+## Phase 4f — Keploy eBPF Traffic Recording (BL-064)
+
+Skip if `_KEPLOY_AVAILABLE=0`. Run only when `QA_KEPLOY_RECORD=1` (recording mode) or when
+`_KEPLOY_FIXTURES=1` (replay mode — fixtures already exist).
+
+**Record mode** (`QA_KEPLOY_RECORD=1`):
+```bash
+if [ "${QA_KEPLOY_RECORD:-0}" = "1" ] && [ "$_KEPLOY_AVAILABLE" = "1" ]; then
+  echo "KEPLOY_RECORD: capturing API traffic (run your smoke test suite now)"
+  keploy record --command "$_START_CMD" --delay 5 2>&1 | tee "$_TMP/qa-api-keploy-record.txt"
+  echo "KEPLOY_CAPTURED: $(ls keploy/*.yaml 2>/dev/null | wc -l | tr -d ' ') test cases"
+fi
+```
+
+**Replay mode** (when `_KEPLOY_FIXTURES=1`, default on re-runs):
+```bash
+if [ "$_KEPLOY_FIXTURES" = "1" ] && [ "$_KEPLOY_AVAILABLE" = "1" ]; then
+  keploy test --command "$_START_CMD" --delay 5 \
+    2>&1 | tee "$_TMP/qa-api-keploy-test.txt" | tail -20
+  echo "KEPLOY_EXIT: $?"
+fi
+```
+
+Compare new captures against stored baseline when `QA_KEPLOY_RECORD=1` AND `_KEPLOY_FIXTURES=1`:
+- Schema delta = fields in new capture absent from baseline → report as `KEPLOY_SCHEMA_DRIFT`
+- Auto-update mocks if delta count ≤ 5 and matches PR description; otherwise flag for review
+
+## Phase 4g — aimock Offline Record/Replay (BL-025)
+
+Skip if `_AIMOCK_AVAILABLE=0`. Captures all external API calls (LLM providers, third-party
+services) in record mode; replays them offline in CI.
+
+**Record mode** (first run or `AIMOCK_RECORD=1`):
+```bash
+if [ "${AIMOCK_RECORD:-0}" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  mkdir -p fixtures
+  aimock --record --output fixtures/ \
+    2>&1 | tee "$_TMP/qa-api-aimock-record.txt"
+  echo "AIMOCK_RECORDED: $(ls fixtures/*.json 2>/dev/null | wc -l | tr -d ' ') fixture files"
+fi
+```
+
+**Replay mode** (when `_AIMOCK_FIXTURES=1`, default):
+```bash
+if [ "$_AIMOCK_FIXTURES" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  aimock --replay fixtures/ &
+  _AIMOCK_PID=$!
+  echo "AIMOCK_REPLAY: PID $_AIMOCK_PID — external calls now served from fixtures"
+  # Run tests against replay proxy...
+fi
+```
+
+In Phase 5 report, add `### aimock Offline Replay` note when `_AIMOCK_FIXTURES=1`:
+- List fixture files used + call counts per provider
+- Note any calls that fell through to live (not in fixtures)
+
 ## Phase 5 — Report
 
 Write report to `$_TMP/qa-api-report.md`:
+
+If `_SEED_MODE=chaos` is active, prepend this warning block to the report (before the Summary table):
+> ⚠️ **Chaos mode active** (`QA_SEED_MODE=chaos`): any new test failures compared to clean-seed runs may indicate data-handling regressions. Compare with baseline clean-seed results to isolate chaos-induced failures.
 
 ```markdown
 # QA API Report — <date>
@@ -433,6 +946,8 @@ Write report to `$_TMP/qa-api-report.md`:
 
 When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it before listing individual failures. Cross-reference `$_TMP/qa-api-ci-ground.txt` to determine if each failure is pre-existing or a new regression.
 
+For each failing test, check `./qa-flaky-registry.json` if present. If `flakeRate > 0.2`, annotate `[FLAKY N%]` instead of `[FAILED]`.
+
 ## Failures
 <list each failure with endpoint + error snippet>
 
@@ -453,6 +968,66 @@ When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it be
 - **Cleanup everything you create** — track IDs of all created resources and delete them in suite teardown; lifecycle tests that exercise DELETE must remove their ID from the tracking list immediately after asserting the delete, so teardown does not double-delete
 - **Idempotent test data** — use unique, timestamped values (e.g. `test-{timestamp}@example.com`) so parallel runs do not collide
 - **Report even if execution fails** — always write the report regardless of exit code
+
+## CTRF Output
+
+After writing `$_TMP/qa-api-report.md`, write `$_TMP/qa-api-ctrf.json`:
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+output_file = os.path.join(tmp, 'qa-api-runner-output.txt')
+output = open(output_file, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(output_file) else ''
+
+tests = []
+# Parse common patterns from test output
+for line in output.splitlines():
+    m_pass = re.match(r'\s+[✓✅PASS]\s+(.+)', line)
+    m_fail = re.match(r'\s+[✕×FAIL]\s+(.+)', line)
+    if m_pass:
+        tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'api'})
+    elif m_fail:
+        tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'api',
+                      'message': 'See qa-api-report.md for details'})
+
+# Fallback: emit summary buckets
+if not tests:
+    p = len(re.findall(r'passed|PASS|\d+ passing', output))
+    f = len(re.findall(r'failed|FAIL|\d+ failing', output))
+    if p: tests.append({'name': f'{p} tests passed', 'status': 'passed', 'duration': 0, 'suite': 'api'})
+    if f: tests.append({'name': f'{f} tests failed', 'status': 'failed', 'duration': 0, 'suite': 'api',
+                        'message': 'See qa-api-report.md for details'})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+s = sum(1 for t in tests if t['status'] == 'skipped')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': os.environ.get('_API_TOOL', 'unknown')},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': s, 'other': 0,
+            'start': now_ms - 5000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {
+            'reportName': 'qa-api',
+            'baseUrl': os.environ.get('_BASE_URL', 'unknown'),
+        },
+    }
+}
+
+out = os.path.join(tmp, 'qa-api-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f} skipped={s}')
+PYEOF
+```
 
 ## Agent Memory
 

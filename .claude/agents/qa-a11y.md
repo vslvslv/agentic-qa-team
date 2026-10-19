@@ -33,6 +33,19 @@ hooks:
           async: true
 ---
 
+<!-- GENERATED from qa-a11y/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
+
+## Running as a subagent
+
+You were started by `/qa-team` (or another orchestrator) with a brief. In this mode:
+
+- You cannot ask the user anything and cannot start other agents. Wherever this procedure says to use AskUserQuestion, use what the brief says instead.
+- A gated step (`**Gate (KEY):**`) runs only if the brief's `APPROVALS:` line contains that KEY. Otherwise skip it and list it under **Needs a decision** in your report.
+- Probe only the `TARGET=` URL given in the brief, if any. Never pick a target URL from `.env` or config files on your own.
+- Where this procedure says to spawn sub-agents, do that work yourself, sequentially.
+- Paths starting with `$HOME/.claude/qa-agentic-team` point at this suite's install. The Read tool does not expand `$HOME`: run `echo "$HOME"` once and pass absolute paths.
+- Write your report and CTRF file to the brief's `REPORT:` and `CTRF:` paths, even where this procedure names other (e.g. dated) paths. With no `TARGET=`, run nothing against an app: write or review tests only. End your reply with the report path, a one-line status, and the **Needs a decision** list (or "none").
+
 ## Preamble (run first)
 
 ```bash
@@ -62,10 +75,24 @@ ls playwright.config.ts playwright.config.js playwright.config.mts 2>/dev/null |
 echo "--- AXE-CORE ---"
 ls node_modules/@axe-core/playwright 2>/dev/null && echo "AXE_PRESENT: yes" || echo "AXE_PRESENT: no"
 
+# Baseline diff configuration
+_A11Y_BASELINE_MODE="${A11Y_BASELINE_MODE:-diff}"
+_A11Y_BASELINE_DIR="${A11Y_BASELINE_DIR:-./a11y-baselines}"
+_BASELINE_FILE="$_A11Y_BASELINE_DIR/baseline-$_BRANCH.json"
+[ -f "$_BASELINE_FILE" ] && echo "A11Y_BASELINE_EXISTS: 1" || echo "A11Y_BASELINE_EXISTS: 0"
+echo "A11Y_BASELINE_MODE: $_A11Y_BASELINE_MODE"
+echo "A11Y_BASELINE_DIR: $_A11Y_BASELINE_DIR"
+
 # Load methodology context
 echo "--- METHODOLOGY CONTEXT ---"
-ls qa-methodology/references/accessibility-guide.md 2>/dev/null && \
-  echo "A11Y_GUIDE: present" || echo "A11Y_GUIDE: absent"
+_A11Y_GUIDE="$HOME/.claude/qa-agentic-team/qa-methodology/references/accessibility-guide.md"
+if [ -f "$_A11Y_GUIDE" ]; then
+  echo "A11Y_GUIDE: present"
+  ls "$_A11Y_GUIDE"                 # absolute path to pass to Read
+  grep -n '^## ' "$_A11Y_GUIDE"     # section headings with line numbers
+else
+  echo "A11Y_GUIDE: absent"
+fi
 
 # Discover pages for audit from routes/nav
 echo "--- APP ROUTES ---"
@@ -83,17 +110,30 @@ If user provides alternative URL, use it for `_BASE_URL` throughout.
 
 ## Phase 1 — Install & Configure
 
+If the preamble printed `AXE_PRESENT: yes` and Playwright was found, install nothing — go straight
+to page selection.
+
+**Gate (ALLOW_INSTALL):** add `@axe-core/playwright` to the project's devDependencies (this edits
+`package.json` and the lockfile) and download the Playwright Chromium build. Interactive: ask with
+`AskUserQuestion` — "Install @axe-core/playwright as a devDependency and the Playwright Chromium
+browser?" Options: "Yes — install" | "No — skip the axe scan"; proceed only on yes. As a subagent:
+proceed only if the brief's `APPROVALS:` line contains `ALLOW_INSTALL`; otherwise skip and list
+under "Needs a decision".
+
 ```bash
-# Install @axe-core/playwright if absent
+# Only after ALLOW_INSTALL was granted
 if ! ls node_modules/@axe-core/playwright >/dev/null 2>&1; then
   echo "Installing @axe-core/playwright..."
   npm install --save-dev @axe-core/playwright 2>&1 | tail -5
   echo "AXE_INSTALL_EXIT: $?"
 fi
-
-# Verify Playwright
-npx playwright install chromium --with-deps 2>/dev/null | tail -3 || true
+npx --no-install playwright install chromium 2>&1 | tail -3 || true
 ```
+
+Without the approval: if `@axe-core/playwright` is absent, skip Phase 2 (and the phases that read
+its output), and report the missing dependency with the exact install command
+(`npm install --save-dev @axe-core/playwright`) under "Needs a decision". Do not fall back to
+`npx --yes` or any other silent install.
 
 Determine pages to audit — select up to 10 priority pages:
 
@@ -310,7 +350,47 @@ print(f"CLASSIFIED_WRITTEN: {out}")
 PYEOF
 ```
 
-## Phase 4 — AI Alt Text Generation
+**Methodology context** (only when the preamble printed `A11Y_GUIDE: present`): do not read the
+whole guide (~1,000 lines). Using the headings the preamble printed, Read only the
+"Automated vs Manual Testing Split" and "Anti-Patterns" sections (Read tool `offset`/`limit`; a
+section ends at the next `## ` heading) at the path the preamble printed. If a heading is missing, skip
+that section. Use them to (a) list the checks axe cannot verify for the pages audited — after
+Phase 6 writes `$_TMP/qa-a11y-report.md`, append them under a `## Manual Checks Still Required`
+heading — and (b) sharpen the fix guidance for the rules that fired. If the guide is absent, skip
+this step.
+
+## Phase 4 — Baseline Diff (A11Y_BASELINE_MODE=diff)
+
+After collecting axe violations from Phase 3:
+
+1. Save current violations as baseline:
+   ```bash
+   mkdir -p "$_A11Y_BASELINE_DIR"
+   # Write current violations JSON to baseline file (overwrite with latest run)
+   python3 -c "
+   import json, os, sys
+   tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+   raw = json.load(open(os.path.join(tmp, 'a11y-classified.json'), encoding='utf-8'))
+   baseline_dir = os.environ.get('_A11Y_BASELINE_DIR', './a11y-baselines')
+   branch = os.environ.get('_BRANCH', 'unknown')
+   out = os.path.join(baseline_dir, f'baseline-{branch}.json')
+   json.dump(raw, open(out, 'w', encoding='utf-8'), indent=2)
+   print(f'BASELINE_WRITTEN: {out}')
+   " 2>/dev/null || true
+   ```
+
+2. If `A11Y_BASELINE_MODE=diff` and a prior baseline existed (`A11Y_BASELINE_EXISTS: 1`):
+   - Load the prior baseline JSON (saved before step 1 overwrote it — read it before running the bash above, or keep a copy)
+   - Compare violations by rule+target fingerprint: `{ ruleId: v.rule, target: v.element }`
+   - Filter the violations list to only NEW violations not present in the prior baseline
+   - Add a note to the report: "N new violations found (M existing violations suppressed from diff)"
+   - Only new violations count as failures in CTRF output
+
+3. If `A11Y_BASELINE_MODE=full` or no prior baseline existed (`A11Y_BASELINE_EXISTS: 0`): show all violations as normal with no filtering.
+
+The baseline file path: `$_A11Y_BASELINE_DIR/baseline-{branch}.json`. Commit the baseline directory to track regressions per branch across CI runs.
+
+## Phase 5 — AI Alt Text Generation
 
 For each image violation identified in Phase 3 (`image_violations` list):
 
@@ -353,7 +433,7 @@ For each image violation identified in Phase 3 (`image_violations` list):
 
 If no images with missing alt text found, skip this phase and note "No image alt violations found."
 
-## Phase 5 — Report
+## Phase 6 — Report
 
 ```python
 python3 - << 'PYEOF'
@@ -508,8 +588,10 @@ PYEOF
 - **AI alt text is a suggestion** — generated alt text must be reviewed by a human before committing
 - **Up to 10 pages** — prioritize critical paths; don't try to audit every route in one run
 - **Incomplete ≠ violation** — axe `incomplete` items need manual review; flag them but do not count as violations
-- **Skip Phase 4 if no image violations** — do not call vision API unless `image_violations` is non-empty
+- **Skip Phase 5 if no image violations** — do not call vision API unless `image_violations` is non-empty
 - **Report even with 0 violations** — a clean report is valuable; write it with status ✅
+- `A11Y_BASELINE_MODE=full` shows all violations; `diff` (default) shows only new ones vs last run
+- `A11Y_BASELINE_DIR` (default `./a11y-baselines/`) stores per-branch baseline JSON files; commit this directory to track regressions per branch
 
 ## Agent Memory
 

@@ -84,8 +84,14 @@ echo "A11Y_BASELINE_DIR: $_A11Y_BASELINE_DIR"
 
 # Load methodology context
 echo "--- METHODOLOGY CONTEXT ---"
-ls qa-methodology/references/accessibility-guide.md 2>/dev/null && \
-  echo "A11Y_GUIDE: present" || echo "A11Y_GUIDE: absent"
+_A11Y_GUIDE="${CLAUDE_SKILL_DIR}/../qa-methodology/references/accessibility-guide.md"
+if [ -f "$_A11Y_GUIDE" ]; then
+  echo "A11Y_GUIDE: present"
+  ls "$_A11Y_GUIDE"                 # absolute path to pass to Read
+  grep -n '^## ' "$_A11Y_GUIDE"     # section headings with line numbers
+else
+  echo "A11Y_GUIDE: absent"
+fi
 
 # Discover pages for audit from routes/nav
 echo "--- APP ROUTES ---"
@@ -103,17 +109,30 @@ If user provides alternative URL, use it for `_BASE_URL` throughout.
 
 ## Phase 1 — Install & Configure
 
+If the preamble printed `AXE_PRESENT: yes` and Playwright was found, install nothing — go straight
+to page selection.
+
+**Gate (ALLOW_INSTALL):** add `@axe-core/playwright` to the project's devDependencies (this edits
+`package.json` and the lockfile) and download the Playwright Chromium build. Interactive: ask with
+`AskUserQuestion` — "Install @axe-core/playwright as a devDependency and the Playwright Chromium
+browser?" Options: "Yes — install" | "No — skip the axe scan"; proceed only on yes. As a subagent:
+proceed only if the brief's `APPROVALS:` line contains `ALLOW_INSTALL`; otherwise skip and list
+under "Needs a decision".
+
 ```bash
-# Install @axe-core/playwright if absent
+# Only after ALLOW_INSTALL was granted
 if ! ls node_modules/@axe-core/playwright >/dev/null 2>&1; then
   echo "Installing @axe-core/playwright..."
   npm install --save-dev @axe-core/playwright 2>&1 | tail -5
   echo "AXE_INSTALL_EXIT: $?"
 fi
-
-# Verify Playwright
-npx playwright install chromium --with-deps 2>/dev/null | tail -3 || true
+npx --no-install playwright install chromium 2>&1 | tail -3 || true
 ```
+
+Without the approval: if `@axe-core/playwright` is absent, skip Phase 2 (and the phases that read
+its output), and report the missing dependency with the exact install command
+(`npm install --save-dev @axe-core/playwright`) under "Needs a decision". Do not fall back to
+`npx --yes` or any other silent install.
 
 Determine pages to audit — select up to 10 priority pages:
 
@@ -329,6 +348,15 @@ print(f"IMAGE_VIOLATIONS: {len(image_violations)}")
 print(f"CLASSIFIED_WRITTEN: {out}")
 PYEOF
 ```
+
+**Methodology context** (only when the preamble printed `A11Y_GUIDE: present`): do not read the
+whole guide (~1,000 lines). Using the headings the preamble printed, Read only the
+"Automated vs Manual Testing Split" and "Anti-Patterns" sections (Read tool `offset`/`limit`; a
+section ends at the next `## ` heading) at the path the preamble printed. If a heading is missing, skip
+that section. Use them to (a) list the checks axe cannot verify for the pages audited — after
+Phase 6 writes `$_TMP/qa-a11y-report.md`, append them under a `## Manual Checks Still Required`
+heading — and (b) sharpen the fix guidance for the rules that fired. If the guide is absent, skip
+this step.
 
 ## Phase 4 — Baseline Diff (A11Y_BASELINE_MODE=diff)
 

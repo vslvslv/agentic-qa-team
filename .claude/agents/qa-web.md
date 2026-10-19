@@ -31,6 +31,19 @@ hooks:
           async: true
 ---
 
+<!-- GENERATED from qa-web/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
+
+## Running as a subagent
+
+You were started by `/qa-team` (or another orchestrator) with a brief. In this mode:
+
+- You cannot ask the user anything and cannot start other agents. Wherever this procedure says to use AskUserQuestion, use what the brief says instead.
+- A gated step (`**Gate (KEY):**`) runs only if the brief's `APPROVALS:` line contains that KEY. Otherwise skip it and list it under **Needs a decision** in your report.
+- Probe only the `TARGET=` URL given in the brief, if any. Never pick a target URL from `.env` or config files on your own.
+- Where this procedure says to spawn sub-agents, do that work yourself, sequentially.
+- Paths starting with `$HOME/.claude/qa-agentic-team` point at this suite's install. The Read tool does not expand `$HOME`: run `echo "$HOME"` once and pass absolute paths.
+- Write your report and CTRF file to the brief's `REPORT:` and `CTRF:` paths, even where this procedure names other (e.g. dated) paths. With no `TARGET=`, run nothing against an app: write or review tests only. End your reply with the report path, a one-line status, and the **Needs a decision** list (or "none").
+
 ## Preamble (run first)
 
 ```bash
@@ -136,6 +149,42 @@ if [ -n "$QA_EXTRA_PATHS" ]; then
     echo "EXTRA_REPO $(basename "$_qr"): $_extra test files — $_qr"
   done
 fi
+
+# Chaos seed mode detection (BL-023)
+_SEED_MODE="${QA_SEED_MODE:-clean}"
+echo "SEED_MODE: $_SEED_MODE"
+[ "$_SEED_MODE" = "chaos" ] && \
+  echo "CHAOS_MODE: active — E2E tests running against chaos-seeded data; new failures may indicate data-handling regressions"
+
+# Shortest NL mode detection (BL-049)
+_SHORTEST_AVAILABLE=0
+command -v shortest >/dev/null 2>&1 && _SHORTEST_AVAILABLE=1
+grep -q '"shortest"' package.json 2>/dev/null && _SHORTEST_AVAILABLE=1
+_NL_TESTS_EXIST=0
+[ -f "tests.nl.md" ] && _NL_TESTS_EXIST=1
+echo "SHORTEST_AVAILABLE: $_SHORTEST_AVAILABLE"
+echo "NL_TESTS_EXIST: $_NL_TESTS_EXIST"
+
+# OTel traceparent injection detection (BL-055)
+_OTEL_AVAILABLE=0
+[ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ] && _OTEL_AVAILABLE=1
+echo "OTEL_AVAILABLE: $_OTEL_AVAILABLE"
+
+# aimock record/replay detection (BL-025)
+_AIMOCK_AVAILABLE=0
+command -v aimock >/dev/null 2>&1 && _AIMOCK_AVAILABLE=1
+_AIMOCK_FIXTURES=0
+[ -d "fixtures" ] && ls fixtures/*.json 2>/dev/null | grep -q '.' && _AIMOCK_FIXTURES=1
+echo "AIMOCK_AVAILABLE: $_AIMOCK_AVAILABLE"
+echo "AIMOCK_FIXTURES: $_AIMOCK_FIXTURES"
+
+# TestZeus Hercules / Gherkin detection (BL-066)
+_GHERKIN_FILES=$(find . -name "*.feature" ! -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
+_HERCULES_AVAILABLE=0
+command -v hercules >/dev/null 2>&1 && _HERCULES_AVAILABLE=1
+grep -q '"testzeus-hercules"\|"@testzeus"' package.json 2>/dev/null && _HERCULES_AVAILABLE=1
+echo "GHERKIN_FILES: $_GHERKIN_FILES"
+echo "HERCULES_AVAILABLE: $_HERCULES_AVAILABLE"
 ```
 
 If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
@@ -240,18 +289,174 @@ Use the CI grounding output when generating tests in Phase 2:
 
 ## Phase 2 — Load Tool Patterns & Generate Tests
 
-Read the tool-specific patterns file for the selected `_WEB_TOOL`:
+Read the tool-specific patterns file for the selected `_WEB_TOOL` (short, read it whole):
 
 ```
-Read qa-web/tools/<_WEB_TOOL>.md
+Read $HOME/.claude/qa-agentic-team/qa-web/tools/<_WEB_TOOL>.md
 ```
 
-Then select and read the language-appropriate reference guide based on `_WEB_TOOL` and `_TARGET_LANG`:
+### Multi-Browser Configuration
+
+Default to 3-browser matrix unless `QA_BROWSERS` env var overrides:
+
+```bash
+_QA_BROWSERS="${QA_BROWSERS:-chromium,firefox,webkit}"
+echo "QA_BROWSERS: $_QA_BROWSERS"
+```
+
+When generating `playwright.config.ts` (if it does not already have a `projects` array), include:
+
+```typescript
+projects: [
+  // Conditionally include each browser based on QA_BROWSERS env var
+  ...(!(process.env.QA_BROWSERS) || process.env.QA_BROWSERS.includes('chromium') ? [{
+    name: 'chromium', use: { ...devices['Desktop Chrome'] }
+  }] : []),
+  ...(!(process.env.QA_BROWSERS) || process.env.QA_BROWSERS.includes('firefox') ? [{
+    name: 'firefox', use: { ...devices['Desktop Firefox'] }
+  }] : []),
+  ...(!(process.env.QA_BROWSERS) || process.env.QA_BROWSERS.includes('webkit') ? [{
+    name: 'webkit', use: { ...devices['Desktop Safari'] }
+  }] : []),
+],
+```
+
+If existing config already has a `projects` array: do NOT override it — just note which browsers are configured.
+
+### OTel Traceparent Injection (BL-055)
+
+If `_OTEL_AVAILABLE=1` (`OTEL_EXPORTER_OTLP_ENDPOINT` is set), add traceparent injection to
+the generated Playwright config and spec fixtures so every test-driven HTTP request carries a
+known trace ID — enabling correlation to backend Jaeger/Tempo traces on failure.
+
+Add to generated `playwright.config.ts` (near the top, before `export default`):
+
+```typescript
+// OTel SDK init — only when OTEL endpoint configured
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { Resource } from '@opentelemetry/resources';
+if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+  new NodeSDK({
+    resource: new Resource({ 'service.name': 'playwright-tests' }),
+    traceExporter: new OTLPTraceExporter(),
+  }).start();
+}
+```
+
+Add to generated spec files in the `test.beforeEach` block:
+
+```typescript
+test.beforeEach(async ({ page }) => {
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    const traceId = crypto.randomUUID().replace(/-/g, '');
+    const spanId = Math.random().toString(16).slice(2, 18).padStart(16, '0');
+    const traceparent = `00-${traceId}-${spanId}-01`;
+    // Annotate test with trace ID for correlation on failure
+    test.info().annotations.push({ type: 'traceId', description: traceId });
+    await page.route('**/*', (route) =>
+      route.continue({ headers: { ...route.request().headers(), traceparent } })
+    );
+  }
+});
+```
+
+On test failure, include the `traceId` annotation in the Phase 4 report so the backend
+distributed trace can be retrieved from Jaeger/Tempo for root-cause analysis.
+
+### Natural Language Mode (BL-049)
+
+If `_SHORTEST_AVAILABLE=1` or `_NL_TESTS_EXIST=1`, generate a `<feature>.shortest.ts`
+file alongside standard Playwright specs. NL test descriptions are interpreted at runtime
+by Claude — no selector code is maintained by hand.
+
+**When to use:** tests authored in TCMS as acceptance criteria bullets, or when `tests.nl.md`
+exists with plain-English descriptions.
+
+```typescript
+// e2e/login.shortest.ts
+import { shortest } from '@antiwork/shortest';
+
+shortest('User can log in with valid credentials and reach the dashboard');
+shortest('User sees an error message with wrong password');
+shortest('User can log out and is redirected to the login page');
+```
+
+**Run**: `npx shortest` (interprets each string via Claude → Playwright execution → pass/fail).
+
+If `tests.nl.md` exists: parse each line as a `shortest()` call and generate the file.
+On failure: Claude receives the failing sentence + DOM snapshot → rewrite the intent
+description rather than a CSS selector.
+
+Note: `shortest` requires `ANTHROPIC_API_KEY` set in the environment.
+
+### aimock Offline Record/Replay (BL-025)
+
+If `_AIMOCK_AVAILABLE=1`, wrap the test run with aimock to make tests fully offline/deterministic.
+
+**Record mode** (first run or `AIMOCK_RECORD=1`):
+```bash
+if [ "${AIMOCK_RECORD:-0}" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  mkdir -p fixtures
+  aimock --record --output fixtures/ &
+  _AIMOCK_PID=$!
+  echo "AIMOCK_RECORD_PID: $_AIMOCK_PID — capturing external API calls"
+fi
+```
+
+**Replay mode** (when `_AIMOCK_FIXTURES=1`):
+```bash
+if [ "$_AIMOCK_FIXTURES" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
+  aimock --replay fixtures/ &
+  echo "AIMOCK_REPLAY: external calls served from fixtures — deterministic CI mode"
+fi
+```
+
+The generated `playwright.config.ts` sets `use.baseURL` normally; aimock transparently
+intercepts external calls (LLM providers, 3rd-party APIs) via proxy. Tests run offline.
+Add `AIMOCK_FIXTURES: true` annotation to CI run summary.
+
+### TestZeus Hercules: Gherkin + DOM Distillation (BL-066)
+
+When `_GHERKIN_FILES > 0`, offer Hercules as the execution engine instead of static Playwright specs.
+Hercules converts Gherkin → E2E tests at runtime via DOM Distillation — no hardcoded selectors.
+
+**Detect and offer**:
+- If `_HERCULES_AVAILABLE=1` AND `_GHERKIN_FILES > 0` → run Hercules on `.feature` files
+- If `_HERCULES_AVAILABLE=0` AND `_GHERKIN_FILES > 0` → note: `npm install testzeus-hercules` and show Gherkin files found
+
+**Execution** (when Hercules is available):
+```bash
+if [ "$_HERCULES_AVAILABLE" = "1" ] && [ "$_GHERKIN_FILES" -gt 0 ]; then
+  _FEATURE_DIRS=$(find . -name "*.feature" ! -path "*/node_modules/*" 2>/dev/null \
+    | xargs -I{} dirname {} | sort -u | tr '\n' ' ')
+  hercules run --base-url "$_BASE_URL" --features "$_FEATURE_DIRS" \
+    --reporter ctrf --output "$_TMP/qa-web-hercules-ctrf.json" \
+    2>&1 | tee "$_TMP/qa-web-hercules.txt" | tail -20
+  echo "HERCULES_EXIT: $?"
+fi
+```
+
+**Gherkin-only mode** (no Hercules): when `.feature` files exist but Hercules is absent,
+generate standard Playwright tests from the Gherkin `Given/When/Then` steps.
+
+**On PR changing user-facing behavior**: update `Then` clauses in `.feature` files based on PR diff — the Gherkin stays stable, Hercules re-discovers selectors on next run.
+
+Then consult the reference guide for `_WEB_TOOL` / `_TARGET_LANG` (listed below). Guides are long
+(up to ~3,000 lines) — do NOT read a whole guide. First list its section headings, then Read only the
+sections relevant to the pages and flows in scope (for example auth, locators, network mocking), using
+the Read tool's `offset`/`limit` taken from the heading line numbers:
+
+```bash
+_GUIDE="$HOME/.claude/qa-agentic-team/qa-web/references/<guide-file>.md"   # <guide-file> = file named in the Reference link
+ls "$_GUIDE" && grep -nE '^#{2,3} ' "$_GUIDE"            # prints the absolute path to pass to Read, then the headings
+```
+
+If the guide is missing, continue with the key patterns listed below.
 
 **Playwright — TypeScript** (when `_TARGET_LANG` is not `csharp`):
 > Reference: [Playwright patterns guide (TypeScript)](references/playwright-patterns.md)
-> Key patterns: POM + fixture injection · storageState auth (single/multi-role/API-based/worker-scoped) · IndexedDB in storageState (v1.51+) · OAuth + MFA + magic link auth · locator rank · web-first assertions · soft assertions · network mocking + HAR recording + network-cache · test sharding · visual regression · `expect.poll`/`toPass` · accessibility with axe-core · aria snapshots (`toMatchAriaSnapshot` + `locator.ariaSnapshot()` + `mode: 'ai'`) · test annotations/tagging · global setup via project deps · custom reporters (HTML `title` v1.53+) · multi-environment projects · custom matchers · keyboard/focus testing · browser storage manipulation · performance timing · mobile emulation · clock mocking · geolocation · test attachments · debug workflow · TypeScript config + ESLint · typed POM factory · WebSocket testing + `routeWebSocket` · pure API test suites · `addLocatorHandler` overlay dismissal · post-facto inspection APIs (`consoleMessages`/`pageErrors`/`requests`) · `locator.normalize()` · `locator.describe()` · Screencast API + `showActions()` · Docker deployment · auto-fixture suite scaling · `browser.bind()` multi-client · Playwright Test Agents (Planner/Generator/Healer v1.56+) · `launchPersistentContext` session reuse · `maxRedirects` APIRequestContext · `snapshotPath({ kind })` · cloud scaling (Currents/Moon/remote server) · breaking changes reference (v1.45–v1.59)
-> Breaking changes: `page.accessibility` removed (v1.57) → use `toMatchAriaSnapshot` / axe-core · Chrome for Testing replaces Chromium builds (v1.57) · React 16/17 CT support removed (v1.57) · `@playwright/experimental-ct-svelte` removed (v1.59) · macOS 14 WebKit dropped (v1.59)
+> Key patterns: POM + fixture injection · storageState auth (single/multi-role/API-based/worker-scoped) · locator rank · web-first assertions · soft assertions · network mocking + HAR recording · test sharding · visual regression · `expect.poll`/`toPass` · accessibility with axe-core · aria snapshots (`toMatchAriaSnapshot`) · test annotations/tagging · global setup via project deps · multi-environment projects · clock mocking · `addLocatorHandler` overlay dismissal · WebSocket testing · pure API test suites
 
 **Playwright — C#** (when `_TARGET_LANG=csharp`):
 > Reference: [Playwright patterns guide (C#)](references/playwright-patterns-csharp.md)
@@ -260,7 +465,7 @@ Then select and read the language-appropriate reference guide based on `_WEB_TOO
 
 **Cypress**:
 > Reference: [Cypress patterns guide](references/cypress-patterns.md)
-> Key patterns: cy.session() auth (role-keyed validate callback) · cy.intercept() routeMatcher object form + RouteHandler (spy/modify/delay/req.alias dynamic aliasing) · cy.intercept() times option · data-cy selectors + typed selector maps (as const) · custom commands + Commands.overwrite() + Commands.addQuery() · cy.request() seeding + form/multipart · cy.spy() + sinon.match · Component Testing (React Context + Redux providers) · cy.fixture() with TypeScript generics · test isolation · cy.origin() OAuth/SSO · cy.task() typed with generics · cy.within() scoping · cy.selectFile() file uploads · cy.clock()/cy.tick() timer control · cy.exec() shell commands · cy.all() v13.4+ parallel assertions · CDP network throttling (Cypress.automation) · Shadow DOM (includeShadowDom + .shadow()) · iframe testing (cypress-iframe) · chai-subset API assertions · download testing (readFile + downloadsFolder) · localStorage (getAllLocalStorage/onBeforeLoad) · cy.focused() accessibility · cookie management · GraphQL intercept by operationName · multi-alias cy.wait([]) · spec-level config overrides · multi-step wizard pattern · conditional testing anti-pattern · experimentalWebKitSupport · experimentalModifyObstructiveThirdPartyCode · Cypress Cloud Smart Orchestration · Module API programmatic runs · CI parallelization + Cypress Cloud flaky detection · a11y (cypress-axe) · visual regression (@percy/cypress) · test tagging with @cypress/grep
+> Key patterns: cy.session() auth (validate callback) · cy.intercept() RouteHandler (spy/modify/delay) · data-cy selectors · custom commands + Commands.overwrite() + Commands.addQuery() · cy.request() seeding · cy.spy() · Component Testing · cy.fixture() with TypeScript generics · test isolation · cy.origin() OAuth/SSO · cy.task() for DB ops · cy.within() scoping · cy.selectFile() uploads · cy.clock()/cy.tick() · GraphQL intercept by operationName · conditional testing anti-pattern · CI parallelization · a11y (cypress-axe) · visual regression (@percy/cypress) · test tagging with @cypress/grep
 
 **Selenium**:
 > Reference: [Selenium patterns guide](references/selenium-patterns.md)
@@ -312,6 +517,28 @@ it("renders the dashboard", async () => {
 });
 ```
 
+## Phase 2.6 — Cross-Browser Locator Audit
+
+Runs only when multi-browser projects are configured (`_QA_BROWSERS` contains more than one browser, or config has multiple projects).
+
+Collect potentially fragile locators from spec files:
+
+```bash
+grep -rE '\.(locator|getBy[A-Z])\(' e2e/ tests/ --include="*.spec.ts" --include="*.spec.js" \
+  ! -path "*/node_modules/*" 2>/dev/null | grep -oE '"[^"]+"' | sort -u | head -50
+```
+
+Flag locators containing CSS classes (`.class-name`) or XPath patterns (`//div/span`) — these are cross-browser fragile.
+
+For each flagged locator pattern:
+- Suggest rewrite to stable selector: `getByRole` > `getByLabel` > `getByTestId`
+- Apply fix via Edit tool if fix confidence is high (unambiguous role or label available)
+- Flag for review if ambiguous
+
+Add `### Cross-Browser Locator Audit` section to Phase 4 report:
+| Locator | Issue | Suggested Fix | Applied |
+|---------|-------|---------------|---------|
+
 ---
 
 ## Phase 3 — Execute Tests
@@ -326,7 +553,7 @@ export E2E_USER_PASSWORD="${E2E_USER_PASSWORD:-password123}"
   npx playwright test e2e/auth.setup.ts --project=setup 2>/dev/null || true
 _SPEC_FILES=$(find . \( -path "*/e2e/specs/*.spec.ts" -o -path "*/e2e/*.spec.ts" \) \
   ! -path "*/node_modules/*" 2>/dev/null | tr '\n' ' ')
-npx playwright test $_SPEC_FILES --project=chromium --reporter=json \
+npx playwright test $_SPEC_FILES --reporter=json \
   2>&1 > "$_TMP/qa-web-output.txt"
 echo "EXIT_CODE: $?"
 ```
@@ -394,6 +621,9 @@ PYEOF
 
 Write report to `$_TMP/qa-web-report.md`:
 
+If `_SEED_MODE=chaos` is active, prepend this warning block to the report (before the Summary table):
+> ⚠️ **Chaos mode active** (`QA_SEED_MODE=chaos`): any new test failures compared to clean-seed runs may indicate data-handling regressions. Compare with baseline clean-seed results to isolate chaos-induced failures.
+
 ```markdown
 # QA Web Report — <date>
 
@@ -423,11 +653,89 @@ Write report to `$_TMP/qa-web-report.md`:
 ## Coverage Map
 | Page/Flow | Tests | Status |
 |-----------|-------|--------|
+
+## Browser Matrix
+| Browser | Tests Run | Passed | Failed | Skipped |
+|---------|-----------|--------|--------|---------|
+| Chromium | N | N | N | N |
+| Firefox | N | N | N | N |
+| WebKit | N | N | N | N |
+
+Note: Opt out of a browser with `QA_BROWSERS=chromium,firefox` (omit webkit).
 ```
 
 When `EXIT_CODE != 0`, the **Diagnosis** section is mandatory — complete it before listing individual failures. Cross-reference `$_TMP/qa-web-ci-ground.txt` to determine if each failure is pre-existing or a new regression. Never skip straight to listing failures.
 
-Print report path. If failures exist: "Found N failing web tests. Run /investigate to diagnose?"
+For each failing test, check `./qa-flaky-registry.json` if present. If `flakeRate > 0.2`, annotate `[FLAKY N%]` instead of `[FAILED]` in the report.
+
+Print report path. If failures exist: "Found N failing web tests. Run /qa-observability to root-cause them, or /qa-heal if they look like broken selectors?"
+
+## CTRF Output
+
+After writing `$_TMP/qa-web-report.md`, write `$_TMP/qa-web-ctrf.json`:
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+pw_output = open(os.path.join(tmp, 'qa-web-pw-output.txt'), encoding='utf-8', errors='replace').read() \
+            if os.path.exists(os.path.join(tmp, 'qa-web-pw-output.txt')) else ''
+
+tests = []
+# Try to parse test names and results from Playwright JSON output or text output
+passed_count = len(re.findall(r'✓|passed', pw_output))
+failed_count = len(re.findall(r'✕|failed', pw_output))
+skipped_count = len(re.findall(r'skipped|pending', pw_output))
+
+# Build synthetic test entries from output lines if no JSON reporter
+lines = pw_output.splitlines()
+for line in lines:
+    m_pass = re.match(r'\s+✓\s+(.+)', line)
+    m_fail = re.match(r'\s+[✕×]\s+(.+)', line)
+    if m_pass:
+        tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'e2e'})
+    elif m_fail:
+        tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'e2e',
+                      'message': 'See qa-web-report.md for details'})
+
+# If no granular tests parsed, emit summary buckets
+if not tests:
+    if passed_count:
+        tests.append({'name': f'{passed_count} tests passed', 'status': 'passed', 'duration': 0, 'suite': 'e2e'})
+    if failed_count:
+        tests.append({'name': f'{failed_count} tests failed', 'status': 'failed', 'duration': 0, 'suite': 'e2e',
+                      'message': 'See qa-web-report.md for details'})
+    if skipped_count:
+        tests.append({'name': f'{skipped_count} tests skipped', 'status': 'skipped', 'duration': 0, 'suite': 'e2e'})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+s = sum(1 for t in tests if t['status'] == 'skipped')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': os.environ.get('_WEB_TOOL', 'playwright')},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': s, 'other': 0,
+            'start': now_ms - 5000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {
+            'reportName': 'qa-web',
+            'baseUrl': os.environ.get('_BASE_URL', 'unknown'),
+        },
+    }
+}
+
+out = os.path.join(tmp, 'qa-web-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f} skipped={s}')
+PYEOF
+```
 
 ## Important Rules
 

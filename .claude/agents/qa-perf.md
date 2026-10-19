@@ -32,6 +32,19 @@ hooks:
           async: true
 ---
 
+<!-- GENERATED from qa-perf/SKILL.md.tmpl by scripts/gen-skill-docs.sh — edit the template, not this body. -->
+
+## Running as a subagent
+
+You were started by `/qa-team` (or another orchestrator) with a brief. In this mode:
+
+- You cannot ask the user anything and cannot start other agents. Wherever this procedure says to use AskUserQuestion, use what the brief says instead.
+- A gated step (`**Gate (KEY):**`) runs only if the brief's `APPROVALS:` line contains that KEY. Otherwise skip it and list it under **Needs a decision** in your report.
+- Probe only the `TARGET=` URL given in the brief, if any. Never pick a target URL from `.env` or config files on your own.
+- Where this procedure says to spawn sub-agents, do that work yourself, sequentially.
+- Paths starting with `$HOME/.claude/qa-agentic-team` point at this suite's install. The Read tool does not expand `$HOME`: run `echo "$HOME"` once and pass absolute paths.
+- Write your report and CTRF file to the brief's `REPORT:` and `CTRF:` paths, even where this procedure names other (e.g. dated) paths. With no `TARGET=`, run nothing against an app: write or review tests only. End your reply with the report path, a one-line status, and the **Needs a decision** list (or "none").
+
 ## Preamble (run first)
 
 ```bash
@@ -94,6 +107,14 @@ find . -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | \
   xargs grep -il "NBomber" 2>/dev/null | grep -q '.' && _NBOMBER=1
 echo "NBOMBER_PRESENT: $_NBOMBER"
 
+echo "--- ARTILLERY ---"
+_ARTILLERY=0
+{ ls artillery.yml artillery.yaml 2>/dev/null | grep -q '.' || \
+  find . \( -name "*.artillery.yml" -o -name "*.artillery.yaml" \) \
+    ! -path "*/node_modules/*" 2>/dev/null | grep -q .; } && \
+  grep -q '"artillery"' package.json 2>/dev/null && _ARTILLERY=1
+echo "ARTILLERY_PRESENT: $_ARTILLERY"
+
 # Existing perf test files
 echo "--- EXISTING PERF TESTS ---"
 find . \( -name "*.k6.js" -o -name "*.k6.ts" -o -name "load-test*.js" \
@@ -129,24 +150,43 @@ If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent ph
 
 ### Tool Selection Gate
 
-Count detected tools from `K6_PRESENT`, `JMETER_PRESENT`, `LOCUST_PRESENT`, `NBOMBER_PRESENT`.
+Count detected tools from `K6_PRESENT`, `JMETER_PRESENT`, `LOCUST_PRESENT`, `NBOMBER_PRESENT`, `ARTILLERY_PRESENT`.
 
 **Exactly one detected** → use that tool automatically. Set `_PERF_TOOL` to `k6`,
-`jmeter`, `locust`, or `nbomber`.
+`jmeter`, `locust`, `nbomber`, or `artillery`.
 
 **Zero detected** → if `_TARGET_LANG=csharp`, recommend NBomber first; otherwise ask:
 > "No performance testing tool detected. Which would you like to use?
 > 1. **k6** (recommended for JS/TS — CI-friendly, Grafana ecosystem, fast feedback)
 > 2. **NBomber** (recommended for C# — native .NET, integrates with NUnit/xUnit, fluent API) ← suggest first if `_TARGET_LANG=csharp`
-> 3. **JMeter** (best if you have existing .jmx plans or need a Java/GUI-based workflow)
-> 4. **Locust** (ideal for Python teams — readable Python DSL, easy to extend)
+> 3. **Artillery** (JS/YAML-based, good for progressive load profiles and HTTP/WebSocket)
+> 4. **JMeter** (best if you have existing .jmx plans or need a Java/GUI-based workflow)
+> 5. **Locust** (ideal for Python teams — readable Python DSL, easy to extend)
 >
-> Recommendation: k6 for JS/TS stacks; NBomber for .NET/C# stacks; JMeter if .jmx files
-> exist or Java CI is required; Locust for Python-heavy stacks."
+> Recommendation: k6 for JS/TS stacks; NBomber for .NET/C# stacks; Artillery for JS teams wanting YAML configs; JMeter if .jmx files exist or Java CI is required; Locust for Python-heavy stacks."
 
 **Two or more detected** → list which were found, ask which to use for this run.
 
-## Phase 1 — Identify Test Targets
+```bash
+# LitmusChaos detection (BL-039)
+_LITMUS_AVAILABLE=0
+command -v litmusctl >/dev/null 2>&1 && _LITMUS_AVAILABLE=1
+kubectl get namespace litmus >/dev/null 2>&1 && _LITMUS_AVAILABLE=1
+echo "LITMUS_AVAILABLE: $_LITMUS_AVAILABLE"
+
+# Bencher detection (BL-040)
+_BENCHER_AVAILABLE=0
+command -v bencher >/dev/null 2>&1 && _BENCHER_AVAILABLE=1
+[ -n "$BENCHER_API_TOKEN" ] && _BENCHER_AVAILABLE=1
+echo "BENCHER_AVAILABLE: $_BENCHER_AVAILABLE"
+
+# GoReplay detection (BL-041)
+_GOREPLAY_AVAILABLE=0
+command -v gor >/dev/null 2>&1 && _GOREPLAY_AVAILABLE=1
+[ -f "requests.gor" ] && _GOREPLAY_REPLAY_READY=1 || _GOREPLAY_REPLAY_READY=0
+echo "GOREPLAY_AVAILABLE: $_GOREPLAY_AVAILABLE"
+echo "GOREPLAY_REPLAY_READY: $_GOREPLAY_REPLAY_READY"
+```
 
 ```bash
 # OpenAPI endpoints
@@ -169,18 +209,27 @@ Default SLA profiles if no docs exist:
 
 ## Phase 2 — Load Tool Patterns & Generate Scripts
 
-Read the tool-specific patterns file for the selected `_PERF_TOOL`:
+Read the tool-specific patterns file for the selected `_PERF_TOOL` (short, read it whole):
 
 ```
-Read qa-perf/tools/<_PERF_TOOL>.md
+Read $HOME/.claude/qa-agentic-team/qa-perf/tools/<_PERF_TOOL>.md
 ```
 
-Also check the detailed reference guide:
+Also consult the detailed reference guide for the tool (listed below). Guides are long (up to
+~3,000 lines) — do NOT read a whole guide. First list its section headings, then Read only the
+sections relevant to the test types and protocols in scope (for example executors, thresholds, auth,
+WebSocket/gRPC), using the Read tool's `offset`/`limit` taken from the heading line numbers:
+
+```bash
+_GUIDE="$HOME/.claude/qa-agentic-team/qa-perf/references/<guide-file>.md"   # <guide-file> = file named in the Reference link
+ls "$_GUIDE" && grep -nE '^#{2,3} ' "$_GUIDE"            # prints the absolute path to pass to Read, then the headings
+```
+
+If the guide is missing, continue with the key patterns listed below.
 
 **k6**:
 > Reference: [k6 patterns guide](references/k6-patterns.md)
-> Key patterns: test type taxonomy · scenarios/executors (`ramping-vus`, `constant-arrival-rate`, `ramping-arrival-rate`) · thresholds + `abortOnFail` · `check()` · `setup()`/`teardown()` auth · custom metrics (Trend/Rate/Counter/Gauge) · `handleSummary` (JUnit/JSON/HTML) · `http.batch()` · `group()` · browser module (getBy* locators, CPU/network throttling, `waitForEvent`, locator filtering) · gRPC (unary + streaming + metadata Bearer auth + connection reuse) · WebSocket (stable `k6/websockets` module, multiple concurrent connections per VU) · GraphQL (200-response error detection) · HMAC signing (`k6/crypto`) · secrets management (`k6/secrets`, `K6_SECRET_SOURCE` env var) · MFA/TOTP auth · distributed tracing (`http-instrumentation-tempo`) · SharedArray · CSV data with papaparse · per-environment thresholds · `http.setResponseCallback` for custom failure definitions · error codes (1000-1699 ranges) · `exec.vu.metrics.tags` for dynamic per-VU tagging · `K6_WEB_DASHBOARD` built-in real-time UI · GitLab CI + Docker k6 patterns · `summaryTrendStats` + `K6_COMPATIBILITY_MODE` · OS tuning (Linux + macOS) · k6 v2.0.0 migration (removed: `externally-controlled`, `--no-summary`, `options.ext.loadimpact`, `browser_web_vital_fid`; `--stack` now mandatory for cloud; new exit code 97 for cloud aborts)
-> See also: `qa-perf/references/k6-patterns-baseline.md` (original baseline for comparison)
+> Key patterns: test type taxonomy · scenarios/executors (`ramping-vus`, `constant-arrival-rate`, `ramping-arrival-rate`) · thresholds + `abortOnFail` · `check()` · `setup()`/`teardown()` auth · custom metrics (Trend/Rate/Counter/Gauge) · `handleSummary` (JUnit/JSON/HTML) · `http.batch()` · `group()` · browser module · gRPC · WebSocket · GraphQL (200-response error detection) · SharedArray · CSV data · per-environment thresholds · `http.setResponseCallback` for custom failure definitions · secrets via environment, never hard-coded
 
 **NBomber** (C# native — use when `_TARGET_LANG=csharp`):
 > Reference: [NBomber patterns guide (C#)](references/nbomber-patterns.md)
@@ -197,12 +246,178 @@ Also check the detailed reference guide:
 Generate scripts covering all **critical** endpoints from Phase 1.
 Read existing perf test files first — append missing scenarios, never overwrite.
 
+## Phase 2.5 — Artillery Adaptive Phase Sequencing
+
+Only runs when Artillery is detected (`_PERF_TOOL` contains `artillery`). Skip otherwise.
+Uses 3-phase escalating approach: smoke → baseline → soak.
+Each phase only runs if the previous phase passes all thresholds.
+These phases send real load: run the target classification and **TARGET gate from Phase 3** first.
+
+**Phase A — Smoke (10 arrivals, 30s)**
+
+```bash
+_ART_CONFIG=$(ls artillery.yml artillery.yaml 2>/dev/null | head -1)
+if [ -n "$_ART_CONFIG" ] && echo "$_PERF_TOOL" | grep -q "artillery"; then
+  npx artillery run "$_ART_CONFIG" \
+    --overrides '{"config":{"phases":[{"duration":30,"arrivalCount":10}]}}' \
+    --output "$_TMP/artillery-smoke.json" 2>&1 | tail -20
+fi
+```
+
+Parse `$_TMP/artillery-smoke.json`: if p99 > 2000ms or error rate > 1% → **STOP, report smoke failure**.
+
+**Phase B — Baseline (target concurrency, 2 min)**
+
+```bash
+if [ -n "$_ART_CONFIG" ] && echo "$_PERF_TOOL" | grep -q "artillery"; then
+  npx artillery run "$_ART_CONFIG" \
+    --output "$_TMP/artillery-baseline.json" 2>&1 | tail -30
+fi
+```
+
+Parse `$_TMP/artillery-baseline.json`: if p99 > 4× smoke p99 or error rate > 5% → **STOP, report regression**.
+
+**Phase C — Soak (target concurrency, 10 min)** — only if `QA_SOAK=1` env var set
+
+```bash
+if [ -n "$_ART_CONFIG" ] && echo "$_PERF_TOOL" | grep -q "artillery" && [ "${QA_SOAK:-0}" = "1" ]; then
+  npx artillery run "$_ART_CONFIG" \
+    --overrides '{"config":{"phases":[{"duration":600,"arrivalRate":10}]}}' \
+    --output "$_TMP/artillery-soak.json" 2>&1 | tail -30
+fi
+```
+
+Check for memory leak signal: p99 at minute 9 > 2× p99 at minute 1 → flag `[MEMORY LEAK SUSPECTED]`.
+
+Collect all phase results for Phase 4 report under `### Artillery Phase Results` section.
+
 ## Phase 3 — Execute Tests
 
-Dispatch to the correct runner based on `_PERF_TOOL` — the execute block is in
-`qa-perf/tools/<_PERF_TOOL>.md`. Run it now.
+Before any load leaves the machine, classify the target host (the URL the scripts hit —
+`$_API_URL`, or `$_WEB_URL` for browser-module scenarios):
 
-## Phase 4 — Report
+```bash
+_PERF_TARGET="$_API_URL"   # or "$_WEB_URL" when the scripts drive the web app
+_PERF_HOST=$(echo "$_PERF_TARGET" | sed -E 's#^[a-zA-Z]+://(\[[^]]+\]|[^/:]+).*#\1#')
+case "$_PERF_HOST" in
+  localhost|127.0.0.1|0.0.0.0|"[::1]"|host.docker.internal) _TARGET_IS_LOCAL=1 ;;
+  *) _TARGET_IS_LOCAL=0 ;;
+esac
+echo "PERF_TARGET: $_PERF_TARGET  TARGET_IS_LOCAL: $_TARGET_IS_LOCAL"
+```
+
+**Gate (TARGET=$_PERF_TARGET)** — applies when `TARGET_IS_LOCAL=0`: a load test against a remote
+host can degrade or take down a shared environment. Interactive: confirm with `AskUserQuestion` —
+"Load-test `$_PERF_TARGET` (peak N VUs, duration D)? Never production." Options: "Yes — this is a
+staging/dev target I may load" | "No — enter a different target / cancel"; proceed only on yes. As a
+subagent: proceed only if the brief's `APPROVALS:` line contains `TARGET=$_PERF_TARGET` (exact
+match); otherwise do not execute — keep the generated scripts, and list the target under "Needs a
+decision". Scenarios that send POST/PUT/PATCH/DELETE to a remote target additionally need
+`ALLOW_FORM_SUBMIT` (same ask/APPROVALS rule); without it, run only the read-only scenarios.
+Local targets (`TARGET_IS_LOCAL=1`) run without this gate.
+
+Dispatch to the correct runner based on `_PERF_TOOL` — the execute block is in
+`$HOME/.claude/qa-agentic-team/qa-perf/tools/<_PERF_TOOL>.md`. Run it now.
+
+## Phase 3.5 — Chaos Resilience (BL-039) + Production Traffic Replay (BL-041)
+
+### LitmusChaos Concurrent Resilience Testing (BL-039)
+
+Skip if `QA_CHAOS!=1` OR `_LITMUS_AVAILABLE=0`.
+
+**Gate (ALLOW_ACTIVE_SCAN):** the experiment deletes pods in a live Kubernetes cluster. Before
+asking, show the target: `kubectl config current-context`, and the ChaosEngine's `appns` and
+`applabel` (fill both from the detected k8s labels — never leave the `default` placeholder). It must
+be a disposable dev/staging cluster, never production. Interactive: ask with `AskUserQuestion` —
+"Run pod-delete chaos in context `<context>`, namespace `<appns>`, label `<applabel>`?" Options:
+"Yes — disposable cluster" | "No — skip chaos"; proceed only on yes. As a subagent: proceed only if
+the brief's `APPROVALS:` line contains `ALLOW_ACTIVE_SCAN` (in addition to `QA_CHAOS=1`); otherwise
+skip this section and list it — with the context/namespace — under "Needs a decision". The
+concurrent load run is also subject to the Phase 3 TARGET gate.
+
+```bash
+if [ "${QA_CHAOS:-0}" = "1" ] && [ "$_LITMUS_AVAILABLE" = "1" ]; then
+  # Claude auto-generates ChaosEngine YAML from k6 thresholds
+  _K6_THRESHOLDS=$(grep -r "thresholds:" --include="*.js" --include="*.ts" \
+    ! -path "*/node_modules/*" 2>/dev/null | head -5)
+  echo "CHAOS_HYPOTHESIS: derived from thresholds: $_K6_THRESHOLDS"
+fi
+```
+
+**ChaosEngine template** (generated from k6 thresholds):
+```yaml
+# generated: qa-perf/litmus-chaos-engine.yaml
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: qa-perf-chaos
+spec:
+  appinfo:
+    appns: default
+    applabel: "app=<detected from k8s labels>"
+  engineState: active
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "30"
+            - name: CHAOS_INTERVAL
+              value: "10"
+            - name: FORCE
+              value: "false"
+```
+
+**Concurrent execution**: run LitmusChaos experiment AND k6 load test simultaneously:
+1. `litmusctl run chaosengine -f qa-perf/litmus-chaos-engine.yaml &`
+2. `k6 run <test-script.js>` (with same thresholds as baseline run)
+3. Compare: did system hold SLO thresholds during chaos?
+
+**Report**: boundary thresholds for each fault type, e.g.
+"p99 held at 30% pod kill (494ms vs 450ms baseline), breached at 50% pod kill (820ms)."
+
+### GoReplay Production Traffic Replay (BL-041)
+
+Skip if `QA_REPLAY_MODE!=1`.
+
+**Capture** records real production traffic (it may contain personal data and credentials) on the
+host it runs on. Interactive only: ask with `AskUserQuestion` before starting it. As a subagent: never
+capture — list it under "Needs a decision".
+
+**Gate (TARGET=$_API_URL) for replay:** replay sends the recorded production requests, writes
+included, to `$_API_URL` — staging/dev only, never production. Interactive: confirm the exact URL with
+`AskUserQuestion` — "Replay `requests.gor` against `$_API_URL`? Recorded writes (POST/PUT/PATCH/DELETE)
+will be re-sent." Options: "Yes — staging/dev target" | "No — cancel"; proceed only on yes. As a
+subagent: proceed only if the brief's `APPROVALS:` line contains `TARGET=$_API_URL` (exact match) and
+`ALLOW_FORM_SUBMIT`; otherwise skip replay and list it under "Needs a decision".
+
+**Capture mode** (run once on production):
+```bash
+if [ "${QA_REPLAY_MODE:-0}" = "1" ] && [ "$_GOREPLAY_AVAILABLE" = "1" ]; then
+  if [ "${QA_GOREPLAY_CAPTURE:-0}" = "1" ]; then
+    echo "GOREPLAY_CAPTURE: capturing traffic from $_API_URL"
+    gor --input-raw ":80" --output-file requests.gor --exit-after 60s &
+    echo "GOREPLAY_CAPTURE_PID: $!"
+  elif [ "$_GOREPLAY_REPLAY_READY" = "1" ]; then
+    echo "GOREPLAY_REPLAY: replaying requests.gor against $_API_URL"
+    gor --input-file requests.gor --output-http "$_API_URL" \
+      --stats --output-http-stats \
+      2>&1 | tee "$_TMP/qa-perf-goreplay.txt"
+    echo "GOREPLAY_EXIT: $?"
+  fi
+fi
+```
+
+**Analysis** (after replay): compare baseline vs replay per endpoint:
+- Claude prompt: "Compare baseline vs replay results from `$_TMP/qa-perf-goreplay.txt`.
+  Identify endpoints with p95 regression >10%. Summarize likely root causes."
+
+In Phase 4 report, add `### Production Traffic Replay (GoReplay)` section:
+```
+| Endpoint | Baseline p99 | Replay p99 | Delta | Verdict |
+|----------|-------------|------------|-------|---------|
+```
 
 Write report to `$_TMP/qa-perf-report.md`:
 
@@ -236,16 +451,157 @@ When any threshold violation exists, the **Diagnosis** section is mandatory — 
 
 ## Recommendations
 <top bottlenecks + suggested optimizations>
+
+### SLO Compliance
+
+If k6 `thresholds` block found, generate Sloth-compatible SLO YAML:
+
+```bash
+_K6_THRESHOLDS=$(grep -A 20 'thresholds:' k6/ -r 2>/dev/null | head -30)
+```
+
+For each threshold (e.g., `http_req_duration: ['p(99)<500']`):
+- Map to SLO: `objective: 99.9`, `description: "p99 latency < 500ms"`
+- Compute error budget burn rate from observed error rate in test run
+- Write `$_TMP/qa-slo.yaml` in Sloth format
+
+| SLO | Objective | Observed | Status | Error Budget Remaining |
+|-----|-----------|----------|--------|----------------------|
 ```
 
 ## Important Rules
 
-- **Never run against production** — always target localhost/staging; confirm URL before executing
+- **Never run against production** — always target localhost/staging; remote targets go through the Phase 3 TARGET gate
 - **Ramp-up before full load** — always use staged load profiles (ramp-up → sustain → ramp-down)
 - **Auth in setup, not per iteration** — obtain tokens once to avoid auth endpoint overload
 - **Conservative defaults** — default to 50 VUs/threads max; ask user before going above 200
 - **Report even without execution** — if the tool is missing, document installation steps + the generated scripts
 - **Cleanup after writes** — if any POST creates resources, add teardown logic to delete them
+
+## Phase 4.5 — Pyroscope Flamegraph Diff
+
+Skip if `PYROSCOPE_URL` env var is not set.
+
+```bash
+if [ -n "$PYROSCOPE_URL" ]; then
+  _NOW=$(date +%s)
+  _ONE_HOUR_AGO=$((_NOW - 3600))
+  curl -s "${PYROSCOPE_URL}/render?query=process_cpu:cpu:nanoseconds:cpu:nanoseconds\
+&from=${_ONE_HOUR_AGO}&until=${_NOW}&format=json" \
+    -o "$_TMP/pyroscope-profile.json" 2>/dev/null || echo "PYROSCOPE_UNAVAILABLE"
+fi
+```
+
+If `$_TMP/pyroscope-profile.json` obtained, analyze it and generate 3-bullet insight to add to Phase 4 report under `### Flamegraph Insights`:
+1. **Hottest function**: name and % CPU time during load
+2. **Regression vs idle**: functions consuming >3× more CPU under load vs idle
+3. **Recommendation**: specific optimization suggestion (e.g., "add DB connection pooling", "cache result of X")
+
+## Phase 4.6 — Bencher Continuous Benchmarking (BL-040)
+
+Skip if `_BENCHER_AVAILABLE=0`. Pushes k6 summary to Bencher's trend store and generates
+a narrative from the historical data.
+
+```bash
+if [ "$_BENCHER_AVAILABLE" = "1" ]; then
+  _K6_SUMMARY=$(ls "$_TMP"/qa-perf-*.json 2>/dev/null | head -1)
+  if [ -n "$_K6_SUMMARY" ] && [ -n "$BENCHER_API_TOKEN" ]; then
+    bencher run \
+      --project "${BENCHER_PROJECT:-qa-perf}" \
+      --token "$BENCHER_API_TOKEN" \
+      --adapter json \
+      --file "$_K6_SUMMARY" \
+      2>&1 | tee "$_TMP/qa-perf-bencher.txt"
+    echo "BENCHER_EXIT: $?"
+    # Fetch trend history for narrative
+    bencher metric list \
+      --project "${BENCHER_PROJECT:-qa-perf}" \
+      --token "$BENCHER_API_TOKEN" \
+      --per-page 30 \
+      2>&1 | tee "$_TMP/qa-perf-bencher-history.txt"
+  fi
+fi
+```
+
+If `$_TMP/qa-perf-bencher-history.txt` obtained, generate a trend narrative:
+- Claude prompt: "Here is 30 runs of performance data for this project. Write a 1-paragraph
+  narrative identifying: (1) which endpoint's p95 has the largest drift over time, (2) whether
+  the regression is gradual or spike-shaped, (3) which git SHA was the inflection point if visible,
+  (4) what profiling step would you recommend next."
+
+In Phase 4 report, add `### Bencher Trend Analysis` section with the narrative paragraph and a
+threshold violation summary table:
+```
+| Metric | Baseline (run 1) | Current | Drift | Trend |
+|--------|-----------------|---------|-------|-------|
+| p95 GET /api/checkout | 120ms | 164ms | +37% | ↑ gradual |
+```
+
+## CTRF Output
+
+After writing the report, write `$_TMP/qa-perf-ctrf.json`. Each configured threshold = one CTRF test
+(passed if met, failed if violated):
+
+```python
+python3 - << 'PYEOF'
+import json, os, time, re
+
+tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
+report_path = os.path.join(tmp, 'qa-perf-report.md')
+output_file = os.path.join(tmp, 'qa-perf-runner-output.txt')
+
+report = open(report_path, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(report_path) else ''
+output = open(output_file, encoding='utf-8', errors='replace').read() \
+         if os.path.exists(output_file) else ''
+
+tests = []
+
+# Parse threshold results from report or output
+# k6 threshold lines look like:  ✓ http_req_duration............: avg=145ms p95<500ms
+# Or: ✗ http_req_failed..............: 2.30% > 0%
+for line in (report + output).splitlines():
+    m_pass = re.match(r'\s*[✓✅]\s+(.+?)\s*[:=]', line)
+    m_fail = re.match(r'\s*[✗✕×❌]\s+(.+?)\s*[:=]', line)
+    if m_pass:
+        tests.append({'name': m_pass.group(1).strip(), 'status': 'passed', 'duration': 0, 'suite': 'performance'})
+    elif m_fail:
+        tests.append({'name': m_fail.group(1).strip(), 'status': 'failed', 'duration': 0, 'suite': 'performance',
+                      'message': f'Threshold violated — see qa-perf-report.md'})
+
+# Fallback if no threshold lines found
+if not tests:
+    violations = len(re.findall(r'THRESHOLD.*FAILED|exceeded|violated', output, re.IGNORECASE))
+    status = 'failed' if violations else 'passed'
+    tests.append({'name': 'performance thresholds', 'status': status, 'duration': 0, 'suite': 'performance',
+                  'message': f'{violations} threshold violation(s)' if violations else ''})
+
+p = sum(1 for t in tests if t['status'] == 'passed')
+f = sum(1 for t in tests if t['status'] == 'failed')
+now_ms = int(time.time() * 1000)
+
+ctrf = {
+    'results': {
+        'tool': {'name': os.environ.get('_PERF_TOOL', 'k6')},
+        'summary': {
+            'tests': len(tests), 'passed': p, 'failed': f,
+            'pending': 0, 'skipped': 0, 'other': 0,
+            'start': now_ms - 30000, 'stop': now_ms,
+        },
+        'tests': tests,
+        'environment': {
+            'reportName': 'qa-perf',
+            'baseUrl': os.environ.get('_BASE_URL', 'unknown'),
+        },
+    }
+}
+
+out = os.path.join(tmp, 'qa-perf-ctrf.json')
+json.dump(ctrf, open(out, 'w', encoding='utf-8'), indent=2)
+print(f'CTRF_WRITTEN: {out}')
+print(f'  tests={len(tests)} passed={p} failed={f}')
+PYEOF
+```
 
 ## Agent Memory
 
