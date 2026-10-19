@@ -1,6 +1,5 @@
 ---
 name: qa-team
-preamble-tier: 3
 version: 1.0.0
 description: |
   Agentic QA orchestrator. Analyzes the current project, determines which testing
@@ -28,7 +27,7 @@ effort: high
 
 !`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: first show what would change with `git -C "$HOME/.claude/qa-agentic-team" fetch -q && git -C "$HOME/.claude/qa-agentic-team" log --oneline HEAD..@{u} | head -20`, then run `git -C "$HOME/.claude/qa-agentic-team" pull --ff-only && bash "$HOME/.claude/qa-agentic-team/bin/setup" --no-hook`. Continue regardless.
 
 ---
 
@@ -600,7 +599,7 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 
 Print the report path and overall pass/fail status.
 
-If there are critical failures: "Found N critical failures. Run /investigate to diagnose?"
+If there are critical failures: "Found N critical failures. Run /qa-observability to root-cause them, or /qa-heal if they look like broken selectors?"
 
 ## Optional: GitHub PR Comment
 
@@ -662,11 +661,3 @@ fi
 - **Sub-agents are independent** — do not share state between them beyond the context summary
 - **Report even if tests fail** — always produce the aggregated report regardless of exit codes
 - **Idempotent** — safe to re-run; overwrites `$_TMP/qa-*-report.md` and the root report
-
-## Telemetry (run last)
-
-```bash
-~/.claude/skills/gstack/bin/gstack-timeline-log \
-  '{"skill":"qa-team","event":"completed","branch":"'"$_BRANCH"'","date":"'"$_DATE"'"}' \
-  2>/dev/null || true
-```

@@ -1,6 +1,5 @@
 ---
 name: qa-coverage-gate
-preamble-tier: 3
 version: 1.0.0
 description: |
   Test coverage delta gate. Runs the project's coverage tooling, computes per-file
@@ -27,12 +26,12 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-pre-bash-safety.sh"'
   PostToolUse:
     - matcher: "Write|Edit"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-post-write-typecheck.sh"'
           async: true
 ---
 
@@ -40,7 +39,7 @@ hooks:
 
 !`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: first show what would change with `git -C "$HOME/.claude/qa-agentic-team" fetch -q && git -C "$HOME/.claude/qa-agentic-team" log --oneline HEAD..@{u} | head -20`, then run `git -C "$HOME/.claude/qa-agentic-team" pull --ff-only && bash "$HOME/.claude/qa-agentic-team/bin/setup" --no-hook`. Continue regardless.
 
 ---
 
@@ -388,11 +387,3 @@ After each run, update `.claude/agent-memory/qa-coverage-gate/MEMORY.md` (create
 - Threshold used and compare branch
 - Files that have historically been below threshold
 - Any coverage tool flags or paths needed for this project
-
-## Telemetry (run last)
-
-```bash
-~/.claude/skills/gstack/bin/gstack-timeline-log \
-  '{"skill":"qa-coverage-gate","event":"completed","branch":"'"$_BRANCH"'","date":"'"$_DATE"'"}' \
-  2>/dev/null || true
-```

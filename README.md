@@ -82,11 +82,11 @@ A suite of Claude Code skills that give any project an autonomous QA team. One c
 
 ```bash
 git clone https://github.com/vslvslv/agentic-qa-team
-cd qa-agentic-team
+cd agentic-qa-team
 bash bin/setup
 ```
 
-Skills are installed as symlinks in `~/.claude/skills/` — edits stay in sync with the repo automatically.
+Skills are installed as symlinks in `~/.claude/skills/`, agents in `~/.claude/agents/`, and the repo itself at `~/.claude/qa-agentic-team` (the stable path hooks use). Existing files with the same names are never overwritten (pass `--force` to back them up and replace them). Remove everything with `bash bin/uninstall`.
 
 ## Quick start
 

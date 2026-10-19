@@ -13,8 +13,6 @@ tools:
   - Edit
   - Glob
   - Grep
-  - AskUserQuestion
-  - Agent
 model: sonnet
 color: blue
 memory: project
@@ -24,20 +22,12 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: |
-            INPUT=$(cat); CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
-            echo "$CMD" | grep -qE 'rm\s+-[a-zA-Z]*f[a-zA-Z]*\s+(--|/[^/]|~|\.\.)' \
-              && { echo "Blocked: broad rm -rf not allowed" >&2; exit 2; }; exit 0
+          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-pre-bash-safety.sh"'
   PostToolUse:
     - matcher: "Write|Edit"
       hooks:
         - type: command
-          command: |
-            FILE_PATH=$(echo "$TOOL_RESULT" | jq -r '.tool_result.file_path // empty' 2>/dev/null)
-            echo "$FILE_PATH" | grep -qE '\.(spec|test)\.(ts|tsx)$' || exit 0
-            TSC=$(find . -path "*/node_modules/.bin/tsc" ! -path "*/node_modules/*/node_modules/*" 2>/dev/null | head -1)
-            [ -z "$TSC" ] && exit 0
-            "$TSC" --noEmit 2>&1 | head -15; exit 0
+          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-post-write-typecheck.sh"'
           async: true
 ---
 

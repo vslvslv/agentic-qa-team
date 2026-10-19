@@ -6,8 +6,8 @@ Thanks for improving qa-agentic-team. This guide covers the workflow, versioning
 
 ```bash
 git clone https://github.com/vslvslv/agentic-qa-team
-cd qa-agentic-team
-bash bin/dev-setup      # creates ~/.claude/skills/qa-agentic-team → this repo (namespace symlink)
+cd agentic-qa-team
+bash bin/setup --no-hook   # links every skill and agent to this checkout; edits are live
 ```
 
 Dev mode uses a single namespace symlink so every skill is available as `/qa-agentic-team:<skill-name>`. Edits to `.tmpl` files take effect after regenerating docs — no reinstall needed.

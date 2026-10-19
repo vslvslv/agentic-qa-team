@@ -10,7 +10,7 @@
 
 ```bash
 git clone https://github.com/vslvslv/agentic-qa-team
-cd qa-agentic-team
+cd agentic-qa-team
 bash bin/setup
 ```
 

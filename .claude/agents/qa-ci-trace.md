@@ -15,22 +15,20 @@ tools:
   - Bash
   - Read
   - Write
-  - Edit
   - Glob
   - Grep
-  - AskUserQuestion
   - WebFetch
 hooks:
   PreToolUse:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-pre-bash-safety.sh"'
   PostToolUse:
     - matcher: "Write|Edit"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          command: 'bash "$HOME/.claude/qa-agentic-team/bin/hooks/qa-post-write-typecheck.sh"'
           async: true
 ---
 

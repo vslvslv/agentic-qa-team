@@ -1,6 +1,5 @@
 ---
 name: qa-methodology-refine
-preamble-tier: 3
 version: 1.0.0
 description: |
   QA methodology researcher. Researches testing methodologies, strategies, and
@@ -45,7 +44,7 @@ the result until it scores ≥ 80/100 on the quality rubric.
 
 !`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
 
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
+If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: first show what would change with `git -C "$HOME/.claude/qa-agentic-team" fetch -q && git -C "$HOME/.claude/qa-agentic-team" log --oneline HEAD..@{u} | head -20`, then run `git -C "$HOME/.claude/qa-agentic-team" pull --ff-only && bash "$HOME/.claude/qa-agentic-team/bin/setup" --no-hook`. Continue regardless.
 
 ### Step 0 — Detect target topic and language
 
@@ -367,12 +366,4 @@ Community signal highlights:
 
 Re-run:  /qa-methodology-refine <topic>
 Used by: /qa-audit (reads qa-methodology/references/ for enriched recommendations)
-```
-
-## Telemetry (run last)
-
-```bash
-~/.claude/skills/gstack/bin/gstack-timeline-log \
-  '{"skill":"qa-methodology-refine","event":"completed","topic":"'"$TARGET_TOPIC"'","lang":"'"$TARGET_LANG"'","date":"'"$(date +%Y-%m-%d)"'"}' \
-  2>/dev/null || true
 ```
