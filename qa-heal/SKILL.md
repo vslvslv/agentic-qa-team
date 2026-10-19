@@ -4,8 +4,9 @@ version: 1.0.0
 description: |
   Self-healing test maintenance skill. Given CI failure output or a failing test suite,
   classifies the failure type, applies the repair strategy, validates via re-run, and
-  routes the fix via confidence gate: auto-commit (>=0.87), review PR (0.62-0.87), or
-  GitHub issue (<0.62)
+  uses a confidence score to RECOMMEND commit (>=0.87), review PR (0.62-0.87), or
+  GitHub issue (<0.62). Every commit, push, PR and issue is an approval gate, and only
+  the files qa-heal itself changed are ever staged.
 when_to_use: |
   Use when asked to "fix broken tests", "heal tests", "repair
   selectors", or when CI shows test failures on a PR.
@@ -43,6 +44,21 @@ If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, u
 
 ---
 
+## Approval gates
+
+Run interactively (`/qa-heal`), you ask with `AskUserQuestion`. Run as a subagent (spawned by
+`/qa-team`), you cannot ask: a gated step runs only if the brief's `APPROVALS:` line contains
+the named key. Keys used here: `ALLOW_COMMIT` (stage + commit), `ALLOW_PR` (push + open PR),
+`ALLOW_ISSUE` (file a GitHub issue), `ALLOW_INSTALL` (install a package or tool). Default = not
+granted: repair and validate in the working tree, then list every skipped step under
+"Needs a decision" in the report.
+
+Tools run only if already installed: use `npx --no <tool>` (fails instead of downloading).
+**Gate (ALLOW_INSTALL):** install `<package/tool>` (e.g. `@playwright/test`, `inline-snapshot`)
+into the project or environment. Interactive: ask with AskUserQuestion and proceed only on yes.
+As a subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_INSTALL`; otherwise
+skip and list the step under "Needs a decision" in the report.
+
 ## Preamble (run first)
 
 ```bash
@@ -51,6 +67,13 @@ _DATE=$(date +%Y-%m-%d)
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 echo "BRANCH: $_BRANCH"
 echo "DATE: $_DATE"
+
+# Snapshot the working tree BEFORE any repair. qa-heal may only ever stage files it changed
+# itself; anything already modified, staged or untracked now belongs to someone else.
+{ git diff --name-only; git diff --cached --name-only; git ls-files --others --exclude-standard; } \
+  2>/dev/null | sort -u > "$_TMP/qa-heal-prestate.txt"
+: > "$_TMP/qa-heal-touched.txt"   # every file qa-heal modifies is appended here (Phase 3)
+echo "PRE_EXISTING_CHANGES: $(grep -c . "$_TMP/qa-heal-prestate.txt")"
 
 # Detect CI context
 echo "--- CI CONTEXT ---"
@@ -181,7 +204,7 @@ no regressions were introduced by the repair.
    if [ ! -s "$_TMP/qa-heal-failures.txt" ]; then
      echo "No existing failure log — running tests to detect failures"
      case "$_FRAMEWORK" in
-       playwright) npx playwright test --reporter=json 2>&1 \
+       playwright) npx --no playwright test --reporter=json 2>&1 \
          | python3 -c "
    import sys,json
    try:
@@ -199,7 +222,7 @@ no regressions were introduced by the repair.
      [walk(s) for s in data.get('suites',[])]
    except: pass
    " 2>/dev/null | tee "$_TMP/qa-heal-failures.txt" ;;
-       jest|vitest) npx "${_FRAMEWORK}" --json 2>/dev/null \
+       jest|vitest) npx --no "${_FRAMEWORK}" --json 2>/dev/null \
          | python3 -c "
    import sys,json
    try:
@@ -223,6 +246,8 @@ no regressions were introduced by the repair.
    If `$_TMP/qa-heal-failures.txt` is missing or empty after all above attempts, use `AskUserQuestion`:
    "Could not find failure log automatically. Please paste your CI failure output or test error messages."
    Write the response to `$_TMP/qa-heal-failures.txt`.
+   As a subagent: use a failure log path or text from the brief if one is given; otherwise stop
+   and report "no failure log found".
 
 After acquiring: extract failing test identifiers (file path + test name):
 ```bash
@@ -297,13 +322,27 @@ Apply repair strategy based on classification. Read the spec file before editing
 
 **snapshot-drift**:
 1. Run the snapshot update command on the affected test files:
-   - Python: `python3 -m pytest --inline-snapshot=fix <spec-file>` (requires `inline-snapshot` package)
-   - JavaScript/TypeScript: `npx jest --updateSnapshot <spec-file>` or `npx vitest --update-snapshots`
+   - Python: `python3 -m pytest --inline-snapshot=fix <spec-file>` (requires `inline-snapshot`; if it is not installed, Gate (ALLOW_INSTALL))
+   - JavaScript/TypeScript: `npx --no jest --updateSnapshot <spec-file>` or `npx --no vitest --update-snapshots <spec-file>`
+   - Then record what the command wrote (see "Record every file you change" below)
 2. Inspect the diff: if ≤5 files changed and no structural schema change (only value updates) → auto-apply
 3. If >5 files or structural change detected → flag `[SNAPSHOT REVIEW NEEDED]`; do not auto-apply
 4. After applying: re-read the updated snapshot values and verify they represent valid/expected output (not a regression masked as a snapshot update)
 
 Apply all edits via `Edit` tool. After each edit, re-read the changed section to verify correctness.
+
+**Record every file you change.** After each `Edit`, append the path (repo-relative) to the
+manifest: `echo "<path>" >> "$_TMP/qa-heal-touched.txt"`. After a command that writes files
+itself (snapshot update, Keploy re-record), record only what it newly changed, limited to the
+files it was meant to write — anything else that changed meanwhile is not qa-heal's:
+```bash
+# <pattern> = the spec files passed to the command and their snapshot files, e.g.
+#   'tests/login\.spec\.ts|__snapshots__/login\.spec\.ts\.snap'   or   '^keploy/'
+{ git diff --name-only; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u \
+  | comm -23 - "$_TMP/qa-heal-prestate.txt" | grep -E '<pattern>' >> "$_TMP/qa-heal-touched.txt"
+```
+The manifest is the ONLY source for validation and for anything staged later. Never derive the
+file list from `git diff` or `git status`.
 
 ### Keploy eBPF API Traffic Re-Recording (BL-064)
 
@@ -328,9 +367,11 @@ if [ "$_KEPLOY_FIXTURES" -gt 0 ] && [ "$_NEW_CAPTURES" -gt 0 ]; then
 fi
 ```
 
-**Auto-update rule**: if `delta ≤ 5 files` AND PR description mentions the changed endpoints
-→ auto-commit the new captures with message `chore: re-record Keploy mocks for <PR title>`.
-Otherwise: flag `[KEPLOY REVIEW NEEDED]` and add the diff as a PR comment.
+**Update rule**: record the re-recorded captures in the manifest (pattern `'^keploy/'`). If
+`delta ≤ 5 files` AND the PR description mentions the changed endpoints, they travel with the
+test repairs through the Phase 5 recommendation and its gates — there is no separate commit.
+Otherwise: flag `[KEPLOY REVIEW NEEDED]` and include the diff in the report (posting it as a PR
+comment is part of Gate (ALLOW_PR)).
 
 ## Phase 4 — Validate
 
@@ -343,12 +384,12 @@ _REGRESSION_FREE=0
 
 case "$_FRAMEWORK" in
   playwright)
-    # Collect spec files that were modified
-    _SPEC_FILES=$(git diff --name-only 2>/dev/null | grep -E "\.(spec|test)\.(ts|tsx|js)$" | tr '\n' ' ')
+    # Collect spec files qa-heal modified (manifest, not git diff — that includes other people's work)
+    _SPEC_FILES=$(sort -u "$_TMP/qa-heal-touched.txt" | grep -E "\.(spec|test)\.(ts|tsx|js)$" | tr '\n' ' ')
     [ -z "$_SPEC_FILES" ] && _SPEC_FILES=$(cat "$_TMP/qa-heal-failures.txt" \
       | grep -oE '[^ ]+\.(spec|test)\.(ts|tsx|js)' | sort -u | tr '\n' ' ')
     if [ -n "$_SPEC_FILES" ]; then
-      npx playwright test $_SPEC_FILES --project=chromium 2>&1 | tee "$_TMP/qa-heal-validate.txt"
+      npx --no playwright test $_SPEC_FILES --project=chromium 2>&1 | tee "$_TMP/qa-heal-validate.txt"
       grep -qE "passed|✓" "$_TMP/qa-heal-validate.txt" && ! grep -qE "failed|✕" "$_TMP/qa-heal-validate.txt" \
         && _VALIDATION_PASS=1
     fi
@@ -356,7 +397,7 @@ case "$_FRAMEWORK" in
   jest|vitest)
     _SPEC_FILES=$(cat "$_TMP/qa-heal-failures.txt" | grep "FILE:" | sed 's/.*FILE: //' | sort -u | tr '\n' ' ')
     [ -n "$_SPEC_FILES" ] && \
-      npx "${_FRAMEWORK}" $_SPEC_FILES 2>&1 | tee "$_TMP/qa-heal-validate.txt"
+      npx --no "${_FRAMEWORK}" $_SPEC_FILES 2>&1 | tee "$_TMP/qa-heal-validate.txt"
     grep -q "Tests:.*0 failed" "$_TMP/qa-heal-validate.txt" && _VALIDATION_PASS=1
     ;;
   pytest)
@@ -377,7 +418,7 @@ Check for regressions — run the full spec file (not just failing tests):
 # Run full file to ensure no previously-passing tests broke
 _FULL_SPEC=$(cat "$_TMP/qa-heal-failures.txt" | grep -oE '[^ ]+\.(spec|test)\.(ts|tsx|js)' | sort -u | head -1)
 if [ -n "$_FULL_SPEC" ] && [ "$_FRAMEWORK" = "playwright" ]; then
-  npx playwright test "$_FULL_SPEC" --project=chromium 2>&1 | tee "$_TMP/qa-heal-regression.txt"
+  npx --no playwright test "$_FULL_SPEC" --project=chromium 2>&1 | tee "$_TMP/qa-heal-regression.txt"
   grep -qE "failed|✕" "$_TMP/qa-heal-regression.txt" && \
     echo "REGRESSION_DETECTED: yes" || { echo "REGRESSION_DETECTED: no"; _REGRESSION_FREE=1; }
 fi
@@ -449,10 +490,10 @@ except:
 # +0.10 if snapshot-drift classification and ≤3 files changed
 if classifications and all(c == 'snapshot-drift' for c in classifications):
     try:
-        import subprocess
-        changed_specs = [f for f in subprocess.check_output(
-            ['git', 'diff', '--name-only'], text=True, errors='replace').splitlines()
-            if re.search(r'\.(spec|test)\.(ts|tsx|js|py|rb)$', f)]
+        touched = os.path.join(os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp',
+                               'qa-heal-touched.txt')
+        changed_specs = sorted({f.strip() for f in open(touched, encoding='utf-8', errors='replace')
+            if re.search(r'\.(spec|test)\.(ts|tsx|js|py|rb)$', f.strip())})
         if len(changed_specs) <= 3:
             score += 0.10
             breakdown.append('+0.10 snapshot-drift with ≤3 files changed (low-risk mechanical fix)')
@@ -464,60 +505,195 @@ for b in breakdown:
     print(f'  {b}')
 
 if score >= 0.87:
-    print('ROUTING: auto-commit')
+    print('RECOMMENDATION: commit')
 elif score >= 0.62:
-    print('ROUTING: pr')
+    print('RECOMMENDATION: pr')
 else:
-    print('ROUTING: issue')
+    print('RECOMMENDATION: issue')
 PYEOF
 ```
 
-**Route based on score**:
-- **score >= 0.87 — auto-commit**:
-  ```bash
-  _HEALED_FILES=$(git diff --name-only 2>/dev/null | grep -E "\.(spec|test)\.(ts|tsx|js|py|rb)$" | tr '\n' ' ')
-  git add $_HEALED_FILES
-  git commit -m "fix: heal test selectors and assertions (qa-heal)"
-  echo "AUTO_COMMITTED: yes"
-  ```
-- **score 0.62–0.87 — open PR**:
-  ```bash
-  _CURRENT_BRANCH=$(git branch --show-current)
-  if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then
-    _HEAL_BRANCH="qa-heal/fix-tests-$_DATE"
-    git checkout -b "$_HEAL_BRANCH"
-  fi
-  git add $(git diff --name-only | grep -E "\.(spec|test)\.(ts|tsx|js|py|rb)$")
-  git commit -m "fix: heal broken test selectors and assertions"
-  gh pr create --title "fix: heal broken tests (qa-heal)" \
-    --body "$(cat <<'PRBODY'
+**The score is a recommendation, not a trigger.** It picks which action to propose; every
+action below is a gate, and nothing is committed, pushed or posted without approval.
+
+### 5a — Commit set and safety check (before any commit or PR)
+
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
+# The commit set is the manifest of files qa-heal changed — nothing else, ever
+grep -v '^$' "$_TMP/qa-heal-touched.txt" | sort -u > "$_TMP/qa-heal-commit-files.txt"
+echo "HEALED_FILES: $(grep -c . "$_TMP/qa-heal-commit-files.txt")"
+sed 's/^/  /' "$_TMP/qa-heal-commit-files.txt"
+
+# Refuse if any of them already had changes (modified/staged/untracked) before qa-heal ran
+_CONFLICTS=$(comm -12 "$_TMP/qa-heal-commit-files.txt" "$_TMP/qa-heal-prestate.txt")
+echo "PRE_EXISTING_CHANGES_IN_HEALED_FILES: ${_CONFLICTS:-none}"
+
+# Never commit on the default branch: main, master, origin's HEAD, or a detached HEAD
+_CUR=$(git branch --show-current)
+_DEFAULT=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+case "$_CUR" in main|master|"$_DEFAULT"|"") _ON_DEFAULT=1 ;; *) _ON_DEFAULT=0 ;; esac
+echo "CURRENT_BRANCH: ${_CUR:-detached}  ON_DEFAULT_BRANCH: $_ON_DEFAULT"
+tr '\n' '\0' < "$_TMP/qa-heal-commit-files.txt" | xargs -0 git --literal-pathspecs diff --stat --
+```
+
+- `HEALED_FILES: 0` → nothing to commit; go to CTRF.
+- `_CONFLICTS` not `none` → **do not commit or open a PR.** Staging those files would sweep the
+  user's own uncommitted work into qa-heal's commit. Report the files and the repair under
+  "Needs a decision" and leave the working tree as it is.
+- Read `git diff` of the commit set. If any hunk is not one of your repairs (another process
+  edited the same file during the run), do not commit; report it.
+
+### 5b — Commit (recommended at score >= 0.87)
+
+**Gate (ALLOW_COMMIT):** commit exactly the files listed in `qa-heal-commit-files.txt` — on the
+current branch if it is not the default branch, otherwise on a new branch
+`qa-heal/fix-tests-<date>`. Show the file list, the diff stat and the score breakdown.
+Interactive: ask with AskUserQuestion and proceed only on yes. As a subagent: proceed only if the
+brief's `APPROVALS:` line contains `ALLOW_COMMIT`; otherwise skip and list the step under
+"Needs a decision" in the report.
+
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"; _DATE=$(date +%Y-%m-%d)
+# Recomputed here on purpose: an unset variable must never mean "commit on main"
+_CUR=$(git branch --show-current)
+_DEFAULT=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+case "$_CUR" in main|master|"$_DEFAULT"|"") _ON_DEFAULT=1 ;; *) _ON_DEFAULT=0 ;; esac
+if [ "$_ON_DEFAULT" = "1" ]; then
+  _HEAL_BRANCH="qa-heal/fix-tests-$_DATE"
+  git rev-parse -q --verify "refs/heads/$_HEAL_BRANCH" >/dev/null && _HEAL_BRANCH="$_HEAL_BRANCH-$(date +%H%M%S)"
+  # Other uncommitted changes in the tree come along untouched; they are not staged
+  git switch -c "$_HEAL_BRANCH" || { echo "BRANCH_CREATE: failed — not committing"; exit 1; }
+fi
+# Pathspecs on the commit itself = only these paths are committed, even if other files are staged
+git --literal-pathspecs add --pathspec-from-file="$_TMP/qa-heal-commit-files.txt" && \
+git --literal-pathspecs commit -m "fix: heal test selectors and assertions (qa-heal)" \
+  --pathspec-from-file="$_TMP/qa-heal-commit-files.txt"
+_RC=$?
+[ "$_RC" -eq 0 ] && echo "COMMITTED: yes on $(git branch --show-current)" || echo "COMMITTED: no (git exit $_RC)"
+```
+
+### 5c — Review PR (recommended at score 0.62–0.87)
+
+The PR always comes from a dedicated branch, so the user's branch is never pushed.
+
+**Gate (ALLOW_COMMIT):** create `qa-heal/fix-tests-<date>` from the current branch and commit
+exactly the files in `qa-heal-commit-files.txt` there. Interactive: ask with AskUserQuestion and
+proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains
+`ALLOW_COMMIT`; otherwise skip and list the step under "Needs a decision" in the report.
+
+**Gate (ALLOW_PR):** push `qa-heal/fix-tests-<date>` to `origin` and open a PR into the branch
+qa-heal started on. Interactive: ask with AskUserQuestion and proceed only on yes. As a subagent:
+proceed only if the brief's `APPROVALS:` line contains `ALLOW_PR`; otherwise skip and list the step
+under "Needs a decision" in the report.
+
+Interactively, one `AskUserQuestion` may cover both gates: "Commit N files to
+`qa-heal/fix-tests-<date>`, push it and open a PR into `<base>`?" Options: "Commit, push and open
+PR" | "Commit only (no push)" | "Neither".
+
+Commit (only with ALLOW_COMMIT):
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"; _DATE=$(date +%Y-%m-%d)
+_BASE_BRANCH=$(git branch --show-current)
+[ -z "$_BASE_BRANCH" ] && _BASE_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+echo "$_BASE_BRANCH" > "$_TMP/qa-heal-pr-base.txt"
+_HEAL_BRANCH="qa-heal/fix-tests-$_DATE"
+git rev-parse -q --verify "refs/heads/$_HEAL_BRANCH" >/dev/null && _HEAL_BRANCH="$_HEAL_BRANCH-$(date +%H%M%S)"
+git switch -c "$_HEAL_BRANCH" || { echo "BRANCH_CREATE: failed — not committing"; exit 1; }
+git --literal-pathspecs add --pathspec-from-file="$_TMP/qa-heal-commit-files.txt" && \
+git --literal-pathspecs commit -m "fix: heal broken test selectors and assertions (qa-heal)" \
+  --pathspec-from-file="$_TMP/qa-heal-commit-files.txt" \
+  || { echo "COMMITTED: no — stopping before push"; exit 1; }
+echo "COMMITTED: yes on $_HEAL_BRANCH (PR base: $_BASE_BRANCH)"
+```
+
+Push and open the PR (only with ALLOW_PR, and only after `COMMITTED: yes`):
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
+_HEAL_BRANCH=$(git branch --show-current)
+_BASE_BRANCH=$(cat "$_TMP/qa-heal-pr-base.txt")
+case "$_HEAL_BRANCH" in qa-heal/fix-tests-*) ;; *) echo "NOT_ON_HEAL_BRANCH: $_HEAL_BRANCH — not pushing"; exit 1 ;; esac
+git push -u origin "$_HEAL_BRANCH" || { echo "PUSHED: no — PR not opened"; exit 1; }
+_PR_URL=$(gh pr create --base "$_BASE_BRANCH" --head "$_HEAL_BRANCH" \
+  --title "fix: heal broken tests (qa-heal)" \
+  --body "$(cat <<'PRBODY'
 ## Summary
 - Automated test repair by qa-heal
 - Repaired selectors, assertions, and navigation paths
-- All previously failing tests now passing
+- See the qa-heal report for validation results and the confidence breakdown
 
 ## Changes
-See diff for per-file repair details.
+Only the files qa-heal modified. See diff for per-file repair details.
 
 ## Test plan
 - [ ] All previously failing tests pass
 - [ ] No regressions in existing tests
 PRBODY
-)"
-  echo "PR_CREATED: yes"
-  ```
-- **score < 0.62 — open GitHub issue**:
-  ```bash
-  _UNRESOLVED=$(grep -c "FAIL:" "$_TMP/qa-heal-failures.txt" 2>/dev/null || echo 0)
-  gh issue create \
-    --title "qa-heal: $_UNRESOLVED unresolved test failure(s) — manual review required" \
-    --body "$(cat "$_TMP/qa-heal-failures.txt" | head -50)" \
-    --label "qa,test-failure" 2>/dev/null || \
-    echo "ISSUE_CREATE: gh not available or no permission"
-  echo "ISSUE_FILED: yes"
-  ```
+)")
+_RC=$?
+[ "$_RC" -eq 0 ] && echo "PR_CREATED: yes $_PR_URL" || echo "PR_CREATED: no (gh exit $_RC)"
+```
 
-Always continue to CTRF and Report regardless of routing path.
+### 5d — GitHub issue (recommended at score < 0.62)
+
+Failure logs can carry tokens, passwords and connection strings. Never post the raw log: build
+a redacted body first, then read it yourself before the gate.
+
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
+python3 - "$_TMP/qa-heal-failures.txt" "$_TMP/qa-heal-issue-body.md" << 'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = '\n'.join(open(src, encoding='utf-8', errors='replace').read().splitlines()[:50])
+RULES = [
+    (r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|\Z)', '[REDACTED_PRIVATE_KEY]'),
+    (r'\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})', '[REDACTED_GITHUB_TOKEN]'),
+    (r'\b(AKIA|ASIA)[0-9A-Z]{16}\b', '[REDACTED_AWS_KEY]'),
+    (r'\bxox[abprs]-[A-Za-z0-9-]{10,}', '[REDACTED_SLACK_TOKEN]'),
+    (r'\bsk-[A-Za-z0-9_-]{20,}', '[REDACTED_API_KEY]'),
+    (r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}', '[REDACTED_JWT]'),
+    (r'(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}', r'\1 [REDACTED]'),
+    (r'([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+):[^@\s/]+@', r'\1:[REDACTED]@'),
+    (r'(?i)\b([a-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|auth)[a-z0-9_.-]*)(["\']?\s*[:=]\s*["\']?)[^\s"\',;&]+',
+     r'\1\2[REDACTED]'),
+]
+n = 0
+for pat, rep in RULES:
+    text, k = re.subn(pat, rep, text)
+    n += k
+open(dst, 'w', encoding='utf-8').write(text + '\n')
+print(f'REDACTIONS: {n}')
+PYEOF
+```
+
+Read `$_TMP/qa-heal-issue-body.md`. If anything secret-looking survived the patterns (internal
+hostnames with credentials, customer data, cookies), redact it by hand before the gate.
+
+**Gate (ALLOW_ISSUE):** create a GitHub issue "qa-heal: N unresolved test failure(s)" in this
+repository, body = the redacted log (first 50 lines). Interactive: show the body, ask with
+AskUserQuestion and proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:`
+line contains `ALLOW_ISSUE`; otherwise skip and list the step under "Needs a decision" in the
+report.
+
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
+_UNRESOLVED=$(grep -c "FAIL:" "$_TMP/qa-heal-failures.txt" 2>/dev/null || echo 0)
+_TITLE="qa-heal: $_UNRESOLVED unresolved test failure(s) — manual review required"
+_ISSUE_URL=$(gh issue create --title "$_TITLE" --body-file "$_TMP/qa-heal-issue-body.md" \
+  --label "qa,test-failure" 2>"$_TMP/qa-heal-issue-err.txt")
+_RC=$?
+if [ "$_RC" -ne 0 ] && grep -qi "label" "$_TMP/qa-heal-issue-err.txt"; then
+  # Labels missing in this repo — retry without them rather than creating labels
+  _ISSUE_URL=$(gh issue create --title "$_TITLE" --body-file "$_TMP/qa-heal-issue-body.md" \
+    2>"$_TMP/qa-heal-issue-err.txt")
+  _RC=$?
+fi
+if [ "$_RC" -eq 0 ]; then echo "ISSUE_FILED: yes $_ISSUE_URL"
+else echo "ISSUE_FILED: no (gh exit $_RC): $(head -3 "$_TMP/qa-heal-issue-err.txt")"; fi
+```
+
+Report `COMMITTED` / `PR_CREATED` / `ISSUE_FILED` exactly as printed — never "yes" after a
+non-zero exit code. Always continue to CTRF and Report regardless of routing path.
 
 ## CTRF Output
 
@@ -586,8 +762,12 @@ Write `$_TMP/qa-heal-report.md`:
 ## Summary
 - **Status**: ✅ / ⚠️ / ❌
 - Tests healed: N / N attempted
-- Confidence score: 0.XX
-- Action taken: auto-committed / PR opened / issue filed / none required
+- Confidence score: 0.XX — recommendation: commit / pr / issue
+- Action taken: committed on <branch> / PR opened <url> / issue filed <url> / none required / none — needs a decision
+- Files changed by qa-heal: <list from qa-heal-commit-files.txt>
+
+## Needs a decision
+<every gated step that was skipped: what it would do, the files/branch/target, and the approval key it needs; also any healed file that had pre-existing changes and was therefore not committed>
 
 ## Repairs Applied
 | Test | File | Classification | Strategy | Outcome |
@@ -620,6 +800,11 @@ Note: snapshot-drift classification adds +0.10 when ≤3 spec files changed (7th
 - **Prefer stable selectors** — `getByRole` > `getByLabel` > `getByTestId` > CSS class; never use auto-generated class names
 - **Flag suspicious assertion drift** — if an expected value changes significantly (status code, schema), add `[NEEDS REVIEW]` annotation rather than silently updating
 - **No force-pushes** — only use standard `git commit`; never `--force` or `--no-verify`
+- **Stage only what qa-heal changed** — the commit set is the `qa-heal-touched.txt` manifest; never `git add` from `git diff`/`git status`, never `git add -A` or `.`
+- **Never touch the user's work** — if a healed file already had uncommitted changes before the run, do not commit it; report it
+- **Never commit on main/master/the default branch** — create `qa-heal/fix-tests-<date>` first
+- **Every commit, push, PR and issue is a gate** — `ALLOW_COMMIT`, `ALLOW_PR`, `ALLOW_ISSUE`; the confidence score only picks the recommendation
+- **Redact before posting** — no tokens, passwords or connection strings from logs in an issue or PR
 - **Validate before routing** — always run the repaired tests before computing confidence score
 - **One classification per test** — assign the most specific matching type; don't assign multiple
 - **Continue regardless of routing** — always produce CTRF and report even if routing action fails
@@ -630,7 +815,7 @@ After each run, update the memory file at `.claude/agent-memory/qa-heal/MEMORY.m
 - Test framework and version confirmed
 - Recurring selector patterns that break (DOM structure notes)
 - Common repair strategies that succeeded or failed in this project
-- Confidence score history and routing decisions
+- Confidence score history, recommendations and which gates were granted
 - Any project-specific locator conventions discovered
 
 Read this file at the start of each run to skip re-detection and apply known good strategies first.
