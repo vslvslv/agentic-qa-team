@@ -3,8 +3,9 @@ name: qa-team
 version: 1.0.0
 description: |
   Agentic QA orchestrator. Analyzes the current project, determines which testing
-  domains apply (web, API, mobile, performance, visual), and spawns specialized
-  sub-agents for each. Aggregates all results into a unified quality report.
+  domains apply (web, API, mobile, performance, visual, security, ...), asks once for
+  approval of any risky actions, then dispatches the qa-* subagents in capped parallel
+  waves. Aggregates all results into a unified quality report.
 when_to_use: |
   Use when asked to "run qa", "qa team", "full test suite", "test everything",
   "qa the app", or "run all agents".
@@ -31,12 +32,17 @@ If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, u
 
 ---
 
+> **Shell state does not persist between Bash tool calls.** The Preamble writes every
+> signal to `$_TMP/qa-team-signals.env`; every later bash block recomputes `_TMP` and
+> sources that file. Never rely on a variable set in an earlier block.
+
 ## Preamble (run first)
 
 ```bash
 _TMP="${TEMP:-${TMP:-/tmp}}"
 _DATE=$(date +%Y-%m-%d)
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+touch "$_TMP/qa-team-run.start"   # reports older than this marker are ignored in Phase 3
 echo "BRANCH: $_BRANCH"
 echo "DATE: $_DATE"
 echo "TMP: $_TMP"
@@ -47,6 +53,17 @@ ls package.json pyproject.toml go.mod Cargo.toml pom.xml build.gradle Gemfile 2>
 ls *.csproj *.sln global.json Directory.Build.props nuget.config 2>/dev/null | head -4
 ls android/ ios/ app.json 2>/dev/null | head -3
 ls openapi.yaml openapi.json swagger.yaml swagger.json 2>/dev/null | head -2
+
+# Package manifest (drives qa-sca)
+_MANIFEST_TYPE="unknown"
+[ -f "package.json" ]     && _MANIFEST_TYPE="npm"
+[ -f "go.mod" ]           && _MANIFEST_TYPE="go"
+{ [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; } && _MANIFEST_TYPE="python"
+{ [ -f "pom.xml" ] || [ -f "build.gradle" ]; } && _MANIFEST_TYPE="jvm"
+[ -f "Cargo.toml" ]       && _MANIFEST_TYPE="cargo"
+[ -f "Gemfile" ]          && _MANIFEST_TYPE="ruby"
+find . -maxdepth 3 -name "*.csproj" ! -path "*/obj/*" 2>/dev/null | grep -q . && _MANIFEST_TYPE="nuget"
+echo "MANIFEST_TYPE: $_MANIFEST_TYPE"
 
 # Web E2E tool detection
 echo "--- WEB TOOLS ---"
@@ -87,14 +104,19 @@ grep -q '"appium"\|"@wdio"' package.json 2>/dev/null && \
   _MOB_TOOL="${_MOB_TOOL:+$_MOB_TOOL,}maestro"
 echo "MOB_TOOL: ${_MOB_TOOL:-none}"
 
-# Explore detection (running web app present?)
-echo "--- EXPLORE ---"
-_EXPLORE_READY=0
-for port in 3000 3001 4000 4001 8000 8080; do
-  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://localhost:$port" 2>/dev/null || echo "000")
-  [ "$status" != "000" ] && _EXPLORE_READY=1 && break
+# Running services = candidate TARGET URLs (confirmed by the user before any agent probes one)
+echo "--- RUNNING SERVICES ---"
+_RUNNING_URLS=""
+for port in 3000 3001 4000 4001 5000 5001 8000 8080; do
+  _st=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://localhost:$port" 2>/dev/null)
+  case "$_st" in ""|000*) continue ;; esac   # curl prints 000 when nothing listens
+  echo "PORT $port: $_st" && _RUNNING_URLS="$_RUNNING_URLS http://localhost:$port"
 done
-echo "EXPLORE_READY: $_EXPLORE_READY"
+for v in WEB_URL BASE_URL; do
+  eval "_u=\${$v:-}"; [ -n "$_u" ] && echo "ENV $v: $_u" && _RUNNING_URLS="$_RUNNING_URLS $_u"
+done
+_RUNNING_URLS="${_RUNNING_URLS# }"
+echo "CANDIDATE_TARGETS: ${_RUNNING_URLS:-none}"
 
 # Security tool detection
 echo "--- SECURITY TOOLS ---"
@@ -106,7 +128,7 @@ command -v nuclei >/dev/null 2>&1 && _SEC_TOOL="${_SEC_TOOL:+$_SEC_TOOL,}nuclei"
 [ -z "$_SEC_TOOL" ] && _SEC_TOOL="probe-only"
 echo "SEC_TOOL: $_SEC_TOOL"
 
-# Seed schema detection
+# Seed schema detection (qa-seed is only ever proposed with TEST_DATABASE_URL, never DATABASE_URL)
 echo "--- SEED SCHEMA ---"
 _SEED_SCHEMA="none"
 ls prisma/schema.prisma 2>/dev/null && _SEED_SCHEMA="prisma"
@@ -114,7 +136,8 @@ find . -name "*.sql" -path "*/migrations/*" ! -path "*/node_modules/*" 2>/dev/nu
   grep -q '.' && [ "$_SEED_SCHEMA" = "none" ] && _SEED_SCHEMA="sql-migrations"
 find . \( -name "*.entity.ts" -o -name "*.entity.js" \) ! -path "*/node_modules/*" 2>/dev/null | \
   grep -q '.' && [ "$_SEED_SCHEMA" = "none" ] && _SEED_SCHEMA="typeorm"
-echo "SEED_SCHEMA: $_SEED_SCHEMA"
+_TEST_DB_SET=0; [ -n "${TEST_DATABASE_URL:-}" ] && _TEST_DB_SET=1
+echo "SEED_SCHEMA: $_SEED_SCHEMA  TEST_DATABASE_URL_SET: $_TEST_DB_SET"
 
 # Component testing tools
 echo "--- COMPONENT TOOLS ---"
@@ -138,6 +161,40 @@ find . \( \
   \) ! -path "*/node_modules/*" ! -path "*/obj/*" 2>/dev/null | grep -q '.' && _HAS_TESTS=1
 echo "HAS_TESTS: $_HAS_TESTS"
 
+# Cheap preconditions for the static extras (proposed in the plan when present)
+echo "--- STATIC EXTRAS ---"
+_ENV_FILES=$(ls .env .env.local .env.development .env.staging .env.production .env.test 2>/dev/null | wc -l | tr -d ' ')
+_COVERAGE_DATA=0
+ls coverage/lcov.info coverage/coverage-final.json coverage.xml coverage.out .coverage 2>/dev/null | grep -q . && _COVERAGE_DATA=1
+find . -maxdepth 4 -name "coverage.cobertura.xml" ! -path "*/node_modules/*" 2>/dev/null | grep -q . && _COVERAGE_DATA=1
+_ATTESTATIONS=0
+grep -rlqE "attest-build-provenance|slsa-github-generator|slsa-framework" .github/workflows 2>/dev/null && _ATTESTATIONS=1
+find . -maxdepth 3 -name "*.intoto.jsonl" 2>/dev/null | grep -q . && _ATTESTATIONS=1
+_COMPOSE_FILE=""
+for f in test-env.yml docker-compose.test.yml compose.test.yml docker-compose.yml compose.yml; do
+  [ -f "$f" ] && _COMPOSE_FILE="$f" && break
+done
+command -v docker >/dev/null 2>&1 && _DOCKER_AVAILABLE=1 || _DOCKER_AVAILABLE=0
+echo "ENV_FILES: $_ENV_FILES  COVERAGE_DATA: $_COVERAGE_DATA  ATTESTATIONS: $_ATTESTATIONS"
+echo "COMPOSE_FILE: ${_COMPOSE_FILE:-none}  DOCKER_AVAILABLE: $_DOCKER_AVAILABLE"
+
+# On-request triggers (reported in the plan; never auto-run)
+echo "--- ON-REQUEST TRIGGERS ---"
+ls -d evals tests/evals 2>/dev/null | head -1 | sed 's/^/EVALS_DIR: /'
+find . -maxdepth 3 -name "*.intent.yaml" ! -path "*/node_modules/*" 2>/dev/null | head -1 | sed 's/^/INTENT_YAML: /'
+find . -maxdepth 2 \( -name "PRD*.md" -o -name "SPEC*.md" -o -type d -name specs \) ! -path "*/node_modules/*" 2>/dev/null | head -1 | sed 's/^/SPEC_DOCS: /'
+[ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}${LOKI_URL:-}${JAEGER_URL:-}${TEMPO_URL:-}" ] && echo "OBSERVABILITY_STACK: set"
+[ -n "${BUILDEVENTS_APIKEY:-}${HONEYCOMB_DATASET:-}" ] && echo "CI_TRACE_BACKEND: set"
+[ -n "${JIRA_URL:-}" ] && echo "JIRA_URL: set"
+
+# CI status (drives the qa-heal proposal)
+_CI_FAILING=0
+if command -v gh >/dev/null 2>&1; then
+  gh pr view --json statusCheckRollup -q '.statusCheckRollup[].conclusion' 2>/dev/null | \
+    grep -qE "FAILURE|TIMED_OUT|CANCELLED" && _CI_FAILING=1
+fi
+echo "CI_FAILING: $_CI_FAILING"
+
 # Complexity scoring signals (for hardness-aware routing)
 echo "--- COMPLEXITY SIGNALS ---"
 _ROUTE_COUNT=$(find . \( -path "*/routes/*.ts" -o -path "*/routes/*.js" \
@@ -153,24 +210,18 @@ grep -rl "auth\|jwt\|session\|passport\|oauth\|bearer" \
 echo "HAS_AUTH: $_HAS_AUTH"
 
 _DOMAIN_COUNT=0
-[ -n "$_WEB_TOOL" ] && [ "$_WEB_TOOL" != "none" ] && _DOMAIN_COUNT=$((_DOMAIN_COUNT+1))
-[ -n "$_PERF_TOOL" ] && [ "$_PERF_TOOL" != "none" ] && _DOMAIN_COUNT=$((_DOMAIN_COUNT+1))
-[ -n "$_MOB_TOOL" ] && [ "$_MOB_TOOL" != "none" ] && _DOMAIN_COUNT=$((_DOMAIN_COUNT+1))
+[ -n "$_WEB_TOOL" ] && _DOMAIN_COUNT=$((_DOMAIN_COUNT+1))
+[ -n "$_PERF_TOOL" ] && _DOMAIN_COUNT=$((_DOMAIN_COUNT+1))
+[ -n "$_MOB_TOOL" ] && _DOMAIN_COUNT=$((_DOMAIN_COUNT+1))
 [ "$_HAS_TESTS" = "1" ] && _DOMAIN_COUNT=$((_DOMAIN_COUNT+1))
 echo "DOMAIN_COUNT: $_DOMAIN_COUNT"
 
 _LOC=$(find . \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \
   -o -name "*.py" -o -name "*.java" -o -name "*.cs" \) \
   ! -path "*/node_modules/*" ! -path "*/obj/*" ! -name "*.spec.*" ! -name "*.test.*" \
-  2>/dev/null | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}' || echo 0)
+  2>/dev/null | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')
+_LOC=${_LOC:-0}
 echo "LOC: $_LOC"
-
-# Detect running services
-echo "--- RUNNING SERVICES ---"
-for port in 3000 3001 4000 4001 5000 5001 8000 8080; do
-  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://localhost:$port" 2>/dev/null || echo "000")
-  [ "$status" != "000" ] && echo "PORT $port: $status"
-done
 
 # --- MULTI-REPO SUPPORT ---
 # Set QA_EXTRA_PATHS (space-separated absolute paths) to scan tests in other repos
@@ -187,146 +238,148 @@ if [ -n "$QA_EXTRA_PATHS" ]; then
   done
 fi
 
+# aimock detection (BL-025)
+_AIMOCK_AVAILABLE=0; command -v aimock >/dev/null 2>&1 && _AIMOCK_AVAILABLE=1
+_AIMOCK_FIXTURES=0; find fixtures -maxdepth 1 -name "*.json" 2>/dev/null | grep -q '.' && _AIMOCK_FIXTURES=1
+echo "AIMOCK_AVAILABLE: $_AIMOCK_AVAILABLE  AIMOCK_FIXTURES: $_AIMOCK_FIXTURES"
+
+# Persist every signal for later bash blocks
+cat > "$_TMP/qa-team-signals.env" <<EOF
+_DATE='$_DATE'
+_BRANCH='$_BRANCH'
+_MANIFEST_TYPE='$_MANIFEST_TYPE'
+_WEB_TOOL='$_WEB_TOOL'
+_PERF_TOOL='$_PERF_TOOL'
+_MOB_TOOL='$_MOB_TOOL'
+_RUNNING_URLS='$_RUNNING_URLS'
+_SEC_TOOL='$_SEC_TOOL'
+_SEED_SCHEMA='$_SEED_SCHEMA'
+_TEST_DB_SET='$_TEST_DB_SET'
+_COMP_TOOL='$_COMP_TOOL'
+_HAS_TESTS='$_HAS_TESTS'
+_ENV_FILES='$_ENV_FILES'
+_COVERAGE_DATA='$_COVERAGE_DATA'
+_ATTESTATIONS='$_ATTESTATIONS'
+_COMPOSE_FILE='$_COMPOSE_FILE'
+_DOCKER_AVAILABLE='$_DOCKER_AVAILABLE'
+_CI_FAILING='$_CI_FAILING'
+_ROUTE_COUNT='${_ROUTE_COUNT:-0}'
+_HAS_AUTH='$_HAS_AUTH'
+_DOMAIN_COUNT='$_DOMAIN_COUNT'
+_LOC='$_LOC'
+_AIMOCK_AVAILABLE='$_AIMOCK_AVAILABLE'
+_AIMOCK_FIXTURES='$_AIMOCK_FIXTURES'
+EOF
+echo "SIGNALS: $_TMP/qa-team-signals.env"
 echo "--- DONE ---"
 ```
 
-If no running services are found, warn the user and ask whether to proceed in offline mode (analyze only, no execution).
+If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths, and put `QA_EXTRA_PATHS=<paths>` in every brief's `NOTES:`. Language detection uses CWD (the main application repository).
 
-If `MULTI_REPO_PATHS` output appeared: when sampling test files in subsequent phases, include files from those extra paths. All sub-agents inherit `QA_EXTRA_PATHS` automatically via the environment. Language detection uses CWD (the main application repository).
+## Phase 0 — Candidate Agents
 
-```bash
-# Testcontainers / container isolation detection (BL-024)
-_TESTCONTAINERS_AVAILABLE=0
-grep -q '"testcontainers"\|"@testcontainers"' package.json 2>/dev/null && _TESTCONTAINERS_AVAILABLE=1
-[ -f "test-env.yml" ] && _TESTCONTAINERS_AVAILABLE=1
-command -v docker >/dev/null 2>&1 && _DOCKER_AVAILABLE=1 || _DOCKER_AVAILABLE=0
-echo "TESTCONTAINERS_AVAILABLE: $_TESTCONTAINERS_AVAILABLE"
-echo "DOCKER_AVAILABLE: $_DOCKER_AVAILABLE"
+Build the candidate plan from the signals. Nothing runs yet; the plan is confirmed once in Phase 1.5.
 
-# aimock detection (BL-025)
-_AIMOCK_AVAILABLE=0
-command -v aimock >/dev/null 2>&1 && _AIMOCK_AVAILABLE=1
-_AIMOCK_FIXTURES=0
-[ -d "fixtures" ] && ls fixtures/*.json 2>/dev/null | grep -q '.' && _AIMOCK_FIXTURES=1
-echo "AIMOCK_AVAILABLE: $_AIMOCK_AVAILABLE"
-echo "AIMOCK_FIXTURES: $_AIMOCK_FIXTURES"
-```
+**Core** (detected domain; works offline unless given `TARGET`, sends state-changing requests to it — e.g. qa-api's Dredd run — only with `ALLOW_FORM_SUBMIT`, installs tools only with `ALLOW_INSTALL`):
+- `playwright.config.*` / `e2e/` / `cypress.config.*` / `cypress/` / `selenium-webdriver` in package.json, or `Microsoft.Playwright` / `Selenium.WebDriver` in a `.csproj` → **qa-web**
+- `openapi.*` / `swagger.*` / `api/` routes → **qa-api**
+- `android/` / `ios/` / `app.json` (Expo) / `.maestro/` → **qa-mobile**
+- `k6/` / `locustfile.py` / `load-tests/` / `*.jmx` → **qa-perf**
+- `playwright.config.*` + a `screenshots/` or `visual/` dir → **qa-visual**
+- `HAS_TESTS=1` → **qa-audit**
+- `WEB_TOOL` non-empty → **qa-a11y**
+- `COMP_TOOL` contains `storybook` → **qa-component**
+- always → **qa-secrets** (skips gracefully if trufflehog is absent)
+- `MANIFEST_TYPE != unknown` → **qa-sca**
 
-Use `AskUserQuestion` to confirm which agents to run. Default to auto-detecting based on project signals.
+**Proposed** (shown in the plan with why; risky parts governed by approvals):
+- **qa-security** — web or API detected. Passive probes against `TARGET` only; active scanning needs `ALLOW_ACTIVE_SCAN`. Without a `TARGET` it is left out.
+- **qa-explore** — a candidate target exists and `QA_SKIP_EXPLORE` is not set. Navigation-only against `TARGET`; submitting forms or sending POST/PUT/PATCH/DELETE needs `ALLOW_FORM_SUBMIT`. Without a `TARGET` it is left out.
+- **qa-seed** — `SEED_SCHEMA != none`. Generates seed files only; writing to a database needs `ALLOW_DB_WRITE` **and** `TEST_DATABASE_URL` set. Never offer or pass `DATABASE_URL`.
+- **qa-heal** — `CI_FAILING=1`, or the test waves report failures. Runs alone after the test waves (Phase 2.5). Edits spec files in the working tree; committing needs `ALLOW_COMMIT`, a PR needs `ALLOW_PR`, an issue needs `ALLOW_ISSUE`.
+- **qa-geo** — `WEB_TOOL` non-empty and a candidate target exists (needs `TARGET`).
+- **qa-deps** — Docker available and a *test* compose file (`test-env.yml`, `docker-compose.test.yml`, `compose.test.yml`). It runs `docker compose up` / `down` on that file. With only a general `docker-compose.yml`/`compose.yml`, list it as on-request instead (it would stop that stack).
+- **qa-test-lint** — `HAS_TESTS=1` (static).
+- **qa-env-parity** — `ENV_FILES >= 2` (static).
+- **qa-coverage-gate** — `COVERAGE_DATA=1`.
+- **qa-slsa** — `ATTESTATIONS=1`.
+- **qa-simulate** — only when `QA_SIMULATE=1` or the user asks (needs `TARGET`; forms need `ALLOW_FORM_SUBMIT`).
+- **qa-deeplinks** — only when `QA_DEEPLINKS=1` or the user asks.
 
-**Auto-detection rules:**
-- `playwright.config.*` or `e2e/` or `cypress.config.*` or `cypress/` or `selenium-webdriver` in package.json, or `Microsoft.Playwright`/`Selenium.WebDriver` in any `.csproj` → include **qa-web**
-- `openapi.*` or `swagger.*` or `api/` routes → include **qa-api**
-- `android/` or `ios/` or `app.json` (Expo) or `.maestro/` → include **qa-mobile**
-- `k6/` or `locustfile.py` or `load-tests/` or `*.jmx` files → include **qa-perf**
-- `playwright.config.*` + any `screenshots/` or `visual/` dir → include **qa-visual**
-- any `*.spec.*`, `*.test.*`, `*_test.*`, or `*Test.java` files found → include **qa-audit**
-- **qa-a11y**: auto-include when `_WEB_TOOL != "none"` (web app detected with Playwright/Cypress/Selenium)
-- **qa-heal**: auto-include when `gh pr view --json statusCheckRollup` shows any failing checks
-- **qa-explore**: auto-include when `_EXPLORE_READY=1` AND `QA_SKIP_EXPLORE` not set (post-deploy smoke)
-- **qa-security**: auto-include when `_WEB_TOOL != "none"` OR API detected (always has Mode B curl probes)
-- **qa-seed**: auto-include when `_SEED_SCHEMA != "none"` AND `TEST_DATABASE_URL` or `DATABASE_URL` is set
-- **qa-component**: auto-include when `_COMP_TOOL` contains `storybook`
-- **qa-simulate**: not auto-included; requires explicit user selection or `QA_SIMULATE=1` env var
-- **qa-secrets**: auto-include always (secrets scan is always relevant; skips gracefully if trufflehog absent)
-- **qa-sca**: auto-include when `_MANIFEST_TYPE != "unknown"` (package manifest detected)
-- **qa-geo**: auto-include when `_WEB_TOOL != "none"` AND `WEB_URL` is set
-- **qa-deps**: auto-include when `_DOCKER_AVAILABLE=1` AND a compose file is found
-- **qa-deeplinks**: not auto-included; requires explicit user selection or `QA_DEEPLINKS=1` env var
+**Available on request** (listed in the plan with their trigger; added only if the user names them):
 
-Present detected domains and ask for confirmation. Allow overriding.
+| Agent | Trigger / when it is worth running |
+|---|---|
+| qa-test-order | order-dependent or flaky tests suspected (re-runs the suite several times — slow) |
+| qa-test-docs | documentation of what the suite covers is wanted |
+| qa-spec-to-test | `SPEC_DOCS` found and tests should be derived from PRD/spec markdown |
+| qa-manager | `JIRA_URL` set; tests from a JIRA epic / Figma frames |
+| qa-eval-gate | `EVALS_DIR` found (AI features; calls an LLM API) |
+| qa-intent-assert | `INTENT_YAML` found (LLM judge) |
+| qa-observability | critical failures and `OBSERVABILITY_STACK: set` — run after Phase 3 |
+| qa-ci-trace | `CI_TRACE_BACKEND: set` |
+| qa-cost | AI spend for this run is wanted (`QA_COST_BUDGET`) — run after Phase 3 |
+| qa-report | a multi-run / sprint dashboard is wanted (this skill already writes the run report) |
+| qa-meta-eval | evaluating the QA agents themselves |
 
-Record selected domains and detected tools:
-
-```bash
-echo "SELECTED_DOMAINS: web api mobile perf visual audit"  # adjust to confirmed selection
-echo "DETECTED: WEB=${_WEB_TOOL:-none} PERF=${_PERF_TOOL:-none} MOB=${_MOB_TOOL:-none} AUDIT=${_HAS_TESTS}"
-```
-
-## Phase 0.8 — Hardness-Aware Routing (BL-012)
-
-```bash
-_HARDNESS=0
-[ "$_ROUTE_COUNT" -gt 20 ] && _HARDNESS=$((_HARDNESS+1))
-[ "$_ROUTE_COUNT" -gt 50 ] && _HARDNESS=$((_HARDNESS+1))
-[ "$_HAS_AUTH" = "1" ] && _HARDNESS=$((_HARDNESS+1))
-[ "$_DOMAIN_COUNT" -ge 3 ] && _HARDNESS=$((_HARDNESS+1))
-[ "$_DOMAIN_COUNT" -ge 5 ] && _HARDNESS=$((_HARDNESS+1))
-[ "$_LOC" -gt 5000 ] && _HARDNESS=$((_HARDNESS+1))
-[ "$_LOC" -gt 20000 ] && _HARDNESS=$((_HARDNESS+1))
-echo "HARDNESS_SCORE: $_HARDNESS"
-
-_COMPLEXITY_TIER="complex"
-[ "$_HARDNESS" -lt 3 ] && _COMPLEXITY_TIER="simple"
-[ "$_HARDNESS" -ge 6 ] && _COMPLEXITY_TIER="very-complex"
-echo "COMPLEXITY_TIER: $_COMPLEXITY_TIER"
-```
-
-Apply tier behavior when spawning sub-agents in Phase 2:
-
-**SIMPLE** (`_HARDNESS < 3`):
-- Spawn only `qa-web` (plus any domains explicitly selected by user in Phase 0)
-- Pass `QA_FAST_MODE=1` to `qa-web`: no POM, no auth setup, smoke tests only (5 critical paths)
-- Do not force-add `qa-audit` or `qa-explore`
-
-**COMPLEX** (`_HARDNESS` 3–5):
-- Normal full parallel flow — no changes to existing behavior
-
-**VERY-COMPLEX** (`_HARDNESS >= 6`):
-- Full parallel flow + force-add `qa-audit` and `qa-explore` to selected domains (unless `QA_SKIP_AUDIT=1` / `QA_SKIP_EXPLORE=1`)
-- Pass `QA_DEEP_MODE=1` to all sub-agents
-
-Add **Routing** block to Phase 4 Executive Summary:
-```
-## Routing
-- Complexity tier: simple / complex / very-complex (score N/7)
-- Reason: routes=N, auth=yes/no, domains=N, LOC=N
-- Agent fleet: <list of agents spawned>
-```
-
----
+`learning-sources-refinement` is a repository-maintenance agent; never dispatch it.
 
 ## Phase 0.5 — Test Impact Analysis
 
 ```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
 _CHANGED=$(git diff --name-only origin/main 2>/dev/null \
   || git diff --name-only HEAD~1 2>/dev/null || echo "")
-echo "CHANGED_FILES: $(echo "$_CHANGED" | wc -l | tr -d ' ')"
-echo "$_CHANGED" | head -20
+_CHANGED_COUNT=$(printf '%s\n' "$_CHANGED" | grep -c '.' 2>/dev/null)
+_INFRA_CHANGED=$(printf '%s\n' "$_CHANGED" | grep -cE 'config\.|tsconfig|package\.json|package-lock|migrations/' 2>/dev/null)
+_IMPACT_MODE="full"
+[ "${_CHANGED_COUNT:-0}" -gt 0 ] && [ "${_CHANGED_COUNT:-0}" -le 5 ] && [ "${_INFRA_CHANGED:-0}" -eq 0 ] && _IMPACT_MODE="fast"
+printf '%s\n' "$_CHANGED" > "$_TMP/qa-team-changed.txt"
+echo "_IMPACT_MODE='$_IMPACT_MODE'" >> "$_TMP/qa-team-signals.env"
+echo "IMPACT_MODE: $_IMPACT_MODE  CHANGED_COUNT: ${_CHANGED_COUNT:-0}  INFRA_CHANGED: ${_INFRA_CHANGED:-0}"
+head -20 "$_TMP/qa-team-changed.txt"
 ```
 
-If `_CHANGED` is empty: skip (run all selected domains in FULL-PATH mode).
-
-**Impact mapping heuristics** — map changed files to affected test domains:
-- `src/auth/**`, `auth.*`, `*middleware*` → web + api flagged
-- `src/api/**`, `routes/**`, `controllers/**` → api flagged
+If nothing changed: FULL-PATH. **Impact mapping heuristics** — map changed files to affected domains:
+- `src/auth/**`, `auth.*`, `*middleware*` → web + api
+- `src/api/**`, `routes/**`, `controllers/**` → api
 - `*.config.*`, `tsconfig.*`, `package.json`, `package-lock.json` → all domains (config change)
-- `migrations/**`, `prisma/**`, `schema.*`, `*.sql` → api flagged
-- `src/components/**`, `pages/**`, `views/**`, `screens/**` → web flagged
-- `android/**`, `ios/**` → mobile flagged
-- `k6/**`, `load-tests/**`, `locust*.py` → perf flagged
+- `migrations/**`, `prisma/**`, `schema.*`, `*.sql` → api
+- `src/components/**`, `pages/**`, `views/**`, `screens/**` → web
+- `android/**`, `ios/**` → mobile
+- `k6/**`, `load-tests/**`, `locust*.py` → perf
 
-**Decision:**
-- Changed files map to ≤5 test files AND no config/infra files changed → **FAST-PATH**
-  Pass the specific file list to relevant sub-agents' prompts (e.g., `--spec <file>`)
-- Otherwise → **FULL-PATH** (run all selected domains normally)
+In FAST-PATH, put the relevant changed files in the brief's `IMPACT:` line for the flagged agents. Report the scoping decision at the top of Phase 1 output.
+
+## Phase 0.8 — Hardness-Aware Routing (BL-012)
 
 ```bash
-_IMPACT_MODE="full"
-_CHANGED_COUNT=$(echo "$_CHANGED" | grep -c '.' 2>/dev/null || echo 0)
-_INFRA_CHANGED=$(echo "$_CHANGED" | grep -E 'config\.|tsconfig|package\.json|package-lock|migrations/' | wc -l | tr -d ' ')
-if [ "$_CHANGED_COUNT" -le 5 ] && [ "$_INFRA_CHANGED" -eq 0 ]; then
-  _IMPACT_MODE="fast"
-fi
-echo "IMPACT_MODE: $_IMPACT_MODE"
-echo "CHANGED_COUNT: $_CHANGED_COUNT  INFRA_CHANGED: $_INFRA_CHANGED"
+_TMP="${TEMP:-${TMP:-/tmp}}"
+. "$_TMP/qa-team-signals.env"
+_HARDNESS=0
+[ "${_ROUTE_COUNT:-0}" -gt 20 ] && _HARDNESS=$((_HARDNESS+1))
+[ "${_ROUTE_COUNT:-0}" -gt 50 ] && _HARDNESS=$((_HARDNESS+1))
+[ "${_HAS_AUTH:-0}" = "1" ] && _HARDNESS=$((_HARDNESS+1))
+[ "${_DOMAIN_COUNT:-0}" -ge 3 ] && _HARDNESS=$((_HARDNESS+1))
+[ "${_DOMAIN_COUNT:-0}" -ge 5 ] && _HARDNESS=$((_HARDNESS+1))
+[ "${_LOC:-0}" -gt 5000 ] && _HARDNESS=$((_HARDNESS+1))
+[ "${_LOC:-0}" -gt 20000 ] && _HARDNESS=$((_HARDNESS+1))
+_COMPLEXITY_TIER="complex"
+[ "$_HARDNESS" -lt 3 ] && _COMPLEXITY_TIER="simple"
+[ "$_HARDNESS" -ge 6 ] && _COMPLEXITY_TIER="very-complex"
+printf "_HARDNESS='%s'\n_COMPLEXITY_TIER='%s'\n" "$_HARDNESS" "$_COMPLEXITY_TIER" >> "$_TMP/qa-team-signals.env"
+echo "HARDNESS_SCORE: $_HARDNESS  COMPLEXITY_TIER: $_COMPLEXITY_TIER"
+echo "REASON: routes=$_ROUTE_COUNT auth=$_HAS_AUTH domains=$_DOMAIN_COUNT LOC=$_LOC"
 ```
 
-Report scoping decision at top of Phase 1 output.
+Tier behavior when building the plan:
+- **SIMPLE** (`< 3`): core agents only, plus the static extras (qa-test-lint, qa-env-parity). qa-web gets `MODE: fast` (no POM, no auth setup, ~5 critical-path smoke tests). Do not add qa-audit or qa-explore unless detected/asked.
+- **COMPLEX** (3–5): normal plan.
+- **VERY-COMPLEX** (`>= 6`): add qa-audit (unless `QA_SKIP_AUDIT=1`) and propose qa-explore (unless `QA_SKIP_EXPLORE=1`). Deep mode is **not** automatic: briefs get `MODE: deep` only if `QA_DEEP_MODE=1` is set or the user picks the deep-mode option in Phase 1.5.
 
 ## Phase 1 — Project Analysis
 
-Read enough context so each sub-agent is briefed correctly:
+Read enough context so each subagent is briefed correctly:
 
 ```bash
 # Tech stack
@@ -338,7 +391,7 @@ find . -maxdepth 3 \( -name "*.config.ts" -o -name "*.config.js" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -10
 
 # API routes (common patterns)
-find . -path "*/routes/*.ts" -o -path "*/routes/*.js" -o -path "*/controllers/*.ts" \
+find . \( -path "*/routes/*.ts" -o -path "*/routes/*.js" -o -path "*/controllers/*.ts" \) \
   ! -path "*/node_modules/*" 2>/dev/null | head -20
 
 # Web pages / screens
@@ -354,129 +407,134 @@ find . \( -path "*/Controllers/*.cs" -o -path "*/Pages/*.cs" -o -path "*/Views/*
 Summarize findings:
 - App name and version
 - Framework (Next.js, Express, FastAPI, React Native, etc.)
-- Base URL (from env or config)
+- Base URL candidates (from `CANDIDATE_TARGETS`; not yet approved)
 - List of key pages / endpoints / screens
 - Auth mechanism (JWT, session, OAuth)
-- Detected tools per domain (from Preamble `_WEB_TOOL`, `_PERF_TOOL`, `_MOB_TOOL`)
+- Detected tools per domain (`WEB_TOOL`, `PERF_TOOL`, `MOB_TOOL`, `SEC_TOOL`, `COMP_TOOL`)
 
-Save summary to `$_TMP/qa-team-context.md` for sub-agents to reference.
+Save the summary to `$_TMP/qa-team-context.md` for subagents to read. Never copy credentials, tokens or connection strings into it.
 
-## Phase 1.5 — Container Isolation + Offline Prep (BL-024 + BL-025)
+## Phase 1.5 — Plan and Approvals (the one approval step)
 
-### Container Isolation for Parallel Agents (BL-024)
+This is the **only** question to the user before dispatch. Subagents cannot ask anything later, so everything risky is decided here. Every risky key defaults to **not granted**.
 
-When `_TESTCONTAINERS_AVAILABLE=1` AND `_DOCKER_AVAILABLE=1` AND multiple sub-agents will run in parallel,
-provision isolated containers so agents don't collide on shared DB state.
+1. Print the plan as text: **Core**, **Proposed** (each with the reason it was detected and what it does without approvals), **Available on request** (with trigger), the wave layout (Phase 2), and the complexity tier.
+2. Make **one** `AskUserQuestion` call with only the questions that apply (max 4; omit a question, or an option, when no planned agent needs it):
 
-**If `test-env.yml` exists**, use it to declare required services:
-```yaml
-# test-env.yml — declare needed services per agent
-services:
-  postgres:
-    image: postgres:16
-    env:
-      POSTGRES_PASSWORD: test
-  redis:
-    image: redis:7
-  kafka:
-    image: confluentinc/cp-kafka:latest
+   - **Q1 Target** (when any planned agent runs against a live app — qa-web, qa-api, qa-perf, qa-visual, qa-a11y, qa-geo, qa-explore, qa-security, qa-simulate, qa-deeplinks): "Which URL may the agents actively test?" Options: each entry of `CANDIDATE_TARGETS` (max 3) | "No target — offline/static only". The user may type another URL via Other. The chosen URL becomes `TARGET=<url>`; agents that need a target and get none either work offline (write/review tests, no execution) or are dropped (qa-explore, qa-security, qa-geo, qa-simulate). Never pick a production URL on the user's behalf.
+   - **Q2 Test-environment actions** (multiSelect): `ALLOW_ACTIVE_SCAN` — "qa-security may run active/intrusive scans against TARGET" | `ALLOW_FORM_SUBMIT` — "agents may submit forms or send state-changing requests (POST/PUT/PATCH/DELETE) to TARGET (qa-api contract runs, qa-explore, qa-simulate)" | `ALLOW_DB_WRITE` — "qa-seed may write to TEST_DATABASE_URL (<host>/<db>)" — offer only when `TEST_DATABASE_URL_SET=1`, and show host/db name only, never the full URL | "Start test services (`docker compose -f <COMPOSE_FILE> up -d --wait`)" — offer only for a *test* compose file.
+   - **Q3 Install / repository / GitHub actions** (multiSelect): `ALLOW_INSTALL` — "agents may install packages/tools into the project or environment (npm install --save-dev, pip install, npx --yes); without it they report what is missing" | `ALLOW_COMMIT` — "qa-heal may commit its fixes on a new branch (never main/master)" | `ALLOW_PR` — "push that branch and open a PR" | `ALLOW_ISSUE` — "file issues for low-confidence heals and post the QA summary as a PR comment". Offer the last three only if qa-heal is planned or `gh pr view` succeeds.
+   - **Q4 Plan**: "Run this plan?" Options: "Core + proposed (Recommended)" | "Core + proposed, deep mode" | "Core only". Other = free-text edits (e.g. "drop qa-perf, add qa-test-order").
+
+3. Record the decision (substitute the real answers):
+
+```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"
+cat > "$_TMP/qa-team-plan.md" <<'EOF'
+SELECTED: qa-web qa-api qa-a11y qa-secrets qa-sca      # adjust to the confirmed plan
+POST_WAVE: qa-heal                                     # or empty
+TARGET: http://localhost:3000                          # or none
+GRANTED: ALLOW_FORM_SUBMIT                             # space-separated keys, or none
+MODE: standard                                         # standard | deep
+START_TEST_SERVICES: no                                # yes | no
+EOF
+cat "$_TMP/qa-team-plan.md"
 ```
 
-**Provisioning**:
+## Phase 1.8 — Test Services + Offline Prep (BL-024 + BL-025)
+
+Run only what Phase 1.5 approved.
+
+**Test services** (only if "Start test services" was chosen): start the test stack once so agents share a known environment, and pass the service URLs in each brief's `NOTES:`. Do not also schedule qa-deps in this run (it would tear the stack down).
+
 ```bash
-if [ "$_TESTCONTAINERS_AVAILABLE" = "1" ] && [ "$_DOCKER_AVAILABLE" = "1" ]; then
-  if [ -f "test-env.yml" ]; then
-    echo "CONTAINERS: starting isolated test environment"
-    # Start containers and capture injected connection strings
-    _CONTAINER_ENV=$( \
-      npx @testcontainers/cli start test-env.yml 2>/dev/null || \
-      echo "TESTCONTAINERS_UNAVAILABLE" )
-    echo "$_CONTAINER_ENV"
-    # Each sub-agent inherits DB_URL, REDIS_URL, KAFKA_BOOTSTRAP_SERVERS from env
-  fi
+_TMP="${TEMP:-${TMP:-/tmp}}"; . "$_TMP/qa-team-signals.env"
+if [ "$_DOCKER_AVAILABLE" = "1" ] && [ -n "$_COMPOSE_FILE" ]; then
+  timeout 120 docker compose -f "$_COMPOSE_FILE" up -d --wait 2>&1 | tail -20
+  docker compose -f "$_COMPOSE_FILE" ps 2>&1
 fi
 ```
 
-Pass the `DB_URL`, `REDIS_URL` etc. from container provisioning as extra context to each sub-agent.
-**Teardown**: after all sub-agents complete in Phase 2, run:
-```bash
-npx @testcontainers/cli stop 2>/dev/null || true
-```
-
-### aimock Offline Prep (BL-025)
-
-When `_AIMOCK_FIXTURES=1` (fixtures captured from a prior record run), start aimock replay proxy
-before spawning sub-agents so all external calls (LLM, 3rd-party APIs) are served from fixtures.
+**aimock replay** (when `AIMOCK_FIXTURES=1` and `AIMOCK_AVAILABLE=1`): serve external calls (LLM, third-party APIs) from fixtures.
 
 ```bash
+_TMP="${TEMP:-${TMP:-/tmp}}"; . "$_TMP/qa-team-signals.env"
 if [ "$_AIMOCK_FIXTURES" = "1" ] && [ "$_AIMOCK_AVAILABLE" = "1" ]; then
-  aimock --replay fixtures/ &
-  _AIMOCK_PID=$!
-  echo "AIMOCK_REPLAY_PID: $_AIMOCK_PID — sub-agents will use fixture responses"
+  nohup aimock --replay fixtures/ > "$_TMP/qa-team-aimock.log" 2>&1 &
+  echo $! > "$_TMP/qa-team-aimock.pid"
+  echo "AIMOCK_REPLAY_PID: $(cat "$_TMP/qa-team-aimock.pid")"
 fi
 ```
 
-Stop the aimock proxy after Phase 2 completes:
+## Phase 2 — Dispatch Subagents (capped parallel waves)
+
+The `/qa-<domain>` skills cannot be invoked from here (`disable-model-invocation: true`). Dispatch each agent with the **Agent tool**, `subagent_type: "qa-<domain>"` (installed by `bin/setup` into `~/.claude/agents/`). If the Agent tool reports an unknown subagent type, stop and tell the user to run `bash ~/.claude/qa-agentic-team/bin/setup`.
+
+Subagents **cannot spawn further agents** and **cannot ask the user** — the brief is all they get. Each one skips any gated step whose key is missing from its `APPROVALS:` line and lists it under **Needs a decision**.
+
+**Brief format** — one per agent; substitute real values (absolute paths, no shell variables):
+
+```
+QA-TEAM BRIEF
+AGENT: qa-<domain>
+WORKDIR: <absolute project path>
+PROJECT_CONTEXT: <absolute $_TMP>/qa-team-context.md   (read this first)
+DETECTED_TOOL: <tool for this domain, or none>   (if set, skip the tool-selection gate and use it)
+IMPACT: full | fast: <changed files relevant to this agent>
+MODE: standard | fast | deep
+APPROVALS: <space-separated keys granted to THIS agent, e.g. TARGET=http://localhost:3000 ALLOW_FORM_SUBMIT — or: none>
+REPORT: <absolute $_TMP>/qa-<domain>-report.md
+CTRF: <absolute $_TMP>/qa-<domain>-ctrf.json
+NOTES: <service URLs from Phase 1.8, QA_EXTRA_PATHS, failure list for qa-heal — or: none>
+
+Write your report to REPORT exactly (no dated filename) and your CTRF to CTRF. Do not ask
+questions and do not start other agents. End your reply with the report path, a one-line
+status, and the "Needs a decision" list (or "none").
+```
+
+Rules for the brief:
+- **Least privilege:** give each agent only the keys that apply to it. `TARGET=` only to agents that run against the app; `ALLOW_ACTIVE_SCAN` only to qa-security, qa-api (OFFAT fuzzing), qa-perf (chaos experiments) and qa-simulate (red-team turns); `ALLOW_FORM_SUBMIT` only to agents that send requests to `TARGET` (qa-api, qa-perf, qa-explore, qa-simulate, and qa-web/qa-geo when their flows submit forms); `ALLOW_DB_WRITE` only to qa-seed; `ALLOW_INSTALL` to every agent when granted; `ALLOW_COMMIT` / `ALLOW_PR` / `ALLOW_ISSUE` only to qa-heal.
+- **qa-seed:** add the line `TEST_DATABASE_URL: from environment` only when `ALLOW_DB_WRITE` was granted; the agent reads `$TEST_DATABASE_URL` itself. Never put the URL (it carries credentials) in a brief, report or plan file, and never pass `DATABASE_URL`.
+- **MODE:** `fast` only for qa-web in the SIMPLE tier; `deep` only when opted in (Phase 0.8); otherwise `standard`.
+
+**Waves** — at most **4** agents run concurrently: send up to 4 Agent calls in one message, wait for all of them, then send the next wave.
+1. If qa-seed has `ALLOW_DB_WRITE`, run it first, alone, so the test agents see the seeded data.
+2. Test-writing and scanning agents (web, api, mobile, visual, a11y, component, geo, explore, security, simulate, deeplinks, deps, and the static ones: audit, secrets, sca, test-lint, env-parity, coverage-gate, slsa), 4 per wave. Put the static agents alongside the heavier ones to balance waves. Two agents in the same wave must not write the same files; when unsure, put them in different waves.
+3. qa-perf runs in its own wave when it will execute load against `TARGET` (load skews the other agents' results, and theirs skew it).
+
+## Phase 2.5 — qa-heal (after the test waves, never concurrently)
+
+qa-heal reads failures and may modify spec files, so it runs only after every test-writing wave has finished, alone, in the same working tree. Run it if it was approved in the plan and either `CI_FAILING=1` or any wave report lists failed tests. Its `NOTES:` lists the reports/CTRF files with failures and says: "commit only files you changed". It gets `ALLOW_COMMIT` / `ALLOW_PR` / `ALLOW_ISSUE` only as granted.
+
+**Teardown** after Phase 2.5:
+
 ```bash
-[ -n "$_AIMOCK_PID" ] && kill "$_AIMOCK_PID" 2>/dev/null || true
+_TMP="${TEMP:-${TMP:-/tmp}}"; . "$_TMP/qa-team-signals.env"
+[ -f "$_TMP/qa-team-aimock.pid" ] && kill "$(cat "$_TMP/qa-team-aimock.pid")" 2>/dev/null; rm -f "$_TMP/qa-team-aimock.pid"
+# only if this run started the test services in Phase 1.8:
+# docker compose -f "$_COMPOSE_FILE" down 2>&1 | tail -5
 ```
-
-## Phase 2 — Spawn Sub-Agents (Parallel)
-
-Spawn one Agent per selected domain. Pass the project context summary and detected tool as part of each sub-agent's prompt. Sub-agents run concurrently.
-
-**Template for each sub-agent call:**
-
-```
-Project context: <contents of $_TMP/qa-team-context.md>
-Target: <web | api | mobile | perf | visual>
-Working directory: <cwd>
-Base URL: <detected base URL>
-Detected tool: <value of _WEB_TOOL | _PERF_TOOL | _MOB_TOOL — skip if "none" or empty>
-Report output: $_TMP/qa-<domain>-report.md
-
-Run /qa-<domain> with the above context. If "Detected tool" is provided, skip the
-tool selection gate and use that tool directly. Write the final report to the output path.
-```
-
-Sub-agents to spawn (skip domains not in Phase 0 selection):
-- `/qa-web`    → `$_TMP/qa-web-report.md`
-- `/qa-api`    → `$_TMP/qa-api-report.md`
-- `/qa-mobile` → `$_TMP/qa-mobile-report.md`
-- `/qa-perf`   → `$_TMP/qa-perf-report.md`
-- `/qa-visual` → `$_TMP/qa-visual-report.md`
-- `/qa-audit`  → `$_TMP/qa-audit-report.md`
-- `/qa-a11y`   → `$_TMP/qa-a11y-report.md`   (when web app detected)
-- `/qa-heal`   → `$_TMP/qa-heal-report.md`    (when CI failures present)
-- `/qa-explore`   → `$_TMP/qa-explore-report.md`   (when `_EXPLORE_READY=1` and not skipped)
-- `/qa-security`  → `$_TMP/qa-security-report.md`  (when web/API app detected)
-- `/qa-seed`      → `$_TMP/qa-seed-report.md`       (when `_SEED_SCHEMA != "none"` and DB_URL set)
-- `/qa-component` → `$_TMP/qa-component-report.md`  (when `_COMP_TOOL` contains `storybook`)
-- `/qa-simulate`  → `$_TMP/qa-simulate-report.md`   (when `QA_SIMULATE=1` or explicitly selected)
-- `/qa-secrets`   → `$_TMP/qa-secrets-report.md`    (always; graceful skip if trufflehog absent)
-- `/qa-sca`       → `$_TMP/qa-sca-report.md`        (when `_MANIFEST_TYPE != "unknown"`)
-- `/qa-geo`       → `$_TMP/qa-geo-report.md`        (when web app detected and `WEB_URL` set)
-- `/qa-deps`      → `$_TMP/qa-deps-report.md`       (when docker and compose file present)
-- `/qa-deeplinks` → `$_TMP/qa-deeplinks-report.md`  (when `QA_DEEPLINKS=1` or explicitly selected)
-
-Wait for all sub-agents to complete before proceeding.
 
 ## Phase 3 — Aggregate Results
 
-Read each sub-agent's report and merge into a single quality scorecard:
+Read every report written during this run — the brief's path first, then dated names (`qa-<domain>-report-<date>.md`) in `$_TMP`, the project root or `reports/`, in case an agent used its own naming:
 
 ```bash
-for domain in web api mobile perf visual audit a11y heal explore security seed component simulate secrets sca geo deps deeplinks; do
-  f="$_TMP/qa-$domain-report.md"
-  [ -f "$f" ] && echo "=== $domain ===" && cat "$f" || echo "=== $domain: not run ==="
+_TMP="${TEMP:-${TMP:-/tmp}}"
+find "$_TMP" . reports -maxdepth 1 -name 'qa-*-report*.md' -newer "$_TMP/qa-team-run.start" 2>/dev/null | sort -u | \
+while read -r f; do
+  echo "=== $(basename "$f") ==="; cat "$f"
 done
 ```
+
+Any planned agent with no report → "not run / no report" in the summary.
 
 Compute aggregates:
 - Total tests: sum across all domains
 - Passed / Failed / Skipped counts
-- Critical failures (tests marked `[CRITICAL]` in sub-agent reports)
+- Critical failures (tests marked `[CRITICAL]` in reports)
 - Coverage gaps (pages/endpoints/screens with no tests)
+- **Needs a decision**: every gated step agents skipped, grouped by approval key
 
 ## Phase 3.5 — Flaky Registry Update
 
@@ -558,34 +616,18 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 ## Executive Summary
 - **Overall Status**: ✅ Pass / ⚠️ Partial / ❌ Fail
 - **Total Tests**: N (passed: N, failed: N, skipped: N)
-- **Domains Tested**: web · api · mobile · perf · visual · audit
+- **Agents Run**: <list>
 - **Tools Used**: <e.g. Playwright · REST Assured · Detox · k6>
+- **Target**: <TARGET or "offline">  **Approvals granted**: <keys or none>
+
+## Routing
+- Complexity tier: simple / complex / very-complex (score N/7)
+- Reason: routes=N, auth=yes/no, domains=N, LOC=N
+- Waves: <wave 1: ...; wave 2: ...; post-wave: qa-heal>
 
 ## Domain Results
-
-### Web (<detected tool: Playwright / Cypress / Selenium>)
-<paste qa-web summary>
-
-### API (<detected language tool>)
-<paste qa-api summary>
-
-### Mobile (<detected tool: Detox / Appium / Maestro>)
-<paste qa-mobile summary>
-
-### Performance (<detected tool: k6 / JMeter / Locust>)
-<paste qa-perf summary>
-
-### Visual
-<paste qa-visual summary>
-
-### Methodology Audit
-<paste qa-audit summary — score, pyramid balance, top recommendations>
-
-### Accessibility
-<paste qa-a11y summary — total violations, POUR breakdown, top 3 critical issues; or "not run">
-
-### Self-Healing
-<paste qa-heal summary — tests healed, confidence score, action taken; or "not run">
+### <Agent> (<detected tool>)
+<one section per agent that ran: its summary, or "no report">
 
 ## Critical Failures
 <list only failed tests, with error snippet>
@@ -593,8 +635,11 @@ Write `qa-report-<date>.md` to the project root (or `reports/` if it exists):
 ## Coverage Gaps
 <pages / endpoints / screens that had no test coverage>
 
+## Needs a Decision
+<gated steps the agents skipped, grouped by approval key — re-run with that approval to execute them>
+
 ## Recommended Next Steps
-<top 3 actions based on failures and gaps>
+<top 3 actions based on failures and gaps; mention on-request agents whose trigger was detected>
 ```
 
 Print the report path and overall pass/fail status.
@@ -603,14 +648,15 @@ If there are critical failures: "Found N critical failures. Run /qa-observabilit
 
 ## Optional: GitHub PR Comment
 
-Write `$_TMP/qa-team-ctrf.json` by merging all per-domain CTRF files:
+Merge all per-domain CTRF files into `$_TMP/qa-team-ctrf.json` (for CI dashboards):
 
 ```bash
-python3 - << 'PYEOF'
+_TMP="${TEMP:-${TMP:-/tmp}}"
+_BRANCH=$(git branch --show-current 2>/dev/null || echo unknown) python3 - << 'PYEOF'
 import json, glob, os, time
 
 tmp = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'
-ctrf_files = glob.glob(os.path.join(tmp, 'qa-*-ctrf.json'))
+ctrf_files = [f for f in glob.glob(os.path.join(tmp, 'qa-*-ctrf.json')) if not f.endswith('qa-team-ctrf.json')]
 
 all_tests = []
 for f in ctrf_files:
@@ -643,21 +689,23 @@ print(f'MERGED_CTRF: {out}  tests={len(all_tests)} passed={p} failed={f_} skippe
 PYEOF
 ```
 
-Post to PR if `gh` is available:
+Post a PR comment **only if `ALLOW_ISSUE` was granted in Phase 1.5**; otherwise list "post QA summary to PR" under Needs a Decision. Write the Executive Summary + Critical Failures (no secrets, no internal URLs beyond TARGET) to `$_TMP/qa-team-pr-comment.md`, then:
 
 ```bash
-if command -v gh >/dev/null 2>&1 && gh pr view >/dev/null 2>&1; then
-  if command -v npx >/dev/null 2>&1; then
-    npx --yes github-test-reporter "$_TMP/qa-team-ctrf.json" 2>/dev/null || \
-      echo "PR_COMMENT: github-test-reporter not available or failed (non-fatal)"
-  fi
-fi
+_TMP="${TEMP:-${TMP:-/tmp}}"
+command -v gh >/dev/null 2>&1 && gh pr view >/dev/null 2>&1 && \
+  gh pr comment --body-file "$_TMP/qa-team-pr-comment.md" || echo "PR_COMMENT: skipped (no gh or no open PR)"
 ```
+
+Do not install packages to post the comment.
 
 ## Important Rules
 
-- **Never run destructive operations** — read-only analysis unless explicitly running test suites
+- **One approval step** — risky actions happen only with the keys granted in Phase 1.5; the default for every key is not granted
+- **Never use `DATABASE_URL`** — database writes go only to `TEST_DATABASE_URL`, and only with `ALLOW_DB_WRITE`
+- **Probe only `TARGET`** — no agent tests a URL the user did not confirm
+- **No installs without `ALLOW_INSTALL`** — otherwise agents report what is missing
 - **Skip domains with insufficient signals** — don't force a mobile agent on a web-only project
-- **Sub-agents are independent** — do not share state between them beyond the context summary
+- **Subagents are independent** — they share only the context file and their brief; qa-heal never runs concurrently with test-writing agents
 - **Report even if tests fail** — always produce the aggregated report regardless of exit codes
 - **Idempotent** — safe to re-run; overwrites `$_TMP/qa-*-report.md` and the root report
