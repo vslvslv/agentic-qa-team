@@ -9,9 +9,12 @@ set -euo pipefail
 URL="${1:?Usage: cloak-fetch.sh <url> [max_chars]}"
 MAX_CHARS="${2:-3000}"
 
-# Auto-install cloakbrowser if absent (silent)
-python3 -c "import cloakbrowser" 2>/dev/null \
-  || CLOAKBROWSER_AUTO_UPDATE=0 pip install -q cloakbrowser
+# Never install packages implicitly. cloakbrowser is an optional third-party
+# package; install it yourself (pip install cloakbrowser) if you want this path.
+if ! python3 -c "import cloakbrowser" 2>/dev/null; then
+  echo "CLOAK_FETCH_ERROR: python package 'cloakbrowser' not installed (optional; pip install cloakbrowser)" >&2
+  exit 1
+fi
 
 CLOAKBROWSER_AUTO_UPDATE=0 python3 - "$URL" "$MAX_CHARS" <<'PYEOF'
 import sys

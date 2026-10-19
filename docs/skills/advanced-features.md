@@ -7,7 +7,7 @@ The skills include 20+ advanced capabilities enabled by integrations with best-i
 ## AI-powered testing
 
 ### AI Visual Consensus (multi-model)
-*Skills: `/qa-visual`*
+*Skills: `/qa:visual`*
 
 When a visual diff is detected, two AI models independently judge whether it's a meaningful regression or noise (font rendering, dynamic content, timestamps). A third model resolves disagreements. A SHA-based verdict cache avoids re-judging identical diffs.
 
@@ -17,7 +17,7 @@ When a visual diff is detected, two AI models independently judge whether it's a
 ---
 
 ### DOM Metric Extraction
-*Skills: `/qa-visual`*
+*Skills: `/qa:visual`*
 
 Instead of sending full screenshots to Claude on every run, `page.evaluate()` extracts structured layout metrics (bounding boxes, computed colors, font sizes, text) for key selectors. Claude diffs the JSON — only escalates to screenshot+VLM when metrics diverge.
 
@@ -27,7 +27,7 @@ Instead of sending full screenshots to Claude on every run, `page.evaluate()` ex
 ---
 
 ### TestZeus Hercules — Gherkin + DOM Distillation
-*Skills: `/qa-web`*
+*Skills: `/qa:web`*
 
 Converts Gherkin `.feature` files to E2E tests at runtime using DOM Distillation — only relevant page elements are extracted. No hardcoded selectors; the agent re-discovers how to perform each action every run.
 
@@ -37,7 +37,7 @@ Converts Gherkin `.feature` files to E2E tests at runtime using DOM Distillation
 ---
 
 ### Natural Language Test Mode
-*Skills: `/qa-web`*
+*Skills: `/qa:web`*
 
 Write a `tests.nl.md` file of plain-English test descriptions. Claude interprets each as Playwright actions at runtime — no selector code to maintain.
 
@@ -54,7 +54,7 @@ Complete checkout with a Visa card ending in 4242, verify order confirmation ema
 ## Mobile testing (VLM layer)
 
 ### Midscene.js — Pure-Vision Mobile Testing
-*Skills: `/qa-mobile`*
+*Skills: `/qa:mobile`*
 
 Abandons selectors entirely. All element localization uses screenshot reasoning via VLM (Qwen3-VL, UI-TARS, Gemini). Works on iOS, Android, React Native, Flutter — native pixels, no brittle selector drift.
 
@@ -68,7 +68,7 @@ await midscene.aiAction("tap the Login button")
 ---
 
 ### OmniParser — Computer Vision for Canvas UIs
-*Skills: `/qa-mobile`*
+*Skills: `/qa:mobile`*
 
 When accessibility labels are absent (Flutter canvas, games, custom-drawn UIs), device screenshots are piped through OmniParser — a CV model that parses any UI into labeled interactive regions.
 
@@ -77,7 +77,7 @@ When accessibility labels are absent (Flutter canvas, games, custom-drawn UIs), 
 ---
 
 ### Mobile-Agent Reflector
-*Skills: `/qa-mobile`*
+*Skills: `/qa:mobile`*
 
 On step failure, Claude receives the failed screenshot + error and generates a revised action plan. Max 2 retries per step. Tests with > 1 reflection per run are flagged as flakiness candidates.
 
@@ -88,7 +88,7 @@ On step failure, Claude receives the failed screenshot + error and generates a r
 ## API testing advanced layer
 
 ### Tracetest — Span Assertions
-*Skills: `/qa-api`*
+*Skills: `/qa:api`*
 
 Assert on the distributed trace emitted by the system, not just the HTTP response. Write span assertions alongside HTTP tests:
 
@@ -110,7 +110,7 @@ spec:
 ---
 
 ### RESTler — Stateful REST Fuzzing
-*Skills: `/qa-api`*
+*Skills: `/qa:api`*
 
 Infers producer-consumer dependencies from OpenAPI spec (e.g., `POST /users` returns `id` that `DELETE /users/{id}` consumes). Fuzzes state-machine paths — discovers resource leaks and state-transition 500s.
 
@@ -119,7 +119,7 @@ Infers producer-consumer dependencies from OpenAPI spec (e.g., `POST /users` ret
 ---
 
 ### Keploy — eBPF API Traffic Recording
-*Skills: `/qa-api`, `/qa-heal`*
+*Skills: `/qa:api`, `/qa:heal`*
 
 Records real API traffic at the network layer using eBPF and auto-generates tests + mocks from recordings. When APIs change, re-record against the new behavior — the "test update" is re-running the recorder.
 
@@ -128,7 +128,7 @@ Records real API traffic at the network layer using eBPF and auto-generates test
 ---
 
 ### Pact Consumer Contract Verification
-*Skills: `/qa-api`*
+*Skills: `/qa:api`*
 
 Runs provider verification when `*.pact.json` files are detected. Breaking changes visible before deployment.
 
@@ -139,7 +139,7 @@ Runs provider verification when `*.pact.json` files are detected. Breaking chang
 ## Observability integration
 
 ### OTel `traceparent` Injection
-*Skills: `/qa-web`, `/qa-api`*
+*Skills: `/qa:web`, `/qa:api`*
 
 In Playwright's `beforeEach`, creates an OTel span for the test and injects its `traceparent` header into all page requests via `page.route()`. Every test-driven HTTP call now carries a known trace ID. On failure, the trace ID is linked in the report.
 
@@ -168,7 +168,7 @@ When any skill reports a failure with a trace ID, this sub-agent runs a HolmesGP
 ## Chaos and resilience
 
 ### LitmusChaos — Concurrent Resilience Testing
-*Skills: `/qa-perf`*
+*Skills: `/qa:perf`*
 
 Interleaves a LitmusChaos experiment with a k6 load test. Claude defines the SteadyStateHypothesis from existing k6 thresholds, then interprets the result: "System held SLO during 30% pod kill but breached at 50% — resilience threshold between 30–50%."
 
@@ -179,7 +179,7 @@ Interleaves a LitmusChaos experiment with a k6 load test. Claude defines the Ste
 ## Record and replay
 
 ### aimock — Offline API Mocking
-*Skills: `/qa-web`, `/qa-api`, `/qa-team`*
+*Skills: `/qa:web`, `/qa:api`, `/qa:team`*
 
 First CI run: `aimock` records all external API calls (LLM providers, third-party services, internal microservices) as fixtures. Subsequent runs replay — fully offline, deterministic, near-zero cost. Supports Claude, OpenAI, Gemini, MCP tools, vector DBs.
 
@@ -188,7 +188,7 @@ First CI run: `aimock` records all external API calls (LLM providers, third-part
 ---
 
 ### GoReplay — Production Traffic Replay
-*Skills: `/qa-perf`*
+*Skills: `/qa:perf`*
 
 Captures live HTTP traffic from production and replays it against staging. The load profile IS real users. Claude diffs replay results against baseline per endpoint: latency regressions, new error codes.
 
@@ -199,7 +199,7 @@ Captures live HTTP traffic from production and replays it against staging. The l
 ## Continuous benchmarking
 
 ### Bencher — Performance Trend Store
-*Skills: `/qa-perf`*
+*Skills: `/qa:perf`*
 
 Pushes k6 summaries to a stable benchmarking trend store after each run. Claude reads 30-run history and writes regression narratives: "This endpoint's p99 has drifted +12% over the last 8 PRs — regression is gradual, not spike-shaped."
 
@@ -210,7 +210,7 @@ Pushes k6 summaries to a stable benchmarking trend store after each run. Claude 
 ## Test environment isolation
 
 ### Testcontainers — Per-Agent Docker Isolation
-*Skills: `/qa-team`*
+*Skills: `/qa:team`*
 
 When `test-env.yml` declares required services (PostgreSQL, Redis, Kafka), the orchestrator provisions isolated Docker containers before spawning sub-agents and tears them down after. Each sub-agent receives its own `DB_URL`, `REDIS_URL` injected as env vars.
 
@@ -228,7 +228,7 @@ services:
 
 ## Planning integrations
 
-### JIRA + Figma + TCMS (via `/qa-manager`)
+### JIRA + Figma + TCMS (via `/qa:manager`)
 
 See [Skills Overview — qa-manager](overview.md#qa-manager--requirements-to-tests-bridge) for full details.
 

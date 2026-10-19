@@ -1,0 +1,74 @@
+# Example workflow — copy into YOUR project's .github/workflows/ and edit.
+# It is not active in this repo (this repo produces no CTRF reports).
+#
+# Runs after the workflows that upload qa-*-ctrf artifacts, downloads those artifacts
+# from the triggering run, and posts a summary. Edit `workflows:` to name your test
+# workflow(s): workflow_run does not accept wildcards.
+name: QA Report
+on:
+  workflow_run:
+    workflows: ["CI"]          # ← the name(s) of the workflow(s) that run your tests
+    types: [completed]
+
+permissions:
+  actions: read                # download artifacts from the triggering run
+  contents: read
+  pull-requests: write         # post the summary comment
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion != 'skipped'
+    env:
+      HONEYCOMB_API_KEY: ${{ secrets.HONEYCOMB_API_KEY }}
+      HONEYCOMB_DATASET: ${{ vars.HONEYCOMB_DATASET }}
+    steps:
+      - name: Download CTRF artifacts from the triggering run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: qa-*-ctrf
+          merge-multiple: true
+          path: ctrf-reports/
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Post test results
+        uses: ctrf-io/github-test-reporter@v1
+        with:
+          report-path: 'ctrf-reports/*.json'
+          summary: true
+          pull-request-comment: true
+          update-comment: true
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Optional: one Honeycomb event per QA domain. Set the HONEYCOMB_API_KEY secret
+      # (and optionally the HONEYCOMB_DATASET variable) to enable.
+      - name: Emit QA domain events to Honeycomb (opt-in)
+        if: env.HONEYCOMB_API_KEY != ''
+        env:
+          RUN_ID: ${{ github.run_id }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          for f in ctrf-reports/*.json; do
+            [ -f "$f" ] || continue
+            python3 - "$f" <<'PY' | curl -s -X POST \
+                "https://api.honeycomb.io/1/events/${HONEYCOMB_DATASET:-qa-agentic-team}" \
+                -H "X-Honeycomb-Team: $HONEYCOMB_API_KEY" \
+                -H "Content-Type: application/json" -d @- || true
+          import json, os, sys
+          path = sys.argv[1]
+          summary = json.load(open(path)).get("results", {}).get("summary", {})
+          print(json.dumps({
+              "qa.domain": os.path.basename(path).removesuffix("-ctrf.json"),
+              "qa.passed": summary.get("passed", 0),
+              "qa.failed": summary.get("failed", 0),
+              "build.run_id": os.environ["RUN_ID"],
+              "build.branch": os.environ["BRANCH"],
+              "build.workflow": os.environ["WORKFLOW"],
+          }))
+          PY
+          done

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# bin/uninstall — Migration helper: remove a pre-plugin (v1.17 and earlier) symlink install.
+# Removes every symlink the old bin/setup created that points into this repo, and its
+# Stop hook entry in ~/.claude/settings.json. Never removes a real file or directory.
+# The plugin itself is managed with /plugin (install, update, uninstall).
+#
+# Usage: bash bin/uninstall [--keep-hook]
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLAUDE_HOME="${CLAUDE_HOME_DIR:-$HOME/.claude}"
+CLAUDE_SKILLS="${CLAUDE_SKILLS_DIR:-$CLAUDE_HOME/skills}"
+CLAUDE_AGENTS="${CLAUDE_AGENTS_DIR:-$CLAUDE_HOME/agents}"
+CLAUDE_SETTINGS="${CLAUDE_SETTINGS_FILE:-$CLAUDE_HOME/settings.json}"
+KEEP_HOOK=0
+[ "${1:-}" = "--keep-hook" ] && KEEP_HOOK=1
+
+REMOVED=0
+for link in "$CLAUDE_HOME/qa-agentic-team" "$CLAUDE_SKILLS"/* "$CLAUDE_AGENTS"/*.md; do
+  [ -L "$link" ] || continue
+  target="$(readlink "$link")"
+  case "$target" in
+    "$REPO_DIR"|"$REPO_DIR"/*)
+      rm "$link"
+      echo "  REMOVED $link"
+      REMOVED=$((REMOVED + 1)) ;;
+  esac
+done
+echo "Removed $REMOVED symlink(s)."
+
+if [ "$KEEP_HOOK" = "0" ] && [ -f "$CLAUDE_SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  HOOK_SCRIPT="$REPO_DIR/bin/qa-team-suggest-rerun"
+  tmp="$(mktemp)"
+  jq --arg cmd "$HOOK_SCRIPT" '
+    if .hooks.Stop then
+      .hooks.Stop |= map(select(([.hooks[]?.command] | index($cmd)) | not))
+    else . end' "$CLAUDE_SETTINGS" > "$tmp"
+  if ! cmp -s "$tmp" "$CLAUDE_SETTINGS"; then
+    cp "$CLAUDE_SETTINGS" "$CLAUDE_SETTINGS.qa-agentic-team.bak"
+    mv "$tmp" "$CLAUDE_SETTINGS"
+    echo "Removed the Stop hook entry (backup: $CLAUDE_SETTINGS.qa-agentic-team.bak)."
+  else
+    rm -f "$tmp"
+  fi
+fi

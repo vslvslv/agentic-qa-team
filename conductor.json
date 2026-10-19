@@ -1,6 +1,5 @@
 {
   "scripts": {
-    "setup": "bin/setup",
-    "archive": "bin/dev-teardown"
+    "setup": "bash scripts/gen-skill-docs.sh"
   }
 }

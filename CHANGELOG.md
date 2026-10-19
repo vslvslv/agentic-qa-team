@@ -5,6 +5,58 @@ Format: `vMAJOR.MINOR.PATCH.MICRO — YYYY-MM-DD — summary`
 
 ---
 
+## v1.18.0.0 — 2026-10-19 — Claude Code plugin
+
+The suite is now the **`qa` plugin** with this repo as its marketplace.
+
+### Install / upgrade
+- Install: `/plugin marketplace add vslvslv/agentic-qa-team` then `/plugin install qa@agentic-qa-team`. Updates come through `/plugin` (version-gated by `plugin.json`).
+- Upgrading from the symlink install: run `bash bin/uninstall` in the old clone first.
+- Removed: `bin/setup`, `bin/dev-setup`, `bin/dev-teardown`, the per-skill GitHub version check (`qa-version-check-inline.sh`, `qa-team-update-check`) and the `~/.claude/qa-agentic-team` link.
+
+### Renames
+- Skills `/qa-<name>` → `/qa:<name>` (e.g. `/qa:team`, `/qa:web`); agents `qa-<name>` → `qa:<name>`. Report and CTRF file names are unchanged (`qa-<name>-report.md`).
+- Layout: `qa-<name>/` → `skills/<name>/`, `.claude/agents/qa-<name>.md` → `agents/<name>.md`.
+
+### Hooks
+- Plugin agents cannot carry hooks, so the rm guard and typecheck run from `hooks/hooks.json`, scoped with `--plugin-agents-only` to `qa:*` agents (plugin hooks fire in every session). Skill-level hooks still cover `/qa:*` runs. The Stop re-run nudge ships with the plugin; nothing is written to `settings.json`.
+
+### Maintainer skills
+- `/qa-refine`, `/lang-refine`, `/qa-methodology-refine`, `/learning-sources-refinement` moved to `.claude/skills/`: available only inside a clone of this repo, writing to the repo (an installed plugin is a cached copy).
+
+### Development
+- `claude --plugin-dir .` loads the checkout in place. `npm run gen:skill-docs` also syncs `plugin.json`'s version from `VERSION`; CI checks it and validates the manifests.
+
+---
+
+## v1.17.0.0 — 2026-10-19 — safety and correctness overhaul
+
+Fixes from a full review of the suite. Upgrade note: re-run `bash bin/setup` (it now creates `~/.claude/qa-agentic-team`, which every hook and agent uses).
+
+### Guardrails
+- Skill and agent hooks now run. They pointed at `${CLAUDE_SKILL_DIR}`, which hook processes never receive, so the rm guard and typecheck failed silently. They now use `~/.claude/qa-agentic-team/bin/hooks/`.
+- `qa-pre-bash-safety.sh` parses commands and blocks recursive `rm` of broad paths (the old regex missed 17 of 28 dangerous forms); `qa-post-write-typecheck.sh` reads stdin. 42 table tests in `tests/hooks.test.sh`.
+- Approval gates: risky steps need a key — `TARGET=<url>`, `ALLOW_ACTIVE_SCAN`, `ALLOW_FORM_SUBMIT`, `ALLOW_DB_WRITE`, `ALLOW_INSTALL`, `ALLOW_COMMIT`, `ALLOW_PR`, `ALLOW_ISSUE`. Interactive runs ask; subagents read the brief. Nothing is granted by default.
+- qa-heal commits only files it changed, on a `qa-heal/*` branch, with approval. qa-seed uses `TEST_DATABASE_URL` only, never `DATABASE_URL`. qa-security is passive unless active scanning is approved. qa-explore/qa-simulate confirm the target and skip destructive forms. qa-secrets redacts before the model reads anything.
+
+### /qa-team
+- Dispatches the installed subagents (`subagent_type: qa-<domain>`) in waves of at most 4, after one approval question. The old dispatch called skills that refuse model invocation.
+- Shell state no longer assumed to persist between Bash calls; every agent is classed core / proposed / on request.
+
+### Agents
+- Agent bodies are generated from the skill templates (`scripts/gen-skill-docs.sh`); they had drifted and lost safety rules. CI checks freshness.
+
+### Reference guides
+- The nightly loop grew 22 guides to 40–52k lines each (~1M lines, ~600k tokens per guide) with contradictory version claims. Guides are restored to their pre-loop versions, orphaned forks removed, and CI caps guides at 3,000 lines.
+- Refine skills are manual-only, replace instead of append, require a fetched source for version claims, and no longer edit skill templates. The nightly loop is disabled.
+
+### Install
+- `bin/setup` never deletes existing files (`--force` backs them up), does not edit `settings.json` unattended, and `--namespaced` is removed. New `bin/uninstall`.
+- The update prompt shows incoming commits and pulls this repo (it used to run `git pull` in the user's project). `QA_TEAM_NO_UPDATE_CHECK=1` disables the check.
+- Removed: references to another project's `gstack` telemetry, `/investigate`, `preamble-tier`, the duplicate `qa-team-precheck`, stray `agent.md` copies, silent `pip install` in `cloak-fetch.sh`.
+
+---
+
 ## v1.16.1.0 — 2026-05-14 — skill/agent metadata improvements
 
 ### All skills (38)

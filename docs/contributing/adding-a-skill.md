@@ -1,32 +1,30 @@
 # Adding a New Skill
 
-This is the complete checklist for adding a new skill to qa-agentic-team. Follow each step in order.
+The checklist for adding a skill to the `qa` plugin. Follow the steps in order.
 
 ---
 
 ## 1. Create the skill directory
 
 ```bash
-mkdir qa-<name>
+mkdir skills/<name>
 ```
 
-The directory must be a **direct child of the repo root** — `bin/setup` discovers skills by searching `$REPO_DIR -maxdepth 2 -name "SKILL.md"`.
+The skill becomes `/qa:<name>`, and its agent `qa:<name>`. Use a short name without a `qa-` prefix.
 
 ---
 
-## 2. Write `qa-<name>/SKILL.md.tmpl`
+## 2. Write `skills/<name>/SKILL.md.tmpl`
 
-Use this frontmatter template:
+The template is the single source of truth. `SKILL.md` and the agent body are generated from it (step 5).
 
 ```yaml
 ---
-name: qa-<name>
-preamble-tier: 3
+name: <name>
 version: 1.0.0
 description: |
   One or two sentences describing what the skill does.
   Include the trigger phrases users would say ("fix broken tests", "run load test", etc.).
-  End with: (qa-agentic-team)
 allowed-tools:
   - Bash
   - Read
@@ -35,9 +33,8 @@ allowed-tools:
   - Glob
   - Grep
   - AskUserQuestion
-  - Agent          # include if skill spawns sub-agents
-  - WebFetch       # include if skill fetches URLs
-  - WebSearch      # include if skill searches the web
+  - Agent          # only if the skill spawns sub-agents
+  - WebFetch       # only if the skill fetches URLs
 disable-model-invocation: true
 model: sonnet
 effort: high
@@ -46,31 +43,38 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
+          command: 'bash "${CLAUDE_PLUGIN_ROOT}/bin/hooks/qa-pre-bash-safety.sh"'
   PostToolUse:
     - matcher: "Write|Edit"
       hooks:
         - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
+          command: 'bash "${CLAUDE_PLUGIN_ROOT}/bin/hooks/qa-post-write-typecheck.sh"'
           async: true
 ---
 ```
 
-Then add the body sections:
+Paths in the body: `${CLAUDE_SKILL_DIR}/references/...` for the skill's own files, `${CLAUDE_PLUGIN_ROOT}/...` for shared ones (e.g. `${CLAUDE_PLUGIN_ROOT}/qa-methodology/references/`). Claude Code substitutes both in the text; neither exists as an environment variable in Bash calls.
 
-### Version check section (always first)
+### Gates for anything risky
+
+The same body runs interactively and as a subagent dispatched by `/qa:team`. Subagents cannot ask the user, so write every risky step as a gate:
 
 ```markdown
-## Version check
-
-!`bash "${CLAUDE_SKILL_DIR}/../bin/qa-version-check-inline.sh" 2>/dev/null || echo "VERSION_STATUS: UPDATE_CHECK_FAILED"`
-
-If `VERSION_STATUS` contains `UPGRADE_AVAILABLE` and `SKIP_UPDATE_ASK` is `0`, use `AskUserQuestion`: "qa-agentic-team update available. Update before running?" Options: "Yes — update now (recommended)" | "No — run with current version". If yes: `git -C "$_QA_ROOT" pull && bash "$_QA_ROOT/bin/setup"`. Continue regardless.
-
----
+**Gate (ALLOW_COMMIT):** <what will happen>. Interactive: ask with AskUserQuestion and proceed only on yes. As a subagent: proceed only if the brief's `APPROVALS:` line contains `ALLOW_COMMIT`; otherwise skip and list the step under "Needs a decision" in the report.
 ```
 
-### Preamble (detect environment)
+| Key | Covers |
+|---|---|
+| `TARGET=<url>` | the only URL the skill may probe; with no target, run nothing against an app |
+| `ALLOW_ACTIVE_SCAN` | intrusive security scans, fuzzing, chaos experiments |
+| `ALLOW_FORM_SUBMIT` | submitting forms or sending POST/PUT/PATCH/DELETE to the target |
+| `ALLOW_DB_WRITE` | writes to the database in `$TEST_DATABASE_URL` (never `DATABASE_URL`) |
+| `ALLOW_INSTALL` | installing packages or tools (`npm install`, `pip install`, `npx --yes`, image pulls) |
+| `ALLOW_COMMIT` / `ALLOW_PR` / `ALLOW_ISSUE` | git commits, pushing + opening a PR, filing issues or PR comments |
+
+Nothing is granted by default. If the skill spawns sub-agents, add a sentence saying that as a subagent it does that work itself, sequentially.
+
+### Preamble, phases, report
 
 ```markdown
 ## Preamble (run first)
@@ -80,60 +84,31 @@ _TMP="${TEMP:-${TMP:-/tmp}}"
 _DATE=$(date +%Y-%m-%d)
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 echo "BRANCH: $_BRANCH  DATE: $_DATE"
-
-echo "--- DETECTION ---"
-# Detect prerequisites, tools, env vars
-# Print: KEY: value for everything discovered
-echo "--- DONE ---"
-```
+# Detect prerequisites; print KEY: value for everything discovered
 ```
 
-### Phase sections
-
-Number phases sequentially. Use descriptive names:
-
-```markdown
 ## Phase 1 — <name>
-
-## Phase 2 — <name>
-
+...
 ## Phase N — Report
 
-Write `$_TMP/qa-<name>-report-{_DATE}.md` with findings.
-
-Write `$_TMP/qa-<name>-ctrf.json`:
-```json
-{
-  "results": {
-    "tool": { "name": "qa-<name>", "version": "1.0.0" },
-    "summary": { "tests": N, "passed": N, "failed": N, "pending": 0, "skipped": 0, "other": 0, "start": <epoch>, "stop": <epoch> },
-    "tests": [{ "name": "...", "status": "passed|failed", "duration": 0 }]
-  }
-}
-```
+Write `$_TMP/qa-<name>-report.md` and `$_TMP/qa-<name>-ctrf.json`
+(as a subagent, use the brief's `REPORT:` and `CTRF:` paths).
 
 ## Important Rules
-
-- Rule 1
-- Rule 2
+- ...
 ```
+
+Each Bash tool call starts a fresh shell: a block must not rely on variables set in an earlier block (recompute them, or save them to a file under `$_TMP`). To use a reference guide, grep its headings and read only the sections you need; never read a whole guide.
 
 ---
 
-## 3. Create `.claude/agents/qa-<name>.md`
-
-Agent files use `memory: project` instead of `disable-model-invocation: true`. The body mirrors the SKILL.md.tmpl but:
-- Remove the Version check section
-- Condense phases (keep all the logic, shorter prose is fine)
-- Keep the same frontmatter hooks
+## 3. Create `agents/<name>.md` — frontmatter only
 
 ```yaml
 ---
-name: qa-<name>
+name: <name>
 description: |
-  Same description as SKILL.md.tmpl (without the qa-agentic-team suffix).
-model: sonnet
-memory: project
+  Same description as the skill.
 tools:
   - Bash
   - Read
@@ -141,120 +116,70 @@ tools:
   - Edit
   - Glob
   - Grep
-  - AskUserQuestion
-  # add Agent/WebFetch/WebSearch if needed
-hooks:
-  PreToolUse:
-    - matcher: "Bash"
-      hooks:
-        - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-pre-bash-safety.sh"'
-  PostToolUse:
-    - matcher: "Write|Edit"
-      hooks:
-        - type: command
-          command: 'bash "${CLAUDE_SKILL_DIR}/../bin/hooks/qa-post-write-typecheck.sh"'
-          async: true
+model: sonnet
+color: blue
+memory: project
 ---
-
-## Preamble (run first)
-...
-## Phase 1 — <name>
-...
 ```
 
----
-
-## 4. Add to `qa-team/SKILL.md.tmpl` (if auto-dispatched)
-
-If the skill should be invoked automatically by `/qa-team`, add it to Phase 2 dispatch in `qa-team/SKILL.md.tmpl`:
-
-1. Add preamble detection for the skill's prerequisites
-2. Add a dispatch line in Phase 2:
-   ```
-   - `/qa-<name>` → `$_TMP/qa-<name>-report.md`  (when <condition>)
-   ```
-3. Add CTRF aggregation in Phase 3:
-   ```bash
-   [ -f "$_TMP/qa-<name>-ctrf.json" ] && _CTRF_FILES="$_CTRF_FILES $_TMP/qa-<name>-ctrf.json"
-   ```
-
-Skills that are intent-driven (user invokes manually) — like `/qa-manager`, `/qa-meta-eval` — do **not** need to be added to `qa-team`.
+Leave out `AskUserQuestion` and `Agent` (subagents can use neither) and `hooks` (ignored for plugin agents; the plugin's `hooks/hooks.json` covers `qa:*` agents). The body is generated in step 5; never write it by hand.
 
 ---
 
-## 5. Add to `bin/setup` available commands
+## 4. Decide whether `/qa:team` proposes it
 
-Add a line in the "Available commands" section at the bottom of `bin/setup`:
+In `skills/team/SKILL.md.tmpl` Phase 0, add the skill as **Core** (always useful when its precondition is detected), **Proposed** (shown in the plan, needs the user's yes or approvals), or **Available on request** (listed with its trigger). Add a cheap detection for its precondition to the Preamble, and give it only the approval keys it needs in the brief rules.
+
+---
+
+## 5. Regenerate and verify
 
 ```bash
-echo "  /qa-<name>             — One-line description"
+npm run gen:skill-docs      # SKILL.md + the agent body
+npm run check:skill-docs    # must pass (CI runs it)
+npm run check:guides        # guide size cap
+npm run test:hooks          # hook table tests
+claude plugin validate .
+claude --plugin-dir .       # try /qa:<name> for real
 ```
 
 ---
 
-## 6. Regenerate and verify
-
-```bash
-npm run gen:skill-docs      # generates SKILL.md from SKILL.md.tmpl
-npm run check:skill-docs    # verifies freshness — must show OK for new skill
-```
-
----
-
-## 7. Update VERSION and CHANGELOG.md
+## 6. Update VERSION and CHANGELOG.md
 
 New skill = minor bump:
 
 ```bash
 bash bin/qa-team-next-version minor > VERSION
+npm run gen:skill-docs      # copies VERSION into .claude-plugin/plugin.json
 ```
 
-Add entry to `CHANGELOG.md`:
+Add an entry to `CHANGELOG.md`:
 
 ```markdown
-## v1.X.0.0 — YYYY-MM-DD — qa-<name> skill (BL-XXX)
+## v1.X.0.0 — YYYY-MM-DD — /qa:<name> skill
 
-### qa-<name> (new skill)
+### /qa:<name> (new skill)
 - What it does
-- Key phases
+- Gates it uses
 - Env vars / opt-in flags
 ```
 
 ---
 
-## 8. Mark backlog item as implemented
+## 7. Open the PR
 
-If this skill implements a backlog item, update `BACKLOG.md`:
-
-```markdown
-#### BL-XXX — <title> `[M]` ✅ **Implemented v1.X.0.0**
-```
-
----
-
-## 9. Open the PR
-
-CI will check:
-- `skill-docs` gate: `SKILL.md` freshness vs `.tmpl`
-- `version-gate`: `VERSION` bumped + `CHANGELOG.md` entry
-
-Both must pass.
+CI runs `checks.yml` (manifests, generated files, plugin version, guide size, hook tests, shell syntax) and `version-gate.yml` (VERSION bumped and a CHANGELOG entry). Both must pass.
 
 ---
 
 ## Checklist
 
-- [ ] `qa-<name>/SKILL.md.tmpl` created with correct frontmatter
-- [ ] Version check section present
-- [ ] Preamble bash block prints `KEY: value` detection lines
-- [ ] All phases present; Phase N (Report) emits `qa-<name>-ctrf.json`
-- [ ] Important Rules section at end
-- [ ] `.claude/agents/qa-<name>.md` created (mirrors skill, condensed, `memory: project`)
-- [ ] Added to `qa-team/SKILL.md.tmpl` (if auto-dispatched)
-- [ ] Added to `bin/setup` available commands footer
-- [ ] `npm run gen:skill-docs` run — shows `GEN qa-<name>`
-- [ ] `npm run check:skill-docs` run — shows `OK qa-<name>`
-- [ ] VERSION bumped (minor)
-- [ ] CHANGELOG.md entry added
-- [ ] BACKLOG.md item marked implemented (if applicable)
+- [ ] `skills/<name>/SKILL.md.tmpl` with frontmatter, `disable-model-invocation: true`, `${CLAUDE_PLUGIN_ROOT}` hook paths
+- [ ] Every risky step written as a `**Gate (KEY):**`
+- [ ] Bash blocks self-contained (no state carried between calls)
+- [ ] Report and CTRF written to `$_TMP` (or the brief's paths)
+- [ ] `agents/<name>.md` with frontmatter only
+- [ ] `/qa:team` placement decided (Core / Proposed / On request)
+- [ ] `npm run gen:skill-docs`, all checks and `claude plugin validate .` pass
+- [ ] VERSION bumped (minor) and CHANGELOG entry added

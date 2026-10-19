@@ -2,7 +2,7 @@
 
 ## GitHub Actions — minimal setup
 
-The simplest integration: run `/qa-team` as a step and get a CTRF report in your CI artifacts.
+The simplest integration: run `/qa:team` as a step and get a CTRF report in your CI artifacts.
 
 ```yaml
 # .github/workflows/qa.yml
@@ -40,7 +40,7 @@ jobs:
           E2E_USER_EMAIL: ${{ secrets.TEST_EMAIL }}
           E2E_USER_PASSWORD: ${{ secrets.TEST_PASSWORD }}
         run: |
-          npx @anthropic-ai/claude-code -p "/qa-team" \
+          npx @anthropic-ai/claude-code -p "/qa:team" \
             --output-format stream-json \
             2>&1 | tee qa-output.jsonl
 
@@ -94,7 +94,7 @@ For each failing test, call Claude to explain the root cause in natural language
 
 ## Auto-heal on CI failure
 
-Run `/qa-heal` automatically when tests fail on a PR, before humans need to intervene.
+Run `/qa:heal` automatically when tests fail on a PR, before humans need to intervene.
 
 ```yaml
       - name: Auto-heal broken tests
@@ -104,7 +104,7 @@ Run `/qa-heal` automatically when tests fail on a PR, before humans need to inte
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CI_FAILURE_LOG: qa-output.jsonl
         run: |
-          npx @anthropic-ai/claude-code -p "/qa-heal"
+          npx @anthropic-ai/claude-code -p "/qa:heal"
 ```
 
 The skill classifies the failure and either commits a fix, opens a review PR, or files a GitHub issue — no human required for routine selector breakage.
@@ -115,7 +115,7 @@ The skill classifies the failure and either commits a fix, opens a review PR, or
 
 Accumulate pass/fail history across runs to surface tests that flip randomly.
 
-CTRF output is merged into `qa-flaky-registry.json` by `/qa-team` after each run. Commit this file to the repo (or store as a CI artifact and restore it at the start of each run):
+CTRF output is merged into `qa-flaky-registry.json` by `/qa:team` after each run. Commit this file to the repo (or store as a CI artifact and restore it at the start of each run):
 
 ```yaml
       - name: Restore flaky registry
@@ -155,7 +155,7 @@ Wrap each QA step in `buildevents cmd` to build an OTel trace of the entire buil
           BUILD_ID="${{ github.run_id }}"
           buildevents build $BUILD_ID
           buildevents cmd $BUILD_ID qa-step -- \
-            npx @anthropic-ai/claude-code -p "/qa-team"
+            npx @anthropic-ai/claude-code -p "/qa:team"
 ```
 
 ---
@@ -201,7 +201,7 @@ Run the chaos + load test in a dedicated nightly job, not on every PR:
         env:
           QA_CHAOS: "1"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: npx @anthropic-ai/claude-code -p "/qa-perf"
+        run: npx @anthropic-ai/claude-code -p "/qa:perf"
 ```
 
 ---
@@ -211,6 +211,6 @@ Run the chaos + load test in a dedicated nightly job, not on every PR:
 The repo's own CI enforces that every skill content change bumps `VERSION` and adds a `CHANGELOG` entry. If you're running qa-agentic-team in CI as part of another project, this gate only applies to contributors of the qa-agentic-team repo itself.
 
 ```yaml
-# Enforced by .github/workflows/version-gate.yml and skill-docs.yml
+# Enforced by .github/workflows/version-gate.yml and checks.yml
 # Contributors: see docs/contributing/contributing.md
 ```
